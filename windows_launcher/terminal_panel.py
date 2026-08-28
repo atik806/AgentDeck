@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -29,7 +30,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agents import resolve_agent
+from agents import pretrust_folder, resolve_agent
+from new_workspace_dialog import NewWorkspaceDialog
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
 from vt_screen import DEFAULT_SCROLLBACK, Palette
@@ -99,6 +101,15 @@ class TerminalPanel(QMainWindow):
                 self.config.get("agent", "none"),
                 self.config.get("agent_command", ""),
             )
+
+        # Seeds the "new workspace" dialog and is updated to whatever the user
+        # last picked there, so the next workspace defaults to the same agent.
+        self._last_ws_agent = str(
+            startup.get("agent_key") or self.config.get("agent", "none") or "none"
+        )
+        self._last_ws_agent_custom = str(
+            startup.get("agent_custom", "") or self.config.get("agent_command", "")
+        )
 
         self._workspaces: list[Workspace] = []
         self._active_ws: Optional[Workspace] = None
@@ -232,7 +243,7 @@ class TerminalPanel(QMainWindow):
 
         new_ws_btn = QPushButton("＋ Workspace", bar)
         new_ws_btn.setToolTip("New workspace (Ctrl+Shift+N)")
-        new_ws_btn.clicked.connect(lambda: self._add_workspace())
+        new_ws_btn.clicked.connect(lambda: self._new_workspace_interactive())
         bar.addWidget(new_ws_btn)
 
         self._voice_btn = QToolButton(bar)
@@ -309,7 +320,7 @@ class TerminalPanel(QMainWindow):
 
         self._sidebar = WorkspaceSidebar(central)
         self._sidebar.selected.connect(self._select_workspace)
-        self._sidebar.created.connect(lambda: self._add_workspace())
+        self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
 
@@ -344,7 +355,7 @@ class TerminalPanel(QMainWindow):
         add("Ctrl+-", lambda: self._bump_font(-1))
         add("Ctrl+0", lambda: self._set_font(11))
 
-        add("Ctrl+Shift+N", lambda: self._add_workspace())
+        add("Ctrl+Shift+N", lambda: self._new_workspace_interactive())
         add("Ctrl+Shift+X", self._toggle_voice)
         add("Ctrl+B", lambda: self._toggle_sidebar())
         add("Ctrl+Shift+PgDown", lambda: self._cycle_workspace(1))
@@ -362,6 +373,36 @@ class TerminalPanel(QMainWindow):
         self._ws_seq += 1
         return f"Workspace {self._ws_seq}"
 
+    def _new_workspace_interactive(self) -> None:
+        """Ask which agent to run, then open a workspace running it.
+
+        Wired to the toolbar's ＋ Workspace, the sidebar's +, and Ctrl+Shift+N.
+        The plain :meth:`_add_workspace` stays dialog-free for the startup path
+        and the tests.
+        """
+        dialog = NewWorkspaceDialog(
+            default_agent=self._last_ws_agent,
+            default_custom=self._last_ws_agent_custom,
+            default_count=self._default_count,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        picked = dialog.result_choice() or {}
+        self._last_ws_agent = picked.get("agent_key", self._last_ws_agent)
+        self._last_ws_agent_custom = picked.get("agent_custom", "")
+
+        command = picked.get("agent_command", "") or ""
+        # Same courtesy as the setup wizard: pre-accept Claude Code's
+        # "trust this folder?" prompt so it opens straight into the session.
+        if command and self.config.get("pretrust_agent_folder", True):
+            pretrust_folder(command, self._working_folder)
+
+        self._add_workspace(
+            pane_count=int(picked.get("count", self._default_count)),
+            startup_command=command or None,
+        )
+
     def _add_workspace(
         self,
         name: Optional[str] = None,
@@ -377,8 +418,9 @@ class TerminalPanel(QMainWindow):
             font_size=self._font_size,
             scrollback=self._scrollback,
             layout_mode=self._layout_setting,
-            # Every workspace starts in the chosen folder; only the first one's
-            # panes auto-run the agent (a workspace added later is scratch space).
+            # Every workspace starts in the chosen folder. The first workspace
+            # auto-runs the setup wizard's agent; a later one runs whatever the
+            # "new workspace" dialog picked (passed in as startup_command).
             cwd=self._working_folder or None,
             startup_command=startup_command,
         )

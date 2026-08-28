@@ -1,0 +1,206 @@
+"""The "new workspace" dialog -- shown every time a workspace is created.
+
+Adding a workspace from the UI (the toolbar's ＋ Workspace, the sidebar's +, or
+Ctrl+Shift+N) opens this first: pick the coding agent to auto-run in the new
+workspace's terminals and how many terminals to open. It is deliberately small
+-- one dropdown, one spinbox -- and wears the panel's blue accent, not the
+setup wizard's amber, because it is an in-app action rather than the front door.
+
+:meth:`result_choice` returns ``{agent_key, agent_custom, agent_command,
+count}``; ``exec()`` is ``Accepted`` only when the user clicks *Create
+workspace*.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QComboBox,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from agents import CUSTOM_KEY, PLAIN_KEY, available_agents, resolve_agent
+from workspace import MAX_PANES
+
+__all__ = ["NewWorkspaceDialog"]
+
+_BG = "#1b1b1b"
+_CARD = "#242424"
+_BORDER = "#363636"
+_TEXT = "#e6e6e6"
+_MUTED = "#8c8c8c"
+_BLUE = "#3b78ff"
+_BLUE_HI = "#5590ff"
+
+
+class NewWorkspaceDialog(QDialog):
+    """Ask which agent (and how many terminals) a new workspace should open."""
+
+    def __init__(
+        self,
+        *,
+        default_agent: str = PLAIN_KEY,
+        default_custom: str = "",
+        default_count: int = 4,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._result: Optional[dict] = None
+
+        self.setWindowTitle("New workspace")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        self.setStyleSheet(
+            f"""
+            QDialog {{ background: {_BG}; }}
+            QLabel {{ color: {_TEXT}; }}
+            QLabel#h1 {{ font-size: 16px; font-weight: 700; }}
+            QLabel#sub, QLabel#note {{ color: {_MUTED}; font-size: 11px; }}
+            QComboBox, QLineEdit, QSpinBox {{
+                background: {_CARD}; color: {_TEXT};
+                border: 1px solid {_BORDER}; border-radius: 7px;
+                padding: 7px 10px; font-size: 12px;
+            }}
+            QComboBox:focus, QLineEdit:focus, QSpinBox:focus {{
+                border-color: {_BLUE};
+            }}
+            QComboBox::drop-down {{ border: none; width: 18px; }}
+            QComboBox QAbstractItemView {{
+                background: {_CARD}; color: {_TEXT};
+                border: 1px solid {_BORDER};
+                selection-background-color: {_BLUE}; selection-color: #ffffff;
+            }}
+            QPushButton {{
+                background: {_CARD}; color: {_TEXT};
+                border: 1px solid {_BORDER}; border-radius: 7px;
+                padding: 8px 16px; font-size: 12px;
+            }}
+            QPushButton:hover {{ border-color: {_BLUE}; }}
+            QPushButton#primary {{
+                background: {_BLUE}; color: #ffffff; border-color: {_BLUE};
+                font-weight: 700;
+            }}
+            QPushButton#primary:hover {{ background: {_BLUE_HI};
+                                         border-color: {_BLUE_HI}; }}
+            QPushButton#primary:disabled {{
+                background: #2b3b58; color: #7f8ba3; border-color: #2b3b58;
+            }}
+            """
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 20, 22, 18)
+        outer.setSpacing(12)
+
+        title = QLabel("New workspace")
+        title.setObjectName("h1")
+        outer.addWidget(title)
+        sub = QLabel(
+            "Pick an agent to run in every terminal of the new workspace."
+        )
+        sub.setObjectName("sub")
+        sub.setWordWrap(True)
+        outer.addWidget(sub)
+
+        outer.addSpacing(4)
+        outer.addWidget(self._label("Agent"))
+
+        self._combo = QComboBox(self)
+        for key, label, command in available_agents():
+            self._combo.addItem(f"{label}  —  {command}", key)
+        self._combo.addItem("Plain shell — no agent", PLAIN_KEY)
+        self._combo.addItem("Custom command…", CUSTOM_KEY)
+        start = self._combo.findData(default_agent)
+        if start < 0:
+            start = self._combo.findData(PLAIN_KEY)
+        self._combo.setCurrentIndex(max(0, start))
+        self._combo.currentIndexChanged.connect(self._sync)
+        outer.addWidget(self._combo)
+
+        self._custom = QLineEdit(default_custom, self)
+        self._custom.setPlaceholderText("e.g.  aider --model sonnet")
+        self._custom.textChanged.connect(self._sync)
+        outer.addWidget(self._custom)
+
+        outer.addSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self._label("Terminals"))
+        self._count = QSpinBox(self)
+        self._count.setRange(1, MAX_PANES)
+        self._count.setValue(max(1, min(MAX_PANES, int(default_count))))
+        self._count.valueChanged.connect(self._sync)
+        row.addWidget(self._count)
+        row.addStretch(1)
+        outer.addLayout(row)
+
+        self._note = QLabel("")
+        self._note.setObjectName("note")
+        self._note.setWordWrap(True)
+        outer.addWidget(self._note)
+
+        outer.addSpacing(6)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Cancel", self)
+        cancel.clicked.connect(self.reject)
+        self._create = QPushButton("Create workspace", self)
+        self._create.setObjectName("primary")
+        self._create.setDefault(True)
+        self._create.clicked.connect(self._accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(self._create)
+        outer.addLayout(buttons)
+
+        self._sync()
+
+    # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("font-size: 11px; font-weight: 700; color: #a8a8a8;")
+        return lbl
+
+    def _agent_key(self) -> str:
+        return self._combo.currentData()
+
+    def _sync(self) -> None:
+        is_custom = self._agent_key() == CUSTOM_KEY
+        self._custom.setVisible(is_custom)
+
+        command = resolve_agent(self._agent_key(), self._custom.text())
+        n = self._count.value()
+        plural = "s" if n != 1 else ""
+        if command:
+            self._note.setText(f"Runs  {command}  in {n} terminal{plural}.")
+        else:
+            self._note.setText(f"Opens {n} plain shell{plural}.")
+
+        self._create.setEnabled(not (is_custom and not self._custom.text().strip()))
+
+    def _accept(self) -> None:
+        key = self._agent_key()
+        custom = self._custom.text().strip()
+        self._result = {
+            "agent_key": key,
+            "agent_custom": custom,
+            "agent_command": resolve_agent(key, custom),
+            "count": self._count.value(),
+        }
+        self.accept()
+
+    # -- result ------------------------------------------------------------
+
+    def result_choice(self) -> Optional[dict]:
+        """The picked ``{agent_key, agent_custom, agent_command, count}``."""
+        return dict(self._result) if self._result is not None else None
