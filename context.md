@@ -246,6 +246,40 @@ windows_launcher\.venv\Scripts\python.exe assets\build_icons.py ^
 The `.ico` is hand-assembled with 16/24/32/48/64/128/256 PNG frames (Qt's writer
 only emits one frame).
 
+## Packaging / releases (2026-08-29)
+
+The repo is now a **public GitHub monorepo** (`github.com/atik806/AgentDeck`,
+branch `main`). Distribution = **PyInstaller onedir** frozen app + **Velopack**
+installer/updater, published to **GitHub Releases**.
+
+- `windows_launcher/version.py` — `__version__` (single source; `main.py`,
+  `setup_wizard.py` footer, `updater.py`, `packaging/build.py` all read it),
+  `APP_ID`, `UPDATE_FEED_URL`.
+- `windows_launcher/updater.py` — `run_velopack_bootstrap()` (called first in
+  `main.py`), `is_packaged()` (frozen + sibling `Update.exe`), `UpdateController`
+  (QObject: `check`/`download`/`apply_and_restart` on a `_Worker(QThread)`,
+  signals to the panel). `import velopack` guarded; inert from source.
+- `terminal_panel.py` — `self.updater` + an **Update** `QPushButton` in
+  `_build_toolbar` (visible only when `updater.enabled`), `_wire_updater()` +
+  `_on_update_*` slots, `_shutdown_all()` extracted from `closeEvent` and reused
+  before `apply_and_restart()`.
+- `config.py` — `auto_check_updates` / `update_channel` / `update_prerelease` /
+  `last_update_check`.
+- `main.py` — `--smoke` flag (waits for shells, exits 0/3) for the build script.
+- `packaging/` — `AgentDeck.spec` (onedir; `collect_all` winpty/sounddevice/
+  pywhispercpp, `collect_submodules('voice_capture')`, big Qt `excludes`),
+  `hooks/hook-pywhispercpp.py` (delvewheel root DLLs), `build.py` (freeze +
+  bundle asserts + smoke + `vpk pack`), `README.md` (runbook).
+- `.github/workflows/release.yml` — push a `v*` tag → build on `windows-latest`
+  → `vpk upload github`.
+- **Not touched:** `voice_engine.py` (its `sys.path` hack is skipped when frozen;
+  `voice_capture` must be `pip install`ed into the build venv instead).
+- Build with **python.org 3.11** in `windows_launcher/.venv-build` — the run
+  `.venv` is MS Store Python and can't build. `pywin32` was dropped
+  (unused; only `ctypes.windll` is used).
+- Unsigned for now → SmartScreen "More info → Run anyway". Per-user install to
+  `%LOCALAPPDATA%\AgentDeck\` (no UAC) is what makes self-update work.
+
 ## Gotchas hit before
 
 - `QDropEvent` in tests needs `Qt` imported in the test file (PySide6

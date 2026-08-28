@@ -32,6 +32,14 @@ so they cannot be embedded into a Qt layout. ConPTY is the way around it.
 
 ## Install
 
+**As an app** — download `AgentDeck-win-Setup.exe` from the
+[latest release](https://github.com/atik806/AgentDeck/releases/latest) and run
+it. It installs per-user (`%LOCALAPPDATA%\AgentDeck\`), no admin prompt. The
+first run is unsigned, so Windows SmartScreen shows a warning — click
+**More info → Run anyway**.
+
+**From source** —
+
 ```cmd
 cd E:\Workspace\V4\windows_launcher
 python -m venv .venv
@@ -44,6 +52,21 @@ pip install -r requirements.txt
 ```cmd
 python main.py
 ```
+
+## Updating
+
+An installed build carries an **Update** button in the toolbar: click it to check
+GitHub for a newer version, download it, and restart into it. It also checks
+automatically ~1.5 s after launch (turn that off with
+`"auto_check_updates": false`). Updates are per-user file swaps — no admin. The
+button is hidden when you run from source.
+
+## Building a release
+
+See [`packaging/README.md`](../packaging/README.md). In short: bump
+`windows_launcher/version.py`, run `packaging/build.py` (PyInstaller onedir +
+Velopack `vpk pack`), then `vpk upload github --tag v<version>` — or just push a
+`v*` tag and let `.github/workflows/release.yml` do it.
 
 ## Setup wizard
 
