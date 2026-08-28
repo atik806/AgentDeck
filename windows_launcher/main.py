@@ -220,6 +220,15 @@ def main() -> int:
     if config.get("auto_check_updates", True) and panel.updater.enabled:
         QTimer.singleShot(1500, lambda: panel.updater.check(silent=True))
 
+    # --smoke: used by packaging/build.py to verify a frozen build actually
+    # runs. Wait for the shells to come up, then exit 0 (or 3 if none did).
+    if "--smoke" in sys.argv:
+        def _smoke() -> None:
+            alive = any(ws.running_count() for ws in panel._workspaces)
+            app.exit(0 if alive else 3)
+
+        QTimer.singleShot(4000, _smoke)
+
     _started = True
     return app.exec()
 
