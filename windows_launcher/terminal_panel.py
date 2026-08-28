@@ -48,6 +48,8 @@ from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported
 from workspace_sidebar import WorkspaceSidebar
 from voice_engine import VoiceEngine
 from voice_overlay import VoiceOverlay, mic_icon
+from updater import UpdateController
+from version import __version__
 
 __all__ = ["TerminalPanel", "TerminalPane", "Workspace"]
 
@@ -132,10 +134,15 @@ class TerminalPanel(QMainWindow):
             f"QMainWindow {{ background: {Palette.BACKGROUND.name()}; }}"
         )
 
+        # Built before the toolbar so the toolbar can gate the Update button on
+        # updater.enabled (False unless this is a Velopack-installed build).
+        self.updater = UpdateController(self)
+
         self._build_toolbar()
         self._build_body()
         self._build_shortcuts()
         self._build_voice()
+        self._wire_updater()
 
         self._add_workspace(
             pane_count=self._default_count,
@@ -276,6 +283,13 @@ class TerminalPanel(QMainWindow):
         )
         self._voice_btn.clicked.connect(lambda: self._toggle_overlay_visible())
         bar.addWidget(self._voice_btn)
+
+        self._update_btn = QPushButton("Update", bar)
+        self._update_btn.setToolTip("Check for a newer version of AgentDeck")
+        self._update_btn.clicked.connect(lambda: self.updater.check(silent=False))
+        # Only an installed (Velopack) build can update itself.
+        self._update_btn.setVisible(self.updater.enabled)
+        bar.addWidget(self._update_btn)
 
         bar.addSeparator()
 
@@ -790,7 +804,66 @@ class TerminalPanel(QMainWindow):
         if self._active_ws is not None:
             self._active_ws.set_active(pane)
 
+    # -- updates -----------------------------------------------------------
+
+    def _wire_updater(self) -> None:
+        """Connect the UpdateController to the toolbar button and status bar.
+
+        Dormant when the app is not a Velopack install (updater.enabled False):
+        the button is hidden and no signal ever fires.
+        """
+        u = self.updater
+        u.available.connect(self._on_update_available)
+        u.up_to_date.connect(
+            lambda: self.statusBar().showMessage("AgentDeck is up to date", 4000)
+        )
+        u.progress.connect(
+            lambda pct: self.statusBar().showMessage(f"Downloading update… {pct}%", 2000)
+        )
+        u.ready.connect(self._on_update_ready)
+        u.error.connect(
+            lambda msg: self.statusBar().showMessage(f"Update: {msg}", 6000)
+        )
+        u.busy_changed.connect(self._update_btn.setDisabled)
+
+    def _on_update_available(self, version: str, notes: str) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setText(
+            f"AgentDeck {version} is available.\nYou have {__version__}."
+        )
+        if notes:
+            box.setDetailedText(notes)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.button(QMessageBox.Ok).setText("Download")
+        if box.exec() == QMessageBox.Ok:
+            self.updater.download()
+
+    def _on_update_ready(self, version: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Restart to update",
+            f"AgentDeck {version} is downloaded. Restart now to apply it?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            self.statusBar().showMessage(
+                "Update will apply next time you restart AgentDeck", 6000
+            )
+            return
+        # The user already consented; tear the shells down explicitly and skip
+        # the closeEvent "shells still running" prompt.
+        self._shutdown_all()
+        self.updater.apply_and_restart()
+
     # -- teardown ----------------------------------------------------------
+
+    def _shutdown_all(self) -> None:
+        self._watchdog.stop()
+        self._voice_engine.shutdown()
+        for workspace in self._workspaces:
+            workspace.shutdown()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         running = sum(workspace.running_count() for workspace in self._workspaces)
@@ -806,8 +879,5 @@ class TerminalPanel(QMainWindow):
                 event.ignore()
                 return
 
-        self._watchdog.stop()
-        self._voice_engine.shutdown()
-        for workspace in self._workspaces:
-            workspace.shutdown()
+        self._shutdown_all()
         event.accept()
