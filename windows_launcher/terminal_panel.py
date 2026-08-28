@@ -51,6 +51,9 @@ from voice_overlay import VoiceOverlay, mic_icon
 
 __all__ = ["TerminalPanel", "TerminalPane", "Workspace"]
 
+#: The AgentDeck mark, shipped beside this file (see assets/).
+_ASSET_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
+
 #: Cycled as workspaces are created so each gets a distinct swatch colour.
 _WS_ACCENTS = ["#3b78ff", "#2ea043", "#a371f7", "#e3b341", "#f778ba", "#39c5cf"]
 
@@ -119,8 +122,7 @@ class TerminalPanel(QMainWindow):
 
         folder_name = Path(self._working_folder).name if self._working_folder else ""
         self.setWindowTitle(
-            f"Multi-Terminal Panel — {folder_name}" if folder_name
-            else "Multi-Terminal Panel"
+            f"AgentDeck — {folder_name}" if folder_name else "AgentDeck"
         )
         self.resize(
             int(self.config.get("window_width", 1400)),
@@ -231,6 +233,25 @@ class TerminalPanel(QMainWindow):
         bar.setFloatable(False)
         bar.setStyleSheet(self._TOOLBAR_QSS)
         self.addToolBar(bar)
+
+        # -- AgentDeck brand: the mark + wordmark, so the app is named in-window
+        #    and not only in the title bar.
+        if _ASSET_ICON.exists():
+            mark = QLabel(bar)
+            mark.setObjectName("brandMark")
+            mark.setPixmap(QIcon(str(_ASSET_ICON)).pixmap(20, 20))
+            mark.setStyleSheet("padding: 0 2px 0 4px; background: transparent;")
+            bar.addWidget(mark)
+
+        wordmark = QLabel("Agent<span style='color:#89b4fa'>Deck</span>", bar)
+        wordmark.setObjectName("brandName")
+        wordmark.setTextFormat(Qt.RichText)
+        wordmark.setStyleSheet(
+            "QLabel#brandName { color: #cdd6f4; font-size: 12px; font-weight: 800;"
+            " padding: 0 8px 0 3px; background: transparent; }"
+        )
+        bar.addWidget(wordmark)
+        bar.addSeparator()
 
         self._sidebar_btn = QToolButton(bar)
         self._sidebar_btn.setText("☰")
@@ -776,7 +797,7 @@ class TerminalPanel(QMainWindow):
         if running:
             reply = QMessageBox.question(
                 self,
-                "Close Multi-Terminal Panel",
+                "Close AgentDeck",
                 f"{running} shell(s) are still running. Close them all?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,

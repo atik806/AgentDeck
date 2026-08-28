@@ -1,6 +1,6 @@
 @echo off
 rem ===========================================================================
-rem  Windows Multi-Terminal Panel -- double-click this file to run.
+rem  AgentDeck (Windows multi-terminal panel) -- double-click this file to run.
 rem
 rem  First run: creates .venv and installs requirements.txt, reporting progress
 rem  in this window. Every run after that goes straight to the panel.
@@ -18,7 +18,7 @@ set "PYSIDE_DIR=.venv\Lib\site-packages\PySide6"
 
 if exist "%VENV_PY%" goto :check_deps
 
-echo Multi-Terminal Panel -- first-run setup.
+echo AgentDeck -- first-run setup.
 echo.
 call :find_python
 if errorlevel 1 goto :err_no_python

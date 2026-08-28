@@ -66,6 +66,9 @@ _COUNTS = [1, 2, 4, 6, 8, 10, 12]
 
 _STEPS = ["Start", "Layout", "Agents"]
 
+#: The AgentDeck mark, shipped beside this file (see assets/).
+_ASSET_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
+
 
 # ---------------------------------------------------------------------------
 # Step indicator
@@ -360,7 +363,7 @@ class SetupWizard(QDialog):
         ]
         self._result: Optional[dict] = None
 
-        self.setWindowTitle("Set up your workspace")
+        self.setWindowTitle("AgentDeck — set up your workspace")
         self.setModal(True)
         self.resize(820, 560)
         self.setStyleSheet(
@@ -459,13 +462,20 @@ class SetupWizard(QDialog):
         lay.setContentsMargins(0, 8, 0, 0)
         lay.setSpacing(10)
 
-        title = QLabel("Multi-Terminal Panel")
+        if _ASSET_ICON.exists():
+            mark = QLabel()
+            mark.setPixmap(QIcon(str(_ASSET_ICON)).pixmap(72, 72))
+            mark.setAlignment(Qt.AlignCenter)
+            lay.addSpacing(6)
+            lay.addWidget(mark)
+
+        title = QLabel("AgentDeck")
         title.setObjectName("h1")
         title.setAlignment(Qt.AlignCenter)
-        sub = QLabel("Every shell in one window. Let's set up your workspace.")
+        sub = QLabel("Every terminal, every agent, one deck. Let's set you up.")
         sub.setObjectName("sub")
         sub.setAlignment(Qt.AlignCenter)
-        lay.addSpacing(14)
+        lay.addSpacing(10)
         lay.addWidget(title)
         lay.addWidget(sub)
         lay.addSpacing(18)

@@ -9,7 +9,7 @@ first; it says which parts are live and which are noise.
 
 | Path | Status | What it is |
 |---|---|---|
-| `windows_launcher/` | **ACTIVE** | Windows multi-terminal panel — every shell in one window as a real ConPTY pane. This is what "the project" means. |
+| `windows_launcher/` | **ACTIVE** | **AgentDeck** — Windows multi-terminal panel, every shell in one window as a real ConPTY pane, each workspace running a coding agent of its choice. This is what "the project" means. (User-visible name is "AgentDeck"; the config dir, `pip` package internals and module names still say `multi-terminal`.) |
 | `voice_capture/` | **library for the panel** | Standalone PySide6 voice-to-text app with its own `.venv`, but its Qt-free `voice_capture/{audio,vad,transcription}` modules are now imported by `windows_launcher/voice_engine.py` for the panel's voice overlay. Changing those three modules affects both. |
 | `assets/` | branding source | `icon.svg` / `logo.svg` + `build_icons.py` rasteriser for the panel and voice_capture marks. |
 | `.opencode/`, `.claude/` | tooling scaffolding | Ignore. |
@@ -156,6 +156,37 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    (a drawn QIcon — the `🎤` emoji rendered as a broken glyph). `main.py` dropped
    `setApplicationDisplayName` (Qt was appending it → doubled window title).
 
+8. **AgentDeck rename + launch splash + per-workspace agent (2026-08-29)** —
+   the product is now **AgentDeck** in every user-visible place (window title,
+   wizard title/heading, close dialogs, `setApplicationName`, AppUserModelID
+   `AgentDeck.Panel`, README). The config dir (`%APPDATA%\multi-terminal`),
+   module names and `agents.py` internals are unchanged, so existing configs
+   still load.
+   - **Launch splash** — `agentdeck_splash.py`: a frameless translucent
+     `QWidget`, custom-painted from one eased `_p` 0→1 (`QVariantAnimation`,
+     ~1.5 s): icon fades/scales in, "AgentDeck" wordmark slides up, blue→green
+     accent line sweeps, tagline fades in, then a `windowOpacity` fade-out.
+     `show_splash(icon, enabled=…)` runs it on a nested `QEventLoop` with a hard
+     4 s cap; click/keypress skips to the fade. `main.py` calls it right after
+     the `QApplication` is built, before the wizard. Off via `--no-splash` or
+     `show_splash: false` (new config key, default true). Tests:
+     `test_agentdeck_splash.py` (offline).
+   - **Per-workspace agent** — `new_workspace_dialog.py` (`NewWorkspaceDialog`,
+     blue accent, agent dropdown + custom field + terminals spinbox + live
+     preview). `TerminalPanel._new_workspace_interactive()` shows it,
+     `pretrust_folder()`s the pick, then calls the unchanged
+     `_add_workspace(pane_count=…, startup_command=…)`. The 3 UI entry points
+     (toolbar ＋ Workspace, sidebar +, `Ctrl+Shift+N`) route through it; bare
+     `_add_workspace()` stays dialog-free for startup + `test_panel.py`. Last
+     pick is remembered for the session (`_last_ws_agent[_custom]`, seeded from
+     the wizard / config) and seeds the dialog default. So a later workspace is
+     no longer "scratch space" — it runs whatever agent you choose. Tests:
+     `test_new_workspace_dialog.py` (offline).
+   - **Logo** — see "Branding / icons" below. New deck mark + wordmark; the
+     toolbar and wizard start page now show it, not just the title bar.
+     Rebuild after editing: `assets\build_icons.py windows_launcher\assets\icon.svg
+     windows_launcher\assets assets`.
+
 ## Running / testing
 
 ```cmd
@@ -167,6 +198,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_voice_overlay.py  # voice widget; offline
 .venv\Scripts\python.exe test_agents.py         # agent discovery; offline
 .venv\Scripts\python.exe test_setup_wizard.py   # wizard pages/validation; offline
+.venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
+.venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are
@@ -187,14 +220,19 @@ cd E:\Workspace\V4\windows_launcher
 Each app has its own mark, same visual family (dark rounded tile, Catppuccin
 Mocha palette, blue→sky primary shape + green accents):
 
-- `windows_launcher/assets/` — multi-pane window + prompt chevron. Wired in
-  `main.py` (`_load_icon` / `app.setWindowIcon` / `panel.setWindowIcon`, plus an
-  explicit AppUserModelID so the `pythonw` taskbar entry shows it).
-  `create-desktop-shortcut.bat` points the `.lnk` at `assets/icon.ico`.
+- `windows_launcher/assets/` — **AgentDeck mark (2026-08-29)**: a diagonally
+  stacked *deck* of three terminal panes, the front one carrying the blue→cyan
+  prompt chevron + green cursor. `logo.svg` is that mark + an "Agent" (light) /
+  "Deck" (blue) split wordmark. Wired in `main.py` (`_load_icon` /
+  `app.setWindowIcon` / `panel.setWindowIcon`, plus AppUserModelID
+  `AgentDeck.Panel`), shown in-window by `terminal_panel._build_toolbar`
+  (mark + wordmark at the far left) and on the setup-wizard start page, and
+  painted into the launch splash. `create-desktop-shortcut.bat` points the
+  `.lnk` (now `AgentDeck.lnk`) at `assets/icon.ico`.
 - `voice_capture/assets/` — microphone + level bars. Wired in
-  `voice_capture/app.py` the same way.
-- `assets/` (repo root) — source `icon.svg` / `logo.svg` for the launcher, plus
-  `build_icons.py`, the shared rasteriser.
+  `voice_capture/app.py` the same way. Untouched by the AgentDeck rename.
+- `assets/` (repo root) — source `icon.svg` / `logo.svg` (kept byte-identical to
+  `windows_launcher/assets/` copies) plus `build_icons.py`, the shared rasteriser.
 
 Regenerate the PNG/ICO after editing an `icon.svg`:
 

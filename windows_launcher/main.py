@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows Multi-Terminal Panel -- entry point.
+"""AgentDeck (Windows Multi-Terminal Panel) -- entry point.
 
 Opens a single window with every terminal in it. There is no launcher dialog:
 the panel comes up with the configured number of live shells already running,
@@ -75,9 +75,9 @@ def _report_fatal(exc_type, exc, tb) -> None:
         mb_iconerror, mb_setforeground, mb_topmost = 0x10, 0x10000, 0x40000
         summary = "".join(traceback.format_exception_only(exc_type, exc)).strip()
         title = (
-            "Multi-Terminal Panel stopped unexpectedly"
+            "AgentDeck stopped unexpectedly"
             if _started
-            else "Multi-Terminal Panel could not start"
+            else "AgentDeck could not start"
         )
         ctypes.windll.user32.MessageBoxW(
             None,
@@ -124,7 +124,7 @@ def _set_app_user_model_id() -> None:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "multi-terminal.panel"
+            "AgentDeck.Panel"
         )
     except Exception:
         pass

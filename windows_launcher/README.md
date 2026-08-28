@@ -1,10 +1,14 @@
-<p align="center"><img src="assets/logo.svg" alt="Multi-Terminal Panel" width="420"></p>
+<p align="center"><img src="assets/logo.svg" alt="AgentDeck" width="420"></p>
 
-# Windows Multi-Terminal Panel
+# AgentDeck
+
+*Windows multi-terminal panel — every terminal, every agent, one deck.*
 
 Every terminal in one window. Panes are real terminals — not textboxes wired to
 a pipe — so colour, line editing, arrow keys, `cls`, `vim` and `less` all work
-the way they do in Windows Terminal.
+the way they do in Windows Terminal. A launch animation plays first, then a
+setup wizard; each workspace you open afterwards asks which coding agent to run
+in its terminals.
 
 ![panes](https://img.shields.io/badge/panes-1--16-blue) ![conpty](https://img.shields.io/badge/backend-ConPTY-green)
 
