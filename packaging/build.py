@@ -66,6 +66,15 @@ def clean() -> None:
     for d in (REPO / "build", REPO / "dist"):
         if d.exists():
             shutil.rmtree(d)
+    # Start Releases/ empty. `vpk pack` refuses to re-pack a version that is
+    # already sitting there, and stale artifacts from an aborted run confuse it.
+    # NOTE: delta packages are built against whatever *older* releases are in
+    # this dir, so a real release pipeline should `vpk download github` here
+    # first to pull the published history. This local build ships full packages.
+    if RELEASES.exists():
+        for f in RELEASES.iterdir():
+            if f.is_file():
+                f.unlink()
 
 
 def run_pyinstaller() -> None:
