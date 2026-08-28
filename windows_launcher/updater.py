@@ -131,7 +131,7 @@ class _Worker(QThread):
             elif self._mode == "download":
                 self._mgr.download_updates(
                     self._info,
-                    progress=lambda pct: self.progressed.emit(int(pct)),
+                    progress_callback=lambda pct: self.progressed.emit(int(pct)),
                 )
                 self.downloaded.emit(self._info)
         except Exception as exc:  # noqa: BLE001
