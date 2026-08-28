@@ -48,6 +48,7 @@ from agents import (
     known_agents,
     resolve_agent,
 )
+from version import __version__
 from workspace import MAX_PANES, grid_dims
 
 __all__ = ["SetupWizard"]
@@ -616,8 +617,12 @@ class SetupWizard(QDialog):
         self._next_btn.setObjectName("primary")
         self._next_btn.clicked.connect(self._next)
 
+        version = QLabel(f"v{__version__}")
+        version.setObjectName("hint")
+
         footer.addWidget(self._back_btn)
         footer.addWidget(self._skip_btn)
+        footer.addWidget(version)
         footer.addStretch(1)
         footer.addWidget(self._next_btn)
         return footer
