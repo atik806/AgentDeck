@@ -1,7 +1,18 @@
 .venv/
+.venv-build/
 __pycache__/
 *.pyc
 *.pyo
 node_modules/
 *.egg-info/
 last-error.log
+
+# PyInstaller / Velopack build output
+/build/
+/dist/
+/packaging/Releases/
+/packaging/build/
+/packaging/dist/
+
+# Local editor / assistant state
+.claude/
