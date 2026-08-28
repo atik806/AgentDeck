@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Multi-Terminal Launcher
+Comment=Launch multiple terminal windows at once
+Exec=python3 /run/media/atik/New Volume/Workspace/multi-terminal/main.py
+Icon=/run/media/atik/New Volume/Workspace/multi-terminal/assets/icon.svg
+Terminal=false
+Categories=Utility;System;
+Keywords=terminal;launcher;multi-terminal;

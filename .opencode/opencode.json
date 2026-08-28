@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcpServers": {
+    "dhaka-wholesale": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/run/media/atik/New Volume/Workspace/v1/.opencode/mcp-server/index.js"],
+      "env": {}
+    }
+  }
+}

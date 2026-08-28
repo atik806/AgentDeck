@@ -1,0 +1,33 @@
+# =============================================================================
+# Voice Capture - Core Dependencies
+# Python Desktop Voice-to-Text Application
+# =============================================================================
+
+# --- GUI Framework ---
+# PySide6: official Qt for Python binding (LGPL/GPL).
+# Pre-built wheels for Linux (manylinux), macOS, Windows.
+# Requires Python >= 3.10, < 3.15.
+# Meta-package pulls PySide6_Essentials + PySide6_Addons + shiboken6.
+pyside6>=6.11,<6.12
+
+# --- Audio Capture ---
+# sounddevice: Python bindings for PortAudio.
+# Bundles PortAudio on macOS/Windows. On Linux, requires libportaudio2.
+sounddevice>=0.5.5,<0.6
+
+# --- Whisper.cpp Python Bindings ---
+# pywhispercpp: wraps whisper.cpp with Pythonic API.
+# Provides pre-built CPU wheels on PyPI for Linux/macOS/Windows.
+# Auto-downloads GGML models on first use.
+# For GPU (CUDA/CoreML/Vulkan): install from source with env flags.
+pywhispercpp>=1.5.0,<2.0
+
+# --- Voice Activity Detection (lightweight) ---
+# webrtcvad-wheels: forked from webrtcvad with binary wheels.
+# Google WebRTC VAD - fast C extension, no heavy deps.
+# Works at 8/16/32/48 kHz, 10/20/30ms frames.
+webrtcvad-wheels>=2.0.14,<3.0
+
+# --- Numerical Processing ---
+# NumPy for audio buffer handling.
+numpy>=1.26,<2.0

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Voice Capture">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2a3d"/>
+      <stop offset="1" stop-color="#181825"/>
+    </linearGradient>
+    <linearGradient id="mic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#89b4fa"/>
+      <stop offset="1" stop-color="#89dceb"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app tile -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#tile)"/>
+  <rect x="8.75" y="8.75" width="238.5" height="238.5" rx="51.25"
+        fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1.5"/>
+
+  <!-- capture level: waveform bars behind the mic -->
+  <g fill="#a6e3a1">
+    <rect x="46"  y="112" width="10" height="32" rx="5"/>
+    <rect x="66"  y="92"  width="10" height="72" rx="5"/>
+    <rect x="180" y="80"  width="10" height="96" rx="5"/>
+    <rect x="200" y="104" width="10" height="48" rx="5"/>
+  </g>
+
+  <!-- microphone capsule -->
+  <rect x="100" y="44" width="56" height="112" rx="28" fill="url(#mic)"/>
+  <g stroke="#11111b" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round">
+    <line x1="114" y1="72"  x2="142" y2="72"/>
+    <line x1="114" y1="90"  x2="142" y2="90"/>
+    <line x1="114" y1="108" x2="142" y2="108"/>
+  </g>
+
+  <!-- pickup cradle + stand + base -->
+  <path d="M84 122 a44 44 0 0 0 88 0" fill="none" stroke="#bac2de"
+        stroke-width="9" stroke-linecap="round"/>
+  <line x1="128" y1="166" x2="128" y2="196" stroke="#bac2de"
+        stroke-width="9" stroke-linecap="round"/>
+  <rect x="102" y="196" width="52" height="11" rx="5.5" fill="#bac2de"/>
+</svg>

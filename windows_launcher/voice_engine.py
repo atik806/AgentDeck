@@ -1,0 +1,224 @@
+"""Qt bridge over the ``voice_capture`` pipeline.
+
+The heavy lifting -- microphone capture, WebRTC VAD segmentation and
+whisper.cpp transcription -- already exists, Qt-free and tested, in the sibling
+``voice_capture`` project. This module is the thin adapter that lets the
+Multi-Terminal Panel drive it:
+
+* it puts ``E:\\Workspace\\V4\\voice_capture`` on ``sys.path`` and imports the
+  three worker modules (all optional -- a missing dependency just disables the
+  feature, it never stops the panel from starting);
+* it wraps the worker-thread callbacks in Qt signals, marshalled onto the GUI
+  thread by a QObject bridge (the same trick ``voice_capture/app.py`` uses);
+* it owns start / stop / toggle / shutdown, keeping the model loaded between
+  listening sessions.
+
+Signals (all delivered on the GUI thread):
+
+    state(str)          idle | loading | listening | error | unavailable
+    level(float)        per-block RMS while listening, ~[0, 1]
+    transcription(str)  a finished utterance
+    error(str)          a non-fatal problem, already surfaced as state=error
+"""
+
+from __future__ import annotations
+
+import sys
+import threading
+from pathlib import Path
+from typing import Any, Optional
+
+from PySide6.QtCore import QObject, Signal
+
+# --- optional dependency import ------------------------------------------------
+#
+# The capture pipeline lives in the sibling project. Import failures here are
+# expected on a machine that only installed the panel's core deps; the panel
+# checks ``VoiceEngine.available`` and shows a disabled mic button.
+
+_VC_ROOT = Path(__file__).resolve().parent.parent / "voice_capture"
+if _VC_ROOT.is_dir() and str(_VC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_VC_ROOT))
+
+try:  # pragma: no cover - import wiring
+    from voice_capture.audio.capture import AudioCapture, AudioDeviceManager
+    from voice_capture.vad.processor import VADProcessor
+    from voice_capture.transcription.engine import TranscriptionEngine
+
+    _IMPORT_OK = True
+    _IMPORT_ERR = ""
+except Exception as exc:  # noqa: BLE001 - any import problem = feature off
+    AudioCapture = AudioDeviceManager = VADProcessor = TranscriptionEngine = None  # type: ignore
+    _IMPORT_OK = False
+    _IMPORT_ERR = str(exc)
+
+
+class _Bridge(QObject):
+    """Re-emits worker-thread callbacks as queued (GUI-thread) signals."""
+
+    state = Signal(str)
+    level = Signal(float)
+    transcription = Signal(str)
+    error = Signal(str)
+
+
+class VoiceEngine(QObject):
+    """Owns the voice pipeline; exposes it as start/stop + Qt signals."""
+
+    state = Signal(str)
+    level = Signal(float)
+    transcription = Signal(str)
+    error = Signal(str)
+
+    #: WebRTC VAD wants one of these; the pipeline is built around 16 kHz.
+    SAMPLE_RATE = 16000
+    BLOCK = 480  # 30 ms
+
+    def __init__(self, config: Optional[dict] = None, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._config = config or {}
+
+        self._bridge = _Bridge()
+        self._bridge.state.connect(self._set_state)
+        self._bridge.level.connect(self.level)
+        self._bridge.transcription.connect(self.transcription)
+        self._bridge.error.connect(self.error)
+
+        self.available = bool(_IMPORT_OK)
+        self.import_error = _IMPORT_ERR
+
+        self._state = "idle" if self.available else "unavailable"
+        self._listening = False
+        self._busy = False
+
+        self._vad: Any = None
+        self._engine: Any = None       # TranscriptionEngine
+        self._capture: Any = None      # AudioCapture
+
+    # -- introspection -------------------------------------------------------
+
+    @property
+    def current_state(self) -> str:
+        return self._state
+
+    @property
+    def is_listening(self) -> bool:
+        return self._listening
+
+    # -- control -----------------------------------------------------------
+
+    def toggle(self) -> None:
+        if not self.available:
+            self._bridge.state.emit("unavailable")
+            return
+        if self._listening:
+            # Works mid-load too: the loader thread sees _listening go False
+            # and bails before opening the mic.
+            self.stop()
+        elif not self._busy:
+            self.start()
+
+    def start(self) -> None:
+        if not self.available or self._listening or self._busy:
+            if not self.available:
+                self._bridge.state.emit("unavailable")
+            return
+        self._listening = True
+        self._busy = True
+        threading.Thread(target=self._start_pipeline, name="voice-start", daemon=True).start()
+
+    def stop(self) -> None:
+        if not self._listening and not self._busy:
+            self._bridge.state.emit("idle")
+            return
+        self._listening = False
+        self._busy = True
+        threading.Thread(target=self._stop_pipeline, name="voice-stop", daemon=True).start()
+
+    def shutdown(self) -> None:
+        """Best-effort synchronous teardown for the window's closeEvent."""
+        self._listening = False
+        cap = self._capture
+        if cap is not None:
+            try:
+                cap.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # -- pipeline ---------------------------------------------------------------
+
+    def _ensure_built(self) -> None:
+        if self._capture is not None:
+            return
+        model = self._config.get("voice_model") or "tiny.en"
+        device = AudioDeviceManager.resolve_device(self._config.get("voice_mic_device"))
+        self._vad = VADProcessor(
+            backend="webrtc", aggressiveness=2, sample_rate=self.SAMPLE_RATE
+        )
+        self._engine = TranscriptionEngine(
+            model_size=model, language="en",
+            print_realtime=False, print_progress=False,
+        )
+        self._capture = AudioCapture(
+            device=device,
+            sample_rate=self.SAMPLE_RATE,
+            channels=1,
+            blocksize=self.BLOCK,
+            vad=self._vad,
+            transcriber=self._engine,
+            on_transcription=self._bridge.transcription.emit,
+            on_error=self._bridge.error.emit,
+            on_level=self._bridge.level.emit,
+        )
+
+    def _start_pipeline(self) -> None:
+        try:
+            self._ensure_built()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"voice setup failed: {exc}")
+            return
+
+        self._bridge.state.emit("loading")
+        try:
+            # First run downloads the model (~75 MB for tiny.en); subsequent
+            # runs just map it. Either way we don't open the mic until it's up.
+            self._engine.ensure_loaded()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"model load failed: {exc}")
+            return
+
+        if not self._listening:  # user hit stop during the load
+            self._busy = False
+            self._bridge.state.emit("idle")
+            return
+
+        try:
+            self._capture.start()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"microphone failed: {exc}")
+            return
+
+        self._busy = False
+        self._bridge.state.emit("listening")
+
+    def _stop_pipeline(self) -> None:
+        cap = self._capture
+        if cap is not None:
+            try:
+                cap.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self._busy = False
+        self._bridge.state.emit("idle")
+
+    def _fail(self, message: str) -> None:
+        self._listening = False
+        self._busy = False
+        self._bridge.error.emit(message)
+        self._bridge.state.emit("error")
+
+    # -- slots ------------------------------------------------------------
+
+    def _set_state(self, value: str) -> None:
+        self._state = value
+        self.state.emit(value)

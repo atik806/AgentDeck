@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+*.egg-info/
+last-error.log

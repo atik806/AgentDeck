@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Windows Multi-Terminal Panel -- entry point.
+
+Opens a single window with every terminal in it. There is no launcher dialog:
+the panel comes up with the configured number of live shells already running,
+so ``python main.py`` puts you straight at a prompt.
+
+Double-clicking ``run.bat`` runs this under ``pythonw.exe``, which means the
+process has no console at all. The two helpers below exist for that mode: with
+nowhere to print, an unhandled exception is otherwise a program that simply
+never appears, with no hint as to why.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import traceback
+from pathlib import Path
+
+#: Crash reports land here, beside config.json.
+_ERROR_LOG = "last-error.log"
+
+#: Flipped once the event loop is running, so a crash report can say whether the
+#: app failed to start or fell over later.
+_started = False
+
+
+def _ensure_streams() -> None:
+    """Give the process real streams when it was started without any.
+
+    ``pythonw.exe`` sets ``sys.stdout`` and ``sys.stderr`` to ``None``.
+    ``print()`` is a documented no-op in that case, so this app's own warnings
+    are safe, but anything writing to a stream *directly* -- a library, a
+    warning filter, ``faulthandler`` -- raises ``AttributeError`` instead. That
+    is a crash caused purely by how the app was launched; devnull costs nothing.
+    """
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        if getattr(sys, name, None) is None:
+            setattr(sys, name, open(os.devnull, mode))
+
+
+def _log_path() -> Path:
+    """Where to write a crash report.
+
+    Deliberately does not import ``config`` for the directory: this runs when
+    something has already failed, and ``config`` is one of the things that could
+    have. It resolves to the same folder ``config.get_config_path()`` uses.
+    """
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return Path(base) / "multi-terminal" / _ERROR_LOG
+
+
+def _report_fatal(exc_type, exc, tb) -> None:
+    """Make an unhandled exception visible when there is no console to see it."""
+    report = "".join(traceback.format_exception(exc_type, exc, tb))
+    # Prints normally from a terminal; silently goes to devnull under pythonw,
+    # which is what the rest of this function is for.
+    print(report, file=sys.stderr)
+
+    where = ""
+    try:
+        path = _log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report, encoding="utf-8")
+        where = f"\n\nFull report written to:\n{path}"
+    except OSError:
+        pass
+
+    # MessageBoxW rather than QMessageBox: Qt is one of the things that can be
+    # missing or broken at this point, and user32 never is.
+    try:
+        import ctypes
+
+        mb_iconerror, mb_setforeground, mb_topmost = 0x10, 0x10000, 0x40000
+        summary = "".join(traceback.format_exception_only(exc_type, exc)).strip()
+        title = (
+            "Multi-Terminal Panel stopped unexpectedly"
+            if _started
+            else "Multi-Terminal Panel could not start"
+        )
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            f"{summary}{where}\n\n{report}"[:2000],
+            title,
+            mb_iconerror | mb_setforeground | mb_topmost,
+        )
+    except Exception:
+        # A crash handler that crashes is worse than no crash handler.
+        pass
+
+
+_ensure_streams()
+sys.excepthook = _report_fatal
+
+# Imported after the crash handler is installed, deliberately: a missing or
+# half-installed PySide6 is exactly the failure the handler exists to explain,
+# and it cannot explain an ImportError raised before it is in place.
+from PySide6.QtGui import QFont, QIcon  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+
+from agents import pretrust_folder, resolve_agent  # noqa: E402
+from config import load_config, save_config  # noqa: E402
+from terminal_panel import TerminalPanel  # noqa: E402
+
+#: App mark, shipped beside this file (see assets/).
+_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
+
+
+def _load_icon() -> QIcon:
+    """The window / taskbar icon, or an empty QIcon if the file is missing."""
+    return QIcon(str(_ICON)) if _ICON.exists() else QIcon()
+
+
+def _set_app_user_model_id() -> None:
+    """Give Windows an explicit AppUserModelID.
+
+    Without one, a ``pythonw.exe`` process is grouped on the taskbar under the
+    interpreter and shows its generic icon rather than the window's. Harmless
+    everywhere else.
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "multi-terminal.panel"
+        )
+    except Exception:
+        pass
+
+
+def _persist_choices(config: dict, choices: dict) -> None:
+    """Fold the wizard's picks back into config.json as the new defaults."""
+    folder = choices.get("folder", "") or ""
+    recent = [folder] + [
+        f for f in config.get("recent_folders", [])
+        if isinstance(f, str) and f != folder
+    ]
+    config.update(
+        {
+            "working_folder": folder,
+            "recent_folders": recent[:8],
+            "default_count": int(choices.get("count", config.get("default_count", 4))),
+            "agent": choices.get("agent_key", "none"),
+            "agent_command": choices.get("agent_custom", ""),
+        }
+    )
+    try:
+        save_config(config)
+    except OSError:
+        pass  # a read-only config dir must not stop the app from opening
+
+
+def main() -> int:
+    global _started
+
+    config = load_config()
+
+    _set_app_user_model_id()
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Multi-Terminal Panel")
+    # Deliberately no setApplicationDisplayName: Qt appends " - <display name>"
+    # to every window title, which doubled up the branding
+    # ("Multi-Terminal Panel — <folder> - Multi-Terminal Panel").
+    app.setOrganizationName("multi-terminal")
+    app.setWindowIcon(_load_icon())
+    # A hint so any stray default-font widget matches the terminal, not the OS UI.
+    app.setFont(QFont("Cascadia Mono, Consolas", 10))
+
+    # The setup wizard is the front door. --no-wizard (or config.skip_wizard)
+    # opens straight from saved settings, for run.bat / scripted use.
+    startup = None
+    if "--no-wizard" not in sys.argv and not config.get("skip_wizard", False):
+        from setup_wizard import SetupWizard
+
+        wizard = SetupWizard(config)
+        wizard.setWindowIcon(_load_icon())
+        if wizard.exec() != QDialog.Accepted:
+            return 0
+        startup = wizard.choices()
+        _persist_choices(config, startup)
+
+    # If a Claude Code agent is about to auto-launch in the working folder,
+    # pre-accept its "trust this folder?" prompt so it opens straight in.
+    if config.get("pretrust_agent_folder", True):
+        if startup is not None:
+            _cmd, _folder = startup.get("agent_command", ""), startup.get("folder", "")
+        else:
+            _cmd = resolve_agent(config.get("agent", "none"),
+                                 config.get("agent_command", ""))
+            _folder = config.get("working_folder", "")
+        pretrust_folder(_cmd, _folder)
+
+    panel = TerminalPanel(config, startup=startup)
+    panel.setWindowIcon(_load_icon())
+    panel.show()
+
+    _started = True
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
