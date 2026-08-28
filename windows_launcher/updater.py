@@ -214,7 +214,7 @@ class UpdateController(QObject):
         self._set_busy(True)
         self._worker = _Worker(self._mgr, "check", parent=self)
         self._worker.checked.connect(self._on_checked)
-        self._worker.failed.connect(self._on_failed)
+        self._worker.failed.connect(self._on_check_failed)
         self._worker.start()
 
     def _on_checked(self, info) -> None:
@@ -251,6 +251,13 @@ class UpdateController(QObject):
             self._mgr.apply_updates_and_restart(self._pending)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
+
+    def _on_check_failed(self, message: str) -> None:
+        # A background launch check that can't reach GitHub (offline, no releases
+        # yet, rate-limited) must not nag. A user-clicked check always reports.
+        self._set_busy(False)
+        if not self._silent:
+            self.error.emit(message)
 
     def _on_failed(self, message: str) -> None:
         self._set_busy(False)
