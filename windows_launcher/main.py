@@ -99,6 +99,7 @@ sys.excepthook = _report_fatal
 from PySide6.QtGui import QFont, QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
+from agentdeck_splash import show_splash  # noqa: E402
 from agents import pretrust_folder, resolve_agent  # noqa: E402
 from config import load_config, save_config  # noqa: E402
 from terminal_panel import TerminalPanel  # noqa: E402
@@ -159,14 +160,21 @@ def main() -> int:
     _set_app_user_model_id()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Multi-Terminal Panel")
+    app.setApplicationName("AgentDeck")
     # Deliberately no setApplicationDisplayName: Qt appends " - <display name>"
     # to every window title, which doubled up the branding
-    # ("Multi-Terminal Panel — <folder> - Multi-Terminal Panel").
+    # ("AgentDeck — <folder> - AgentDeck").
     app.setOrganizationName("multi-terminal")
     app.setWindowIcon(_load_icon())
     # A hint so any stray default-font widget matches the terminal, not the OS UI.
     app.setFont(QFont("Cascadia Mono, Consolas", 10))
+
+    # The launch animation. Plays before the wizard; --no-splash / show_splash
+    # config turn it off, and it can never block startup for more than a moment.
+    show_splash(
+        _load_icon(),
+        enabled="--no-splash" not in sys.argv and config.get("show_splash", True),
+    )
 
     # The setup wizard is the front door. --no-wizard (or config.skip_wizard)
     # opens straight from saved settings, for run.bat / scripted use.

@@ -70,6 +70,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "agent_command": "",
     # Skip the wizard and open straight from saved config (also: --no-wizard).
     "skip_wizard": False,
+    # Play the AgentDeck launch animation before the wizard (also: --no-splash).
+    "show_splash": True,
     # Pre-accept Claude Code's "trust this folder?" prompt for the working
     # folder, so an auto-launched `claude` opens straight into the session.
     "pretrust_agent_folder": True,
@@ -115,6 +117,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "agent": str,
     "agent_command": str,
     "skip_wizard": bool,
+    "show_splash": bool,
     "pretrust_agent_folder": bool,
     "theme": str,
     "window_width": int,
