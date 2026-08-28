@@ -14,5 +14,8 @@ last-error.log
 /packaging/build/
 /packaging/dist/
 
+# setuptools build dir (voice_capture wheel build)
+voice_capture/build/
+
 # Local editor / assistant state
 .claude/
