@@ -98,6 +98,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "voice_model": "tiny.en",
     # Microphone: null = system default, int = device id, str = name substring.
     "voice_mic_device": None,
+
+    # --- Updates (see updater.py; only active in a Velopack-installed build) ---
+    # Check GitHub for a newer AgentDeck shortly after launch.
+    "auto_check_updates": True,
+    # Release track: "stable" follows tagged releases, "beta" also takes
+    # pre-releases.
+    "update_channel": "stable",
+    # Opt in to pre-release builds regardless of channel.
+    "update_prerelease": False,
+    # Epoch seconds of the last successful check (0 = never). Bookkeeping only.
+    "last_update_check": 0,
 }
 
 CONFIG_SCHEMA: Dict[str, type] = {
@@ -130,6 +141,10 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_overlay_y": int,
     "voice_model": str,
     "voice_mic_device": (int, str, type(None)),
+    "auto_check_updates": bool,
+    "update_channel": str,
+    "update_prerelease": bool,
+    "last_update_check": int,
 }
 
 # Values outside these ranges are clamped rather than rejected: a config with
@@ -145,6 +160,7 @@ CONFIG_RANGES: Dict[str, tuple] = {
 CONFIG_CHOICES: Dict[str, tuple] = {
     "layout": ("grid", "columns", "rows"),
     "default_shell": ("auto", "pwsh", "powershell", "cmd", "bash"),
+    "update_channel": ("stable", "beta"),
 }
 
 def ensure_dirs() -> None:
