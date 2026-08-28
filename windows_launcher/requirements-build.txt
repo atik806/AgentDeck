@@ -1,0 +1,18 @@
+# Build-only dependencies for producing the packaged Windows app.
+# Install into a DEDICATED python.org venv (not the run .venv, not MS Store
+# Python):
+#
+#     py -3.11 -m venv .venv-build
+#     .venv-build\Scripts\pip install -r requirements.txt
+#     .venv-build\Scripts\pip install ../voice_capture
+#     .venv-build\Scripts\pip install -r requirements-build.txt
+#
+# Also required on the build machine (not pip): .NET SDK 8 + the Velopack CLI
+#     dotnet tool install -g vpk
+
+# Freezes main.py + deps into dist/AgentDeck/ (onedir).
+pyinstaller>=6.10,<7.0
+
+# In-app update client. Pairs with the `vpk` CLI that builds the installer and
+# publishes releases. Pin exact once a known-good version is confirmed.
+velopack>=0.0.1,<1.0
