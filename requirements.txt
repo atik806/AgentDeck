@@ -1,3 +1,0 @@
-PyGObject
-pygobject-stubs
-# System dependency: libadwaita (libadwaita / libadwaita-1-dev / libadwaita-devel)

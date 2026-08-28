@@ -10,12 +10,15 @@ first; it says which parts are live and which are noise.
 | Path | Status | What it is |
 |---|---|---|
 | `windows_launcher/` | **ACTIVE** | Windows multi-terminal panel — every shell in one window as a real ConPTY pane. This is what "the project" means. |
-| `ui/`, `launcher.py`, `cli.py`, `main.py`, `gridmath.py`, `config.py`, `models.py`, `platforms/` | dormant | Older cross-platform launcher that *tiles external terminal windows* with GTK/Tk + Win32. Not being changed. |
-| `ARCHITECTURE.md` (repo root) | **stale / misleading** | Describes a voice-to-text app that does not exist here. Ignore it. |
 | `voice_capture/` | **library for the panel** | Standalone PySide6 voice-to-text app with its own `.venv`, but its Qt-free `voice_capture/{audio,vad,transcription}` modules are now imported by `windows_launcher/voice_engine.py` for the panel's voice overlay. Changing those three modules affects both. |
-| `Volume/`, `supabase/`, `assets/`, `.opencode/` | unrelated / scaffolding | Ignore. |
+| `assets/` | branding source | `icon.svg` / `logo.svg` + `build_icons.py` rasteriser for the panel and voice_capture marks. |
+| `.opencode/`, `.claude/` | tooling scaffolding | Ignore. |
 
-`E:\Workspace\V4` is **not a git repo**. No history to lean on.
+The older cross-platform GTK/Tk launcher (`ui/`, `platforms/`, root `launcher.py`,
+`cli.py`, `main.py`, `gridmath.py`, `config.py`, `models.py`, `multi-terminal.desktop`)
+and the stale `ARCHITECTURE.md` were removed in the 2026-08-29 cleanup — see git history.
+
+`E:\Workspace\V4` is a git repo as of 2026-08-29 (the cleanup snapshot is the first commit).
 
 Environment: Windows 11, PySide6. Shell for tools here is Git Bash (POSIX) but the
 app is Windows-only (ConPTY via `pywinpty`).
