@@ -93,9 +93,18 @@ def _report_fatal(exc_type, exc, tb) -> None:
 _ensure_streams()
 sys.excepthook = _report_fatal
 
+# Velopack's startup hook -- run before any heavy init. Right after an update it
+# finalises the install and may relaunch the process, so it must come first. A
+# no-op unless this is a Velopack-installed build. (Pulls in PySide6.QtCore via
+# updater, which is fine now the crash handler above is in place.)
+from updater import run_velopack_bootstrap  # noqa: E402
+
+run_velopack_bootstrap()
+
 # Imported after the crash handler is installed, deliberately: a missing or
 # half-installed PySide6 is exactly the failure the handler exists to explain,
 # and it cannot explain an ImportError raised before it is in place.
+from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtGui import QFont, QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
@@ -205,6 +214,11 @@ def main() -> int:
     panel = TerminalPanel(config, startup=startup)
     panel.setWindowIcon(_load_icon())
     panel.show()
+
+    # Quiet check for a newer release shortly after the window is up. Only fires
+    # for a Velopack-installed build; a hit shows the "update available" dialog.
+    if config.get("auto_check_updates", True) and panel.updater.enabled:
+        QTimer.singleShot(1500, lambda: panel.updater.check(silent=True))
 
     _started = True
     return app.exec()
