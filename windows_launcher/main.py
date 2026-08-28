@@ -103,6 +103,7 @@ from agentdeck_splash import show_splash  # noqa: E402
 from agents import pretrust_folder, resolve_agent  # noqa: E402
 from config import load_config, save_config  # noqa: E402
 from terminal_panel import TerminalPanel  # noqa: E402
+from version import __version__  # noqa: E402
 
 #: App mark, shipped beside this file (see assets/).
 _ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
@@ -161,6 +162,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("AgentDeck")
+    app.setApplicationVersion(__version__)
     # Deliberately no setApplicationDisplayName: Qt appends " - <display name>"
     # to every window title, which doubled up the branding
     # ("AgentDeck — <folder> - AgentDeck").
