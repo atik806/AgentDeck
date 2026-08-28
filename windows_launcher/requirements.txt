@@ -8,9 +8,6 @@ pywinpty>=2.0.13
 # VT100/xterm escape-sequence parser driving the screen state.
 pyte>=0.8.1
 
-# Win32 calls used by the separate window-tiling launcher (launcher.py).
-pywin32>=306
-
 # --- Voice input (the floating voice-to-text overlay) ---------------------
 # All optional: if these are missing the panel still starts, the mic button is
 # just disabled. Same pins as voice_capture/requirements.txt -- the overlay
@@ -19,3 +16,8 @@ sounddevice>=0.5.5,<0.6
 webrtcvad-wheels>=2.0.14,<3.0
 pywhispercpp>=1.5.0,<2.0
 numpy>=1.26,<2.0
+
+# The voice modules live in the sibling `voice_capture` project. Running from
+# source, voice_engine.py adds it to sys.path automatically. For a frozen build
+# install it as a real package so PyInstaller can collect it:
+#     pip install ../voice_capture
