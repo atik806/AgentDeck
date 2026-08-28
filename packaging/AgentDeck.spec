@@ -14,7 +14,6 @@ import os
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
-    collect_dynamic_libs,
     collect_submodules,
 )
 
@@ -33,7 +32,8 @@ for pkg in ("winpty", "sounddevice", "pywhispercpp"):
     hiddenimports += h
 
 datas += collect_data_files("_sounddevice_data")   # portaudio DLL
-binaries += collect_dynamic_libs("webrtcvad")
+# webrtcvad is handled by packaging/hooks/hook-webrtcvad.py (the contrib hook
+# breaks on the -wheels distribution name).
 
 hiddenimports += [
     "_cffi_backend", "_sounddevice",
