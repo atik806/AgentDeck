@@ -76,12 +76,15 @@ Velopack `vpk pack`), then `vpk upload github --tag v<version>` — or just push
 2. **Layout** — pick the **working folder** every terminal starts in, and choose
    **how many terminals** (1 / 2 / 4 / 6 / 8 / 10 / 12). Each tile previews the
    grid it produces — the same `grid_dims()` the real layout uses.
-3. **Agents** — pick the coding agent that **auto-runs in every terminal**:
-   whatever's installed (`claude`, `codex`, `opencode`, `gemini`, `aider`,
-   `cursor-agent`), plus **Plain shell** and **Custom command…**. Agents that
-   aren't on your PATH show up in an **install guide** below the choices — the
-   install command (with a Copy button) and an *Open guide* link for each; run
-   it in any terminal, then reopen the wizard.
+3. **Agents** — pick the coding agent that **auto-runs in every terminal**.
+   Every agent AgentDeck knows about is a choice — **Claude Code**, **Codex**,
+   **GitHub Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **opencode**,
+   **Amp**, **Antigravity CLI**, **Qwen Code**, **Crush**, **Aider**, **Goose** —
+   plus **Plain shell** and **Custom command…**. Each shows an *installed* /
+   *not installed* pill. Pick one that isn't installed and the card unfolds the
+   install command (with **Copy**), an **Open guide ↗** link, and a **Re-check**
+   button — install it in another terminal, hit Re-check, and Launch lights up
+   without reopening the wizard.
 
 `Launch` opens the panel; your choices are saved and pre-fill the wizard next
 time. **Skip — use last setup** (step 1) jumps straight in. `python main.py

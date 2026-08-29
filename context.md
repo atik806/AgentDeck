@@ -131,12 +131,15 @@ console — hence the crash-to-MessageBox handler in `main.py`).
 6. **Setup wizard** (2026-08-28) — `main.py` opens a 3-step `QDialog`
    (`setup_wizard.py`, amber accent) before the panel: **Start** (welcome +
    recent folders) / **Layout** (working folder + terminal-count tiles) /
-   **Agents** (auto-run a coding agent in every terminal). `agents.py` discovers
-   installed agents (claude/codex/opencode/gemini/aider/cursor-agent) the way
-   `pty_backend` discovers shells; also "Plain shell" + "Custom command".
-   Agents **not** on PATH get an install-guide section in the wizard
-   (`agents.install_hint()` → command + docs URL; `_InstallRow` widget with
-   Copy + Open-guide buttons). Choices
+   **Agents** (auto-run a coding agent in every terminal). `agents.py` knows
+   **12** agents (claude, codex, copilot, gemini, cursor-agent, opencode, amp,
+   antigravity=`agy`, qwen, crush, aider, goose) + "Plain shell" + "Custom".
+   **Every one is a selectable card** (`all_agents()` → `(k,label,cmd,installed)`);
+   a not-installed card unfolds `agents_ui.InstallHint` (command + Copy + Open
+   guide + **Re-check**) and blocks Launch until found. Re-check runs
+   `agents.refresh_path()` (re-reads user+machine PATH from the registry) so an
+   agent installed in another terminal is picked up without a restart. Same
+   picker logic in `new_workspace_dialog` (combo + hint panel). Choices
    persist to config and pre-fill next launch; `--no-wizard` / `skip_wizard`
    bypasses. `TerminalPanel(config, startup=…)` threads the folder (`cwd`) +
    agent (`startup_command`) down through `Workspace`/`TerminalPane` to
