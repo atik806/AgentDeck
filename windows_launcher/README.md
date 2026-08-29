@@ -68,6 +68,18 @@ See [`packaging/README.md`](../packaging/README.md). In short: bump
 Velopack `vpk pack`), then `vpk upload github --tag v<version>` — or just push a
 `v*` tag and let `.github/workflows/release.yml` do it.
 
+## Accounts (optional)
+
+Before the wizard, a **sign-in window** offers **Continue with Google** (via
+Supabase) or **Continue without an account**. Signing in is entirely optional —
+nothing account-related ever blocks a terminal — and adds a toolbar profile chip
+plus cloud sync of a small config slice (working folder, recent folders, agent,
+terminal count, layout, font, shell, theme) across machines. The session is
+stored DPAPI-encrypted at `%APPDATA%\multi-terminal\session.bin`; **Sign out**
+in the ⚙ account dialog forgets it. `--no-login` (or `"skip_login": true`)
+skips the window. Full setup — enabling the Google provider, the redirect
+allowlist and the database migration — is in [`docs/ACCOUNTS.md`](../docs/ACCOUNTS.md).
+
 ## Setup wizard
 
 `main.py` opens a three-step wizard first:
