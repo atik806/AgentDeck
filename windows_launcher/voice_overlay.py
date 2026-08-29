@@ -333,7 +333,9 @@ class VoiceOverlay(QWidget):
         row.setSpacing(9)
 
         self._mic = _MicButton(self)
-        self._mic.clicked.connect(self.toggle_requested)
+        # Wrap rather than chaining clicked(bool) straight into the 0-arg signal:
+        # a signal-to-signal connection across an arg-count change is fragile.
+        self._mic.clicked.connect(lambda: self.toggle_requested.emit())
         row.addWidget(self._mic)
 
         self._eq = _Equalizer(self)
