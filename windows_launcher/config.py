@@ -220,7 +220,7 @@ def load_config() -> Dict[str, Any]:
     if _migrate(data):
         try:
             save_config(data)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(f"[WARN] Could not write migrated config ({exc}).")
 
     merged = {**DEFAULT_CONFIG, **data}
