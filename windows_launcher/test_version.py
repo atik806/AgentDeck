@@ -33,7 +33,10 @@ check(
 print("[2] packaging metadata present")
 check("APP_ID is 'AgentDeck'", version.APP_ID == "AgentDeck")
 check("feed URL is https + github", version.UPDATE_FEED_URL.startswith("https://github.com/"))
-check("feed URL points at releases", "releases" in version.UPDATE_FEED_URL)
+check(
+    "feed URL is the plain repo URL (owner/repo, no extra path)",
+    version.UPDATE_FEED_URL.count("/") == 4,
+)
 
 print("[3] module is import-cheap (no third-party imports)")
 # version.py must be parseable/usable without PySide6 etc. It already imported

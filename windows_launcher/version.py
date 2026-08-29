@@ -22,8 +22,9 @@ __version__ = "0.1.1"
 #: a new id orphans every installed copy from the update feed.
 APP_ID = "AgentDeck"
 
-#: Where published releases live. Velopack's ``UpdateManager`` is handed this URL
-#: and fetches ``<url>/releases.win.json`` + the ``.nupkg`` packages from it.
-#: GitHub's "latest release assets" endpoint is unauthenticated, so the repo/
-#: release must be public.
-UPDATE_FEED_URL = "https://github.com/atik806/AgentDeck/releases/latest/download"
+#: Where published releases live. For GitHub, this is the **plain repository
+#: URL** -- Velopack's UpdateManager detects the github.com host and uses the
+#: API to find the latest release and its .nupkg assets. (A
+#: ``/releases/latest/download`` URL is treated as a generic web source and
+#: 404s.) The repo/releases must be public: the API call is unauthenticated.
+UPDATE_FEED_URL = "https://github.com/atik806/AgentDeck"
