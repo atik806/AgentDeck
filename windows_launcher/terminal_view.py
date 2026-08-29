@@ -1045,6 +1045,10 @@ class TerminalView(QWidget):
         if not self._screen.alternate_screen:
             self._alt_watchdog.stop()
             return
+        # Still painting = still alive. Skip the expensive Toolhelp walk until the
+        # alternate screen has been quiet for a beat.
+        if time.monotonic() - self._last_output_at < _ALT_QUIET_S:
+            return
         if self.session.is_alive() and self.session.has_child_process():
             return
 
