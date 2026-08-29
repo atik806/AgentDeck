@@ -254,7 +254,10 @@ def save_config(config: Dict[str, Any]) -> None:
     """Save configuration to disk."""
     ensure_dirs()
     merged = {**DEFAULT_CONFIG, **config}
-    with open(CONFIG_FILE, "w") as f:
+    # utf-8 explicitly: json.dump(ensure_ascii=False) can emit non-ASCII (a
+    # folder path or workspace name with accented / CJK characters), which the
+    # platform default codepage cannot always encode.
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
