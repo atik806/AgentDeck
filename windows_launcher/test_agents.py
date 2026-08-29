@@ -91,6 +91,22 @@ check("install_hint(plain) is None", install_hint(PLAIN_KEY) is None)
 
 
 # ---------------------------------------------------------------------------
+print("[3c] all_agents / refresh_path")
+allrows = agents.all_agents()
+check("all_agents has one row per known agent", len(allrows) == len(known))
+check("all_agents rows are (key, label, command, installed)",
+      all(len(r) == 4 and isinstance(r[3], bool) for r in allrows))
+check("all_agents installed flag agrees with available_agents",
+      {k for k, _l, _c, ok in allrows if ok}
+      == {k for k, _l, _c in available_agents()})
+check("the expanded list includes the new agents",
+      {"copilot", "antigravity", "amp", "qwen", "crush", "goose"}
+      <= {k for k, _l, _c in known})
+agents.refresh_path()   # must never raise
+check("refresh_path() returned cleanly", True)
+
+
+# ---------------------------------------------------------------------------
 print("[4] stubbed PATH: nothing installed")
 _real_which = shutil.which
 try:

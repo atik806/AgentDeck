@@ -11,9 +11,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 import new_workspace_dialog as nwd
-from agents import CUSTOM_KEY, PLAIN_KEY
+from agents import CUSTOM_KEY, PLAIN_KEY, known_agents
 from new_workspace_dialog import NewWorkspaceDialog
 from workspace import MAX_PANES
+
+_ALL = known_agents()
+
+
+def _fake_all(installed):
+    """A stand-in for agents.all_agents() with `installed` marked present."""
+    inst = set(installed)
+    return lambda: [(k, lbl, cmd, k in inst) for k, lbl, cmd in _ALL]
 
 app = QApplication(sys.argv)
 
@@ -31,35 +39,58 @@ def check(name, cond):
         print(f"  FAIL {name}")
 
 
+_real_all = nwd.all_agents
+
+
 # ---------------------------------------------------------------------------
-print("[1] agent list: installed + Plain + Custom, Custom last")
-_real_avail = nwd.available_agents
+print("[1] agent list: every known agent + Plain + Custom, Custom last")
 try:
-    nwd.available_agents = lambda: [("claude", "Claude Code", "claude")]
+    nwd.all_agents = _fake_all(["claude"])
     d = NewWorkspaceDialog()
     keys = [d._combo.itemData(i) for i in range(d._combo.count())]
-    check("claude offered", "claude" in keys)
+    check("every known agent offered", all(k in keys for k, _l, _c in _ALL))
     check("plain shell present", PLAIN_KEY in keys)
     check("custom present and last", keys[-1] == CUSTOM_KEY)
     check("no duplicate keys", len(keys) == len(set(keys)))
+    labels = [d._combo.itemText(i) for i in range(d._combo.count())]
+    check("not-installed agents are marked",
+          any("not installed" in t for t in labels))
 finally:
-    nwd.available_agents = _real_avail
+    nwd.all_agents = _real_all
 
 
 # ---------------------------------------------------------------------------
 print("[2] defaults are honoured")
-_real_avail = nwd.available_agents
 try:
-    nwd.available_agents = lambda: [("claude", "Claude Code", "claude")]
+    nwd.all_agents = _fake_all(["claude"])
     d = NewWorkspaceDialog(default_agent="claude", default_count=6)
     check("default agent selected", d._agent_key() == "claude")
     check("default count selected", d._count.value() == 6)
 
-    d2 = NewWorkspaceDialog(default_agent="not-installed", default_count=99)
+    d2 = NewWorkspaceDialog(default_agent="not-a-key", default_count=99)
     check("unknown agent falls back to plain shell", d2._agent_key() == PLAIN_KEY)
     check("count clamped to the pane limit", d2._count.value() == MAX_PANES)
 finally:
-    nwd.available_agents = _real_avail
+    nwd.all_agents = _real_all
+
+
+# ---------------------------------------------------------------------------
+print("[1b] a not-installed agent shows install steps and blocks Create")
+try:
+    nwd.all_agents = _fake_all(["claude"])
+    d = NewWorkspaceDialog(default_agent="claude")
+    missing = next(k for k, _l, _c in _ALL if k != "claude")
+    d._combo.setCurrentIndex(d._combo.findData(missing))
+    check("Create disabled for a not-installed agent", not d._create.isEnabled())
+    check("InstallHint panel appears", d._hint is not None and d._hint.isVisibleTo(d))
+    check("note explains it", "isn't installed" in d._note.text())
+    d._on_rechecked(True)
+    check("a successful Re-check re-enables Create", d._create.isEnabled())
+    d._combo.setCurrentIndex(d._combo.findData("claude"))
+    check("switching to an installed agent hides the hint",
+          not d._hint.isVisibleTo(d))
+finally:
+    nwd.all_agents = _real_all
 
 
 # ---------------------------------------------------------------------------

@@ -100,12 +100,19 @@ for c in (1, 2, 6, 8, 12):
 
 
 # ---------------------------------------------------------------------------
-print("[5] agent cards: detected + Plain + Custom")
+print("[5] agent cards: every known agent + Plain + Custom")
+import setup_wizard as _sw
+from agents import known_agents
+
 w = fresh()
 keys = [c.key for c in w._agent_cards]
+check("a card for every known agent",
+      all(k in keys for k, _l, _c in known_agents()))
 check("Plain shell present", PLAIN_KEY in keys)
 check("Custom present and last", keys[-1] == CUSTOM_KEY)
 check("no duplicate keys", len(keys) == len(set(keys)))
+check("card count = agents + plain + custom",
+      len(keys) == len(known_agents()) + 2)
 
 w._goto(2)
 w._folder_edit.setText(HERE)          # keep folder valid
@@ -126,52 +133,41 @@ check("note shows the command", "claude --resume" in w._agent_note.text())
 
 
 # ---------------------------------------------------------------------------
-print("[5b] install guide when an agent isn't installed")
-import setup_wizard as _sw
-from agents import known_agents
-
-_real_avail = _sw.available_agents
+print("[5b] a not-installed agent: install steps inline, Launch blocked")
+_real_all = _sw.all_agents
 try:
-    _sw.available_agents = lambda: []          # pretend nothing is installed
+    # pretend nothing is installed
+    _sw.all_agents = lambda: [(k, lbl, cmd, False) for k, lbl, cmd in known_agents()]
     w = SetupWizard({"working_folder": HERE, "default_count": 3})
-    keys = [c.key for c in w._agent_cards]
-    check("with nothing installed, only Plain shell + Custom are selectable",
-          keys == [PLAIN_KEY, CUSTOM_KEY])
-
-    rows = [w._agent_box.itemAt(i).widget() for i in range(w._agent_box.count())]
-    irows = [r for r in rows if isinstance(r, _sw._InstallRow)]
-    check("one install row per known agent",
-          len(irows) == len(known_agents()))
-    heads = [r for r in rows if r is not None and r.objectName() == "installHead"]
-    check("an explanatory heading is shown",
-          heads and "don't have" in heads[0].text().lower())
-
-    r0 = irows[0]
-    check("install row carries a command", bool(r0._cmd.text()))
-    check("install row has a docs url", r0._docs.startswith("http"))
-    r0._copy()
-    check("Copy puts the command on the clipboard",
-          QApplication.clipboard().text() == r0._cmd.text())
-
-    # can still launch -- it just falls back to a plain shell
     w._goto(2)
     w._folder_edit.setText(HERE)
-    w._select_agent(PLAIN_KEY)
-    check("Launch is still available (plain shell)", w._next_btn.isEnabled())
 
-    # a partly-installed machine -> "Other agents" heading instead
-    _sw.available_agents = lambda: [("claude", "Claude Code", "claude")]
-    w2 = SetupWizard({"working_folder": HERE})
-    rows2 = [w2._agent_box.itemAt(i).widget() for i in range(w2._agent_box.count())]
-    heads2 = [r for r in rows2 if r is not None and r.objectName() == "installHead"]
-    irows2 = [r for r in rows2 if isinstance(r, _sw._InstallRow)]
-    check("claude selectable, the rest are install rows",
-          "claude" in [c.key for c in w2._agent_cards]
-          and len(irows2) == len(known_agents()) - 1)
-    check("heading switches to 'other agents'",
-          heads2 and "other agents" in heads2[0].text().lower())
+    first = known_agents()[0][0]
+    w._select_agent(first)
+    check("not-installed agent -> Launch disabled", not w._next_btn.isEnabled())
+    check("note explains it's not installed",
+          "isn't installed" in w._agent_note.text())
+
+    card = next(c for c in w._agent_cards if c.key == first)
+    check("the card carries a pill", card._pill.text() == "not installed")
+    check("selecting it built the InstallHint", card._hint is not None)
+    check("the hint has a command", bool(card._hint._cmd.text()))
+    check("the hint has a docs url", card._hint._docs.startswith("http"))
+    card._hint._do_copy()
+    check("Copy puts the install command on the clipboard",
+          QApplication.clipboard().text() == card._hint._cmd.text())
+
+    # Plain shell is always launchable
+    w._select_agent(PLAIN_KEY)
+    check("plain shell still launchable", w._next_btn.isEnabled())
+
+    # Re-check that succeeds re-enables Launch
+    w._select_agent(first)
+    card = next(c for c in w._agent_cards if c.key == first)
+    card._on_rechecked(True)
+    check("a successful Re-check re-enables Launch", w._next_btn.isEnabled())
 finally:
-    _sw.available_agents = _real_avail
+    _sw.all_agents = _real_all
 
 
 # ---------------------------------------------------------------------------
