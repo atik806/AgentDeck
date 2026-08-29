@@ -227,10 +227,12 @@ def load_config() -> Dict[str, Any]:
 
     for key, expected_type in CONFIG_SCHEMA.items():
         value = merged.get(key)
-        # bool is a subclass of int, so isinstance would let `true` through for
-        # a numeric key. Reject that explicitly.
+        allowed = expected_type if isinstance(expected_type, tuple) else (expected_type,)
         wrong_type = not isinstance(value, expected_type)
-        if expected_type is int and isinstance(value, bool):
+        # bool is a subclass of int, so isinstance would let `true` through for
+        # any key that accepts int (font_size, voice_mic_device, ...). Reject a
+        # bool unless the key is genuinely bool-typed.
+        if isinstance(value, bool) and bool not in allowed:
             wrong_type = True
         if wrong_type:
             print(f"[WARN] Config key '{key}' has wrong type. Using default.")
