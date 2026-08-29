@@ -23,10 +23,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
@@ -43,11 +42,11 @@ from PySide6.QtWidgets import (
 from agents import (
     CUSTOM_KEY,
     PLAIN_KEY,
-    available_agents,
-    install_hint,
-    known_agents,
+    agent_label,
+    all_agents,
     resolve_agent,
 )
+from agents_ui import InstallHint
 from version import __version__
 from workspace import MAX_PANES, grid_dims
 
@@ -205,29 +204,34 @@ class _CountTile(QFrame):
 # ---------------------------------------------------------------------------
 
 class _AgentCard(QFrame):
-    """A radio-style row: agent name + what it runs. 'Custom' carries a field."""
+    """Name + what it runs + an installed / not-installed pill. A not-installed
+    agent unfolds an inline InstallHint when selected; 'Custom' carries a
+    command field instead.
+    """
 
     clicked = Signal(str)
     edited = Signal()
+    rechecked = Signal(str, bool)   # (key, installed) after a Re-check
 
     def __init__(self, key: str, title: str, subtitle: str,
-                 parent: Optional[QWidget] = None):
+                 installed: bool = True, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.key = key
+        self.installed = installed
         self._selected = False
         self.setObjectName("agentCard")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
 
-        row = QVBoxLayout(self)
-        row.setContentsMargins(14, 10, 14, 10)
-        row.setSpacing(6)
+        self._row = QVBoxLayout(self)
+        self._row.setContentsMargins(14, 10, 14, 10)
+        self._row.setSpacing(6)
 
         top = QHBoxLayout()
         top.setSpacing(10)
         self._dot = QLabel("\u25cb")
         self._dot.setObjectName("agentDot")
-        top.addWidget(self._dot)
+        top.addWidget(self._dot, 0, Qt.AlignTop)
         text = QVBoxLayout()
         text.setSpacing(1)
         t = QLabel(title)
@@ -237,7 +241,10 @@ class _AgentCard(QFrame):
         text.addWidget(t)
         text.addWidget(s)
         top.addLayout(text, 1)
-        row.addLayout(top)
+        self._pill = QLabel("")
+        self._pill.setObjectName("agentPill")
+        top.addWidget(self._pill, 0, Qt.AlignTop)
+        self._row.addLayout(top)
 
         self.field: Optional[QLineEdit] = None
         if key == CUSTOM_KEY:
@@ -245,9 +252,30 @@ class _AgentCard(QFrame):
             self.field.setPlaceholderText("e.g.  aider --model sonnet")
             self.field.setVisible(False)
             self.field.textChanged.connect(lambda _t: self.edited.emit())
-            row.addWidget(self.field)
+            self._row.addWidget(self.field)
 
+        self._hint: Optional[InstallHint] = None   # built lazily
+        self._refresh_pill()
         self._restyle()
+
+    def _real_agent(self) -> bool:
+        return self.key not in (PLAIN_KEY, CUSTOM_KEY)
+
+    def _refresh_pill(self) -> None:
+        show = self._real_agent()
+        self._pill.setVisible(show)
+        if show:
+            self._pill.setText("✓ installed" if self.installed
+                               else "not installed")
+
+    def _on_rechecked(self, ok: bool) -> None:
+        if ok:
+            self.installed = True
+            self._refresh_pill()
+            if self._hint is not None:
+                self._hint.setVisible(False)
+            self._restyle()
+        self.rechecked.emit(self.key, ok)
 
     def set_selected(self, value: bool) -> None:
         self._selected = value
@@ -256,9 +284,19 @@ class _AgentCard(QFrame):
             self.field.setVisible(value)
             if value:
                 self.field.setFocus()
+        if value and self._real_agent() and not self.installed:
+            if self._hint is None:
+                self._hint = InstallHint(self.key, accent=_AMBER)
+                self._hint.rechecked.connect(self._on_rechecked)
+                self._row.addWidget(self._hint)
+            self._hint.setVisible(True)
+        elif self._hint is not None:
+            self._hint.setVisible(False)
         self._restyle()
 
     def _restyle(self) -> None:
+        pill_bg = "#2f4030" if self.installed else "#3a2f2f"
+        pill_fg = "#7fce7f" if self.installed else "#c99a9a"
         self.setStyleSheet(
             f"""
             QFrame#agentCard {{
@@ -270,6 +308,10 @@ class _AgentCard(QFrame):
                                font-size: 15px; }}
             QLabel#agentTitle {{ color: {_TEXT}; font-size: 12px; font-weight: 600; }}
             QLabel#agentSub {{ color: {_MUTED}; font-size: 10px; }}
+            QLabel#agentPill {{
+                color: {pill_fg}; background: {pill_bg}; border-radius: 6px;
+                padding: 1px 6px; font-size: 9px;
+            }}
             QLineEdit {{ background: {_BG}; color: {_TEXT};
                         border: 1px solid {_BORDER}; border-radius: 6px;
                         padding: 5px 8px; font-size: 11px; }}
@@ -280,66 +322,6 @@ class _AgentCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.key)
             event.accept()
-
-
-# ---------------------------------------------------------------------------
-# Install guide row (for an agent that isn't on PATH)
-# ---------------------------------------------------------------------------
-
-class _InstallRow(QFrame):
-    """One not-installed agent: its install command (copy) + a docs link."""
-
-    def __init__(self, label: str, hint: Optional[dict],
-                 parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("installRow")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        hint = hint or {}
-        self._docs = hint.get("docs", "")
-        command = hint.get("command", "")
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 9)
-        lay.setSpacing(6)
-
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        name = QLabel(label)
-        name.setObjectName("installName")
-        tag = QLabel("not installed")
-        tag.setObjectName("installTag")
-        top.addWidget(name)
-        top.addWidget(tag)
-        top.addStretch(1)
-        if self._docs:
-            guide = QPushButton("Open guide ↗")
-            guide.setObjectName("installGuide")
-            guide.setCursor(Qt.PointingHandCursor)
-            guide.clicked.connect(
-                lambda: QDesktopServices.openUrl(QUrl(self._docs)))
-            top.addWidget(guide)
-        lay.addLayout(top)
-
-        if command:
-            crow = QHBoxLayout()
-            crow.setSpacing(6)
-            self._cmd = QLineEdit(command)
-            self._cmd.setObjectName("installCmd")
-            self._cmd.setReadOnly(True)
-            self._cmd.setCursorPosition(0)
-            self._copy_btn = QPushButton("Copy")
-            self._copy_btn.setObjectName("installCopy")
-            self._copy_btn.setCursor(Qt.PointingHandCursor)
-            self._copy_btn.setFixedWidth(58)
-            self._copy_btn.clicked.connect(self._copy)
-            crow.addWidget(self._cmd, 1)
-            crow.addWidget(self._copy_btn)
-            lay.addLayout(crow)
-
-    def _copy(self) -> None:
-        QApplication.clipboard().setText(self._cmd.text())
-        self._copy_btn.setText("Copied")
-        QTimer.singleShot(1300, lambda: self._copy_btn.setText("Copy"))
 
 
 # ---------------------------------------------------------------------------
@@ -630,41 +612,37 @@ class SetupWizard(QDialog):
     # -- agents ----------------------------------------------------------------
 
     def _populate_agents(self) -> None:
-        installed = available_agents()
-        inst_keys = {k for k, _lbl, _cmd in installed}
+        # Every known agent is a selectable card -- installed or not. A
+        # not-installed card unfolds its InstallHint when selected.
+        entries = [
+            (k, lbl, f"Runs  {cmd}", ok) for k, lbl, cmd, ok in all_agents()
+        ]
+        entries.append(
+            (PLAIN_KEY, "Plain shell", "Just open a shell \u2014 no agent", True))
+        entries.append(
+            (CUSTOM_KEY, "Custom command\u2026", "Run any command you like", True))
 
-        entries = [(k, lbl, f"Runs  {cmd}") for k, lbl, cmd in installed]
-        entries.append((PLAIN_KEY, "Plain shell", "Just open a shell \u2014 no agent"))
-        entries.append((CUSTOM_KEY, "Custom command\u2026", "Run any command you like"))
-
-        for key, title, sub in entries:
-            card = _AgentCard(key, title, sub)
+        for key, title, sub, ok in entries:
+            card = _AgentCard(key, title, sub, installed=ok)
             card.clicked.connect(self._select_agent)
             card.edited.connect(self._refresh_agent_note)
+            card.rechecked.connect(self._on_agent_rechecked)
             self._agent_box.insertWidget(self._agent_box.count() - 1, card)
             self._agent_cards.append(card)
             if key == CUSTOM_KEY and self._config.get("agent_command"):
                 card.field.setText(str(self._config.get("agent_command")))
 
-        # Agents that aren't on PATH: a "here's how to install it" section, so a
-        # first-time user isn't stuck with just "Plain shell".
-        missing = [(k, lbl) for k, lbl, _c in known_agents() if k not in inst_keys]
-        if missing:
-            head = QLabel(
-                "You don't have a coding agent installed yet. Install one below "
-                "(run it in any terminal), then reopen this wizard \u2014 or continue "
-                "with a plain shell."
-                if not installed else
-                "Other agents \u2014 install, then reopen this wizard:"
-            )
-            head.setObjectName("installHead")
-            head.setWordWrap(True)
-            self._agent_box.insertWidget(self._agent_box.count() - 1, head)
-            for key, label in missing:
-                self._agent_box.insertWidget(
-                    self._agent_box.count() - 1,
-                    _InstallRow(label, install_hint(key)),
-                )
+    def _agent_installed(self, key: str) -> bool:
+        for card in self._agent_cards:
+            if card.key == key:
+                return card.installed
+        return False
+
+    def _on_agent_rechecked(self, key: str, ok: bool) -> None:
+        # A Re-check that found the agent re-enables Launch.
+        if ok and key == self._agent_key:
+            self._refresh_agent_note()
+            self._refresh_nav()
 
     def _select_agent(self, key: str) -> None:
         known = {c.key for c in self._agent_cards}
@@ -684,12 +662,18 @@ class SetupWizard(QDialog):
         return resolve_agent(self._agent_key, self._custom_command())
 
     def _refresh_agent_note(self) -> None:
-        cmd = self._resolved_command()
         folder = self._folder_edit.text().strip() or str(Path.home())
         name = Path(folder).name or folder
-        if cmd:
+        real = self._agent_key not in (PLAIN_KEY, CUSTOM_KEY)
+        if real and not self._agent_installed(self._agent_key):
             self._agent_note.setText(
-                f"Runs  {cmd}  in all {self._count} terminal(s) in  {name}"
+                f"{agent_label(self._agent_key)} isn't installed yet — "
+                f"follow the steps above, then Re-check."
+            )
+        elif self._resolved_command():
+            self._agent_note.setText(
+                f"Runs  {self._resolved_command()}  in all {self._count} "
+                f"terminal(s) in  {name}"
             )
         else:
             self._agent_note.setText(
@@ -751,10 +735,13 @@ class SetupWizard(QDialog):
         if index == 1:
             self._next_btn.setEnabled(self._folder_is_valid())
         elif index == 2:
-            self._next_btn.setEnabled(
+            real = self._agent_key not in (PLAIN_KEY, CUSTOM_KEY)
+            ok = (
                 self._folder_is_valid()
                 and not (self._agent_key == CUSTOM_KEY and not self._custom_command())
+                and not (real and not self._agent_installed(self._agent_key))
             )
+            self._next_btn.setEnabled(ok)
         else:
             self._next_btn.setEnabled(True)
 
