@@ -15,6 +15,7 @@ keeps the UI responsive no matter how loud the shell gets.
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from PySide6.QtCore import QDir, QEvent, QPoint, QRect, Qt, QTimer, Signal
@@ -53,7 +54,14 @@ _RESIZE_COALESCE_MS = 40
 #: alternate screen is still running. Only armed while the alternate screen is
 #: up; the point is to notice a crash/kill that never sent the ``1049l`` that
 #: would have restored the primary buffer and its scrollback.
-_ALT_WATCH_MS = 1500
+_ALT_WATCH_MS = 2000
+
+#: The child-process probe (a full Toolhelp snapshot walk) is skipped while the
+#: program is visibly alive -- any pty output within this window means it is
+#: still running, so there is nothing to recover and no need to pay for the walk.
+#: A program sitting idle on the alternate screen (a paused pager) goes quiet,
+#: and only then does the watchdog actually probe.
+_ALT_QUIET_S = 3.0
 
 #: pyte stores private modes shifted left by 5 (see pyte.Screen.set_mode).
 _MODE_BRACKETED_PASTE = 2004 << 5
