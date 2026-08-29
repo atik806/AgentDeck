@@ -72,11 +72,10 @@ jobs:
 
       - name: Publish to GitHub Releases
         if: steps.check.outputs.already != 'True'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           vpk upload github
           --repoUrl ${{ github.server_url }}/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
           --outputDir packaging/Releases
           --publish true
           --releaseName "AgentDeck ${{ github.ref_name }}"
