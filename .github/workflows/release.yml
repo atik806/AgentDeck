@@ -67,11 +67,12 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
             $done = (-not $r.draft) -and (@($r.assets).Count -gt 0)
           } catch { $done = $false }
-          "already=$done" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "already published: $done"
+          $flag = if ($done) { 'true' } else { 'false' }
+          "already=$flag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "already published: $flag"
 
       - name: Publish to GitHub Releases
-        if: steps.check.outputs.already != 'True'
+        if: steps.check.outputs.already != 'true'
         run: >
           vpk upload github
           --repoUrl ${{ github.server_url }}/${{ github.repository }}
