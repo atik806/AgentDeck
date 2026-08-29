@@ -9,12 +9,16 @@ code-signed / has reputation).
 `manifests/a/AtikShahriar/AgentDeck/<version>/` holds the three manifest files in
 the exact layout the `microsoft/winget-pkgs` repo expects.
 
-## First submission (v0.3.0)
+## First submission (v0.3.1)
+
+Submitted 2026-08-30 as a PR to `microsoft/winget-pkgs` (branch
+`atik806:agentdeck-0.3.1`, files created via the GitHub API — the winget-pkgs
+tree is too large to clone). Steps to reproduce / redo:
 
 1. **Validate locally** (needs winget ≥ 1.6):
    ```
-   winget validate --manifest packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.0
-   winget install --manifest packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.0
+   winget validate --manifest packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.1
+   winget install --manifest packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.1
    winget uninstall AgentDeck
    ```
    The install/uninstall round-trip is what the winget-pkgs CI runs in a
@@ -22,14 +26,14 @@ the exact layout the `microsoft/winget-pkgs` repo expects.
 
 2. **Fork + PR:**
    - Fork <https://github.com/microsoft/winget-pkgs>.
-   - Copy `manifests/a/AtikShahriar/AgentDeck/0.3.0/` into the fork at the same
-     path.
-   - Branch, commit, open a PR titled `New package: AtikShahriar.AgentDeck version 0.3.0`.
-   - The `wingetbot` runs validation; fix anything it flags. A moderator merges.
+   - Add `manifests/a/AtikShahriar/AgentDeck/0.3.1/` on a branch in the fork.
+   - Open a PR titled `New package: AtikShahriar.AgentDeck version 0.3.1`.
+   - The `wingetbot` runs validation; unsigned installer → expect manual
+     moderator review. A moderator merges.
 
    Or use **wingetcreate** to do the fork/PR for you:
    ```
-   wingetcreate submit packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.0
+   wingetcreate submit packaging\winget\manifests\a\AtikShahriar\AgentDeck\0.3.1
    ```
 
 ## Later versions — automated
@@ -48,8 +52,8 @@ It only runs if the **`WINGET_TOKEN`** repo secret is set:
 - No secret → the step logs "skipping" and the release still succeeds.
 
 `wingetcreate update` publishes *updates only*, so the **first** submission must
-be the manual PR above. After that version 0.3.0 is in winget-pkgs, add the
-secret and every future `v*` tag updates winget on its own.
+be the manual PR above. Once 0.3.1 is merged into winget-pkgs, add the secret and
+every future `v*` tag updates winget on its own.
 
 To do a version manually anyway:
 `wingetcreate update AtikShahriar.AgentDeck --version <x.y.z> --urls <setup-exe-url> --submit`
@@ -62,5 +66,5 @@ To do a version manually anyway:
 - `UpgradeBehavior: install` — the app also self-updates via Velopack; running
   the newer setup over an install is fine.
 - `InstallerSha256` is for the **published** release asset
-  `AgentDeck-win-Setup.exe` (v0.3.0: `FC8E95D3D0969845484A50D6816419E4BEBC6AA330CBA098C79EF20CA487D790`).
-  Recompute with `Get-FileHash` if the asset is ever re-uploaded.
+  `AgentDeck-win-Setup.exe` (v0.3.1: `7EC40B553A903DAC13811FE4A2442912CAED580857C7CA817F29A37613C1F3DE`,
+  from the release's `SHA256SUMS.txt`). Recompute if the asset is re-uploaded.
