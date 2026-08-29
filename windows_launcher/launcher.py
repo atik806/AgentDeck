@@ -164,12 +164,13 @@ def find_window_by_pid(target_pid: int, timeout: float = 2.0) -> Optional[int]:
     Polls for up to `timeout` seconds.
     """
     start_time = time.time()
+    found_hwnds: List[int] = []
 
-    def enum_windows_callback(hwnd, _):
+    def enum_windows_callback(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
             return True
 
-        pid = ctypes.c_ulong()
+        pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
 
         if pid.value == target_pid:
@@ -177,11 +178,12 @@ def find_window_by_pid(target_pid: int, timeout: float = 2.0) -> Optional[int]:
 
         return True
 
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.POINTER(ctypes.c_int))
+    # HWND and LPARAM are pointer-width: c_int would truncate both on 64-bit.
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     enum_func = WNDENUMPROC(enum_windows_callback)
 
     while time.time() - start_time < timeout:
-        found_hwnds = []
+        found_hwnds.clear()
         user32.EnumWindows(enum_func, 0)
         if found_hwnds:
             return found_hwnds[0]
