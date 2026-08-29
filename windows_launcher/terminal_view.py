@@ -629,6 +629,10 @@ class TerminalCanvas(QWidget):
         while is_word(end + 1):
             end += 1
 
+        # The press that opened this double-click left _selecting armed; clear it
+        # so a tiny drag afterwards doesn't collapse the word selection back to a
+        # single cell in mouseMoveEvent.
+        self._selecting = False
         self._sel_anchor = (row, start)
         self._sel_head = (row, end + 1)
         self.update()
