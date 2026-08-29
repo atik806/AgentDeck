@@ -230,10 +230,10 @@ class UpdateController(QObject):
             return
         self._silent = silent
         self._set_busy(True)
-        self._worker = _Worker(self._mgr, "check", parent=self)
-        self._worker.checked.connect(self._on_checked)
-        self._worker.failed.connect(self._on_check_failed)
-        self._worker.start()
+        worker = self._spawn_worker("check")
+        worker.checked.connect(self._on_checked)
+        worker.failed.connect(self._on_check_failed)
+        worker.start()
 
     def _on_checked(self, info) -> None:
         self._set_busy(False)
