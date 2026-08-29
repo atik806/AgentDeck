@@ -74,7 +74,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "show_splash": True,
     # Pre-accept Claude Code's "trust this folder?" prompt for the working
     # folder, so an auto-launched `claude` opens straight into the session.
-    "pretrust_agent_folder": True,
+    # OFF by default: it suppresses a security prompt, so it is opt-in. Even
+    # when enabled, agents.pretrust_folder() refuses any folder that carries its
+    # own .claude/ or .mcp.json config (those can run hooks / auto-approve
+    # tools -- the prompt is exactly the check the user should get to make).
+    "pretrust_agent_folder": False,
 
     # --- Appearance ---
     "theme": "system",

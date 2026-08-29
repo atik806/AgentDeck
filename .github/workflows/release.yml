@@ -7,32 +7,68 @@ name: release
 #   * CI:    bump version.py, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`
 #   * local: `packaging/build.py` then `vpk upload github ...` (this also
 #            creates the tag, which fires this workflow -- the "already
-#            published" guard below then no-ops the publish step)
+#            published" guard below then no-ops the publish step). Run
+#            `packaging/checksums.py` locally and attach SHA256SUMS.txt yourself.
 on:
   push:
     tags:
       - "v*"
 
+# Least privilege: this workflow only needs to create the release + upload assets.
 permissions:
-  contents: write        # create the GitHub release + upload assets
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to full commit SHAs (not moving tags) so a compromised
+      # upstream tag can't slip new code into the release build. Bump the SHA and
+      # the trailing version comment together.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.11"
           cache: pip
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
         with:
           dotnet-version: "8.0.x"
 
       - name: Install Velopack CLI
         run: dotnet tool install -g vpk
+
+      # Code signing (optional). If the AZURE_* / TRUSTED_SIGNING_* repo secrets
+      # are set, install the `sign` tool and compute AGENTDECK_SIGN_TEMPLATE so
+      # packaging/build.py signs every binary with Azure Trusted Signing and the
+      # installer stops tripping SmartScreen's "Unknown publisher". No secrets ->
+      # this step no-ops and the build is unsigned (still works, still warns).
+      #
+      # HAVE_AZURE is a boolean expression, not the secret itself -- the Azure
+      # credentials are injected only on the "Build + pack" step's own env, so
+      # they never land in $GITHUB_ENV where every later step would inherit them.
+      - name: Configure code signing
+        id: signing
+        shell: pwsh
+        env:
+          TS_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TS_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TS_PROFILE: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          HAVE_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+        run: |
+          if ($env:HAVE_AZURE -ne 'true') {
+            Write-Host "no signing secrets - unsigned build"
+            "template=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          dotnet tool install -g sign
+          $tmpl = "sign code trusted-signing {{file}}" +
+            " --trusted-signing-endpoint $env:TS_ENDPOINT" +
+            " --trusted-signing-account $env:TS_ACCOUNT" +
+            " --trusted-signing-certificate-profile $env:TS_PROFILE"
+          "template=$tmpl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "signing enabled"
 
       - name: Check the tag matches version.py
         shell: pwsh
@@ -41,15 +77,29 @@ jobs:
           $tag = "${{ github.ref_name }}".TrimStart("v")
           if ($v -ne $tag) { throw "version.py ($v) != tag ($tag)" }
 
+      # -c constraints.txt pins the whole dependency closure to exact versions,
+      # so a fresh upstream release inside a requirements range can't change what
+      # ships without a deliberate constraints bump.
       - name: Install dependencies
         run: |
-          python -m pip install -U pip
-          pip install -r windows_launcher/requirements.txt
-          pip install ./voice_capture
-          pip install -r windows_launcher/requirements-build.txt
+          python -m pip install "pip==24.3.1"
+          pip install -c windows_launcher/constraints.txt -r windows_launcher/requirements.txt
+          pip install -c windows_launcher/constraints.txt ./voice_capture
+          pip install -c windows_launcher/constraints.txt -r windows_launcher/requirements-build.txt
 
       - name: Build + pack
+        env:
+          AGENTDECK_SIGN_TEMPLATE: ${{ steps.signing.outputs.template }}
+          # Scoped to this step only -- the `sign` tool reads them via
+          # EnvironmentCredential while `vpk pack` runs.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: python packaging/build.py
+
+      - name: Generate SHA256SUMS
+        shell: pwsh
+        run: python packaging/checksums.py packaging/Releases
 
       # If this tag already has a published, non-draft release with assets
       # (e.g. it was published locally with `vpk upload`, which creates the
@@ -81,3 +131,37 @@ jobs:
           --publish true
           --releaseName "AgentDeck ${{ github.ref_name }}"
           --tag ${{ github.ref_name }}
+
+      # Attach the checksum manifest so downloaders can verify the assets
+      # (there is no Authenticode signature unless the signing secrets are set).
+      - name: Attach SHA256SUMS to the release
+        if: steps.check.outputs.already != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" packaging/Releases/SHA256SUMS.txt --clobber
+
+      # Keep the winget manifest (AtikShahriar.AgentDeck) pointed at this
+      # release: download wingetcreate, regenerate the manifest from the new
+      # Setup.exe URL (it recomputes the hash itself), and open a PR against
+      # microsoft/winget-pkgs.
+      #
+      # Requires the WINGET_TOKEN secret -- a GitHub PAT (classic: public_repo;
+      # or fine-grained: Contents + Pull requests read/write) on a fork of
+      # microsoft/winget-pkgs under the release owner's account. No token -> the
+      # step no-ops. `wingetcreate update` only publishes *updates*, so the
+      # package must already exist in winget-pkgs: do the first submission by
+      # hand from packaging/winget/ (see packaging/winget/README.md).
+      - name: Update winget manifest
+        if: steps.check.outputs.already != 'true'
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Host "no WINGET_TOKEN secret - skipping winget update"
+            exit 0
+          }
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          $url = "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/AgentDeck-win-Setup.exe"
+          curl.exe -sSL -o wingetcreate.exe https://aka.ms/wingetcreate/latest/self-contained
+          .\wingetcreate.exe update AtikShahriar.AgentDeck --version $ver --urls "$url" --submit --token $env:WINGET_TOKEN

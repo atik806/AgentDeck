@@ -12,7 +12,8 @@ Steps:
      Qt platform plugin; and that WebEngine did NOT come along)
   6. smoke-launch dist/AgentDeck/AgentDeck.exe --no-wizard --no-splash --smoke
   7. vpk pack  ->  packaging/Releases/  (Setup.exe + *-full.nupkg + delta + feed)
-  8. print the `vpk upload github` command (never auto-uploads)
+  8. write packaging/Releases/SHA256SUMS.txt (checksums.py)
+  9. print the `vpk upload github` + `gh release upload` commands (never uploads)
 
 Prerequisites: see windows_launcher/requirements-build.txt.
 """
@@ -166,11 +167,15 @@ def main() -> int:
         return 0
 
     vpk_pack(version)
+    subprocess.run([sys.executable, str(REPO / "packaging" / "checksums.py"),
+                    str(RELEASES)], check=True)
     print(f"\n[build] done. Releases in {RELEASES}\n")
     print("Publish with (needs gh auth / a GITHUB_TOKEN):")
     print(f'  vpk upload github --repoUrl https://github.com/atik806/AgentDeck '
           f'--outputDir packaging/Releases --publish true '
           f'--releaseName "AgentDeck {version}" --tag v{version}')
+    print(f'  gh release upload v{version} '
+          f'"{RELEASES / "SHA256SUMS.txt"}" --clobber')
     return 0
 
 

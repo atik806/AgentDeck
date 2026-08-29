@@ -210,12 +210,13 @@ def main() -> int:
     # The account sign-in window comes before the wizard. A signed-in account is
     # required to use AgentDeck: the dialog's only way forward is "Continue with
     # Google" -- anything else (Quit, the [X]) ends the process here. It is
-    # skipped only once a session is already stored, and by the --no-login /
-    # --smoke flags used by packaging/build.py's frozen-build smoke test.
+    # skipped only once a session is already stored, or under --smoke (the
+    # frozen-build check in packaging/build.py). --no-login on its own is
+    # ignored, so a stray flag can't wave past the mandatory sign-in.
     from account import AccountController
 
     account = AccountController(config)
-    _skip_login = "--no-login" in sys.argv or "--smoke" in sys.argv
+    _skip_login = "--smoke" in sys.argv
     if account.needs_login() and not _skip_login:
         from login_window import LoginWindow
 
@@ -240,7 +241,7 @@ def main() -> int:
 
     # If a Claude Code agent is about to auto-launch in the working folder,
     # pre-accept its "trust this folder?" prompt so it opens straight in.
-    if config.get("pretrust_agent_folder", True):
+    if config.get("pretrust_agent_folder", False):
         if startup is not None:
             _cmd, _folder = startup.get("agent_command", ""), startup.get("folder", "")
         else:

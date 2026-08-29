@@ -153,16 +153,25 @@ class _FakeResp:
         return self._payload
 
 
-def _browser_hitting(path):
-    """Return a fake open_browser that, in a thread, calls the loopback back."""
+def _browser_hitting(path, *, echo_state=False):
+    """Return a fake open_browser that, in a thread, calls the loopback back.
+
+    Supabase's PKCE flow echoes no ``state`` on the loopback callback (the
+    default here). ``echo_state=True`` simulates a provider that does, so the
+    positive match path is exercised too.
+    """
 
     def _open(authorize_url):
-        redirect = parse_qs(urlsplit(authorize_url).query)["redirect_to"][0]
+        query = parse_qs(urlsplit(authorize_url).query)
+        target = query["redirect_to"][0] + path
+        if echo_state and query.get("state"):
+            sep = "&" if "?" in target else "?"
+            target += f"{sep}state={query['state'][0]}"
 
         def _hit():
             time.sleep(0.15)
             try:
-                urllib.request.urlopen(redirect + path, timeout=5).read()
+                urllib.request.urlopen(target, timeout=5).read()
             except Exception:
                 pass
 
@@ -201,6 +210,15 @@ try:
     check("carries the refresh token", sess.refresh_token == "fake-refresh")
     check("redirect_uri is a loopback address", sess and gs.redirect_uri.startswith("http://127.0.0.1:"))
     check("session usable: display name", sess.display_name == "E User")
+finally:
+    supabase_auth.requests.post = _orig_post
+
+print("[4b] GoogleSignIn -- a matching echoed state is accepted")
+supabase_auth.requests.post = _patched_post
+try:
+    gs = GoogleSignIn(open_browser=_browser_hitting("/?code=testcode", echo_state=True),
+                      timeout=10)
+    check("run() with echoed state returns a Session", isinstance(gs.run(), Session))
 finally:
     supabase_auth.requests.post = _orig_post
 
@@ -253,6 +271,19 @@ except AuthError as exc:
     check("bad exchange raises AuthError with server message", "bad code" in str(exc))
 finally:
     supabase_auth.requests.post = _orig_post
+
+print("[9b] GoogleSignIn -- forged state callback is rejected")
+try:
+    GoogleSignIn(
+        open_browser=_browser_hitting(
+            "/?code=testcode&state=not-the-real-nonce", echo_state=False
+        ),
+        timeout=10,
+    ).run()
+    check("forged state raises AuthError", False)
+except AuthError as exc:
+    check("forged state raises AuthError", "security check" in str(exc).lower())
+finally:
     supabase_auth._google_enabled = _orig_enabled
 
 

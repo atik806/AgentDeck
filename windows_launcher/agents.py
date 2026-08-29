@@ -263,6 +263,22 @@ def pretrust_folder(command: str, folder: str) -> bool:
     if not forms:
         return False
 
+    # Never pre-trust a folder that ships its own Claude Code / MCP config: those
+    # files can carry hooks and pre-approved tools, so the trust prompt is
+    # exactly the check the user should get to make by hand.
+    try:
+        root = Path(folder)
+        risky = (
+            root / ".claude" / "settings.json",
+            root / ".claude" / "settings.local.json",
+            root / ".mcp.json",
+            root / ".claude.json",
+        )
+        if any(p.exists() for p in risky):
+            return False
+    except OSError:
+        return False
+
     try:
         cfg: dict = {}
         if _CLAUDE_CONFIG.exists():

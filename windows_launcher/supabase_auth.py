@@ -25,6 +25,8 @@ import hashlib
 import json
 import os
 import secrets
+import socket
+import sys
 import time
 import webbrowser
 from dataclasses import dataclass, field
@@ -254,13 +256,29 @@ _ERROR_HTML = """<!doctype html><html><head><meta charset="utf-8">
 
 
 class _CallbackServer(HTTPServer):
-    allow_reuse_address = True
+    # Stays False on purpose: on Windows SO_REUSEADDR would let another local
+    # process re-bind this exact port and race us for the OAuth code.
+    allow_reuse_address = False
     timeout = 0.4  # so handle_request() returns and we can poll for cancel
 
-    def __init__(self, address: tuple[str, int]):
+    def __init__(self, address: tuple[str, int], expected_state: str = ""):
+        #: CSRF nonce placed in the authorize URL; a callback that echoes a
+        #: ``state`` at all must echo this one.
+        self.expected_state = expected_state
         super().__init__(address, _CallbackHandler)
         #: ``("code", value)`` or ``("error", description)`` once the browser hits us.
         self.result: Optional[tuple[str, str]] = None
+
+    def server_bind(self) -> None:
+        # Ask Windows for exclusive ownership of the port for the sign-in's
+        # lifetime (POSIX is already exclusive without SO_REUSEADDR).
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -270,12 +288,34 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        split = urlsplit(self.path)
+
+        # The provider redirects the browser here as a top-level navigation:
+        # no Origin header, and always to "/". A request carrying an Origin, or
+        # aimed at another path, is something else on the machine poking at the
+        # port -- don't let it hand us a code.
+        if self.headers.get("Origin") or split.path not in ("", "/"):
+            self._respond(204, "")
+            return
+
         try:
-            query = parse_qs(urlsplit(self.path).query)
+            query = parse_qs(split.query)
         except ValueError:
             query = {}
         code = (query.get("code") or [""])[0]
         error = (query.get("error") or [""])[0]
+        state = (query.get("state") or [""])[0]
+
+        expected = getattr(self.server, "expected_state", "")  # type: ignore[attr-defined]
+        if (code or error) and expected and state and not secrets.compare_digest(state, expected):
+            # A callback that echoes a state must echo ours -- this one didn't,
+            # so it's forged. (PKCE still guards the exchange when the provider
+            # echoes no state at all, which is why absence isn't rejected here.)
+            self.server.result = (  # type: ignore[attr-defined]
+                "error", "the sign-in callback failed a security check"
+            )
+            self._respond(400, _ERROR_HTML)
+            return
 
         if code:
             self.server.result = ("code", code)  # type: ignore[attr-defined]
@@ -333,10 +373,10 @@ class GoogleSignIn:
         :meth:`run` has bound the port."""
         return self._redirect_uri
 
-    def _bind(self) -> _CallbackServer:
+    def _bind(self, expected_state: str) -> _CallbackServer:
         for address in (("127.0.0.1", self.PREFERRED_PORT), ("127.0.0.1", 0)):
             try:
-                return _CallbackServer(address)
+                return _CallbackServer(address, expected_state=expected_state)
             except OSError:
                 continue
         raise AuthError("Couldn't open a local port for the sign-in callback.")
@@ -349,7 +389,8 @@ class GoogleSignIn:
             )
 
         verifier, challenge = build_pkce()
-        server = self._bind()
+        state = secrets.token_urlsafe(32)
+        server = self._bind(state)
         port = server.server_address[1]
         self._redirect_uri = f"http://127.0.0.1:{port}"
 
@@ -359,6 +400,7 @@ class GoogleSignIn:
             f"&code_challenge={challenge}"
             f"&code_challenge_method=s256"
             f"&flow_type=pkce"
+            f"&state={state}"
         )
 
         try:
@@ -615,11 +657,24 @@ class SessionStore:
         return session
 
     def save(self, session: Session) -> None:
+        """Persist the session.
+
+        On Windows the blob **must** encrypt with DPAPI; if that fails we refuse
+        to write rather than drop long-lived refresh tokens onto disk in the
+        clear (callers treat a missing store as "sign in again"). The plaintext
+        form is only ever used off Windows, where DPAPI does not exist.
+        """
         blob = json.dumps(session.to_dict()).encode("utf-8")
-        payload = _MAGIC_PLAIN + blob
         try:
             payload = _MAGIC_DPAPI + _protect(blob)
-        except Exception:  # noqa: BLE001 - fall back to plaintext
+        except Exception:  # noqa: BLE001
+            if _IS_WINDOWS:
+                print(
+                    "[AgentDeck] WARNING: DPAPI encryption of the session failed; "
+                    "not saving it (you'll be asked to sign in again next launch).",
+                    file=sys.stderr,
+                )
+                return
             payload = _MAGIC_PLAIN + blob
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

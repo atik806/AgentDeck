@@ -478,7 +478,7 @@ class TerminalPanel(QMainWindow):
         command = picked.get("agent_command", "") or ""
         # Same courtesy as the setup wizard: pre-accept Claude Code's
         # "trust this folder?" prompt so it opens straight into the session.
-        if command and self.config.get("pretrust_agent_folder", True):
+        if command and self.config.get("pretrust_agent_folder", False):
             pretrust_folder(command, self._working_folder)
 
         name = (picked.get("name") or "").strip() or None

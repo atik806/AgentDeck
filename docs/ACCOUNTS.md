@@ -76,14 +76,13 @@ supabase db push
 
 | Knob | Where | Effect |
 |---|---|---|
-| `--no-login` | CLI flag | Skip the login window for this run. Build-only — `packaging/build.py`'s frozen-build smoke test uses it; not for normal use. |
+| `--smoke` | CLI flag | Skip the login window for this run. Build-only — `packaging/build.py`'s frozen-build check uses it. (`--no-login` is honoured only alongside `--smoke`; on its own it does nothing.) |
 | `account_cloud_sync` | `config.json` / account dialog checkbox | Mirror settings to the account. |
 | `account_email` | `config.json` | Last signed-in email; shown on the chip before the session loads. Set by the app. |
 | `AGENTDECK_SUPABASE_URL` | env var | Point the app at a different Supabase project. |
 | `AGENTDECK_SUPABASE_KEY` | env var | Publishable key for that project. |
 
-`--smoke` runs also skip the login window. `--no-wizard` skips only the wizard,
-not the login window.
+`--no-wizard` skips only the wizard, not the login window.
 
 ## Security notes
 
@@ -92,5 +91,11 @@ not the login window.
   gated by row-level security and a per-user JWT.
 - The service-role key and the database password are **never** in the repo or the
   binary.
-- Tokens on disk are DPAPI-encrypted; a plaintext-JSON fallback is used only if
-  DPAPI is unavailable (non-Windows, or a locked-down environment).
+- Tokens on disk are DPAPI-encrypted (bound to your Windows user). On Windows, if
+  DPAPI ever fails, AgentDeck **does not save the session** rather than write
+  tokens in the clear — you just sign in again next launch. The plaintext-JSON
+  form is only ever used off Windows, where DPAPI does not exist.
+- The sign-in flow is loopback PKCE: the one-time `code_verifier` never leaves
+  the process, the callback server binds `127.0.0.1` with exclusive port
+  ownership, only accepts the redirect on `/` with no `Origin` header, and
+  rejects any callback that echoes a `state` other than the per-attempt nonce.
