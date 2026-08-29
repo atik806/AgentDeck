@@ -162,6 +162,26 @@ def _persist_choices(config: dict, choices: dict) -> None:
         pass  # a read-only config dir must not stop the app from opening
 
 
+def _apply_cloud_settings(config: dict, account) -> None:
+    """Fold a freshly signed-in account's cloud-synced settings into config.
+
+    Runs once, right after an interactive sign-in and before the wizard, so the
+    wizard's defaults reflect what the user set on their other machine. A no-op
+    when sync is off, offline, or the account has nothing stored yet.
+    """
+    try:
+        cloud = account.pull_cloud_settings()
+    except Exception:  # noqa: BLE001 - a failed pull just means "no cloud data yet"
+        cloud = None
+    if not cloud:
+        return
+    config.update(cloud)
+    try:
+        save_config(config)
+    except (OSError, ValueError):
+        pass
+
+
 def main() -> int:
     global _started
 
@@ -187,7 +207,28 @@ def main() -> int:
         enabled="--no-splash" not in sys.argv and config.get("show_splash", True),
     )
 
-    # The setup wizard is the front door. --no-wizard (or config.skip_wizard)
+    # The account sign-in window comes before the wizard. AgentDeck is fully
+    # usable signed-out, so it always offers "Continue without an account";
+    # only closing it outright (the [X]) means "quit". It is skipped once a
+    # session is stored, and by --no-login / --smoke / config.skip_login.
+    from account import AccountController
+
+    account = AccountController(config)
+    _skip_login = (
+        "--no-login" in sys.argv
+        or "--smoke" in sys.argv
+        or config.get("skip_login", False)
+    )
+    if account.needs_login() and not _skip_login:
+        from login_window import LoginWindow
+
+        login = LoginWindow(account, config, icon=_load_icon())
+        if login.exec() != QDialog.Accepted:
+            return 0
+        if login.result_mode() == "signed-in":
+            _apply_cloud_settings(config, account)
+
+    # The setup wizard is the next front door. --no-wizard (or config.skip_wizard)
     # opens straight from saved settings, for run.bat / scripted use.
     startup = None
     if "--no-wizard" not in sys.argv and not config.get("skip_wizard", False):
@@ -199,6 +240,7 @@ def main() -> int:
             return 0
         startup = wizard.choices()
         _persist_choices(config, startup)
+        account.push_cloud_settings(config)
 
     # If a Claude Code agent is about to auto-launch in the working folder,
     # pre-accept its "trust this folder?" prompt so it opens straight in.
@@ -211,7 +253,7 @@ def main() -> int:
             _folder = config.get("working_folder", "")
         pretrust_folder(_cmd, _folder)
 
-    panel = TerminalPanel(config, startup=startup)
+    panel = TerminalPanel(config, startup=startup, account=account)
     panel.setWindowIcon(_load_icon())
     panel.show()
 

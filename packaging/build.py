@@ -118,7 +118,7 @@ def smoke() -> None:
     exe = DIST_APP / "AgentDeck.exe"
     try:
         r = subprocess.run(
-            [str(exe), "--no-wizard", "--no-splash", "--smoke"],
+            [str(exe), "--no-wizard", "--no-splash", "--no-login", "--smoke"],
             cwd=DIST_APP, timeout=90,
         )
     except subprocess.TimeoutExpired:

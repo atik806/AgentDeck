@@ -14,23 +14,36 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    Qt,
+    QTimer,
+)
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QToolBar,
     QToolButton,
     QWidget,
 )
 
+from account import AccountController
+from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
+from navbar import AccountChip, HelpButton
 from new_workspace_dialog import NewWorkspaceDialog
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
@@ -73,9 +86,16 @@ class TerminalPanel(QMainWindow):
         *,
         persist_settings: bool = True,
         startup: Optional[dict] = None,
+        account: Optional[AccountController] = None,
     ):
         super().__init__()
         self.config = config or {}
+        # The Supabase account surface (sign-in state, cloud settings sync,
+        # the toolbar chip). main.py builds one and threads it in; direct
+        # construction / tests get a fresh one, which is inert until signed in.
+        self.account = account if account is not None else AccountController(
+            self.config, self
+        )
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -143,6 +163,7 @@ class TerminalPanel(QMainWindow):
         self._build_shortcuts()
         self._build_voice()
         self._wire_updater()
+        self._wire_account()
 
         self._add_workspace(
             pane_count=self._default_count,
@@ -353,6 +374,21 @@ class TerminalPanel(QMainWindow):
         bigger.setToolTip("Larger font (Ctrl++)")
         bigger.clicked.connect(lambda: self._bump_font(1))
         bar.addWidget(bigger)
+
+        # -- right cluster: help + account -----------------------------------
+        spacer = QWidget(bar)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setStyleSheet("background: transparent;")
+        bar.addWidget(spacer)
+
+        self._help_btn = HelpButton(bar)
+        self._help_btn.shortcuts_requested.connect(self._show_shortcuts)
+        self._help_btn.about_requested.connect(self._show_about)
+        bar.addWidget(self._help_btn)
+
+        self._account_chip = AccountChip(self.account, bar)
+        self._account_chip.clicked.connect(lambda: self._open_account_dialog())
+        bar.addWidget(self._account_chip)
 
     def _build_body(self) -> None:
         central = QWidget(self)
@@ -705,6 +741,9 @@ class TerminalPanel(QMainWindow):
             save_config(self.config)
         except (OSError, ValueError) as exc:
             self.statusBar().showMessage(f"Couldn't save settings: {exc}", 3000)
+        # Mirror the change to the signed-in account (no-op when signed out or
+        # sync is off).
+        self.account.push_cloud_settings(self.config)
 
     def _bump_font(self, delta: int) -> None:
         self._set_font(self._font_size + delta)
@@ -833,6 +872,7 @@ class TerminalPanel(QMainWindow):
         Dormant when the app is not a Velopack install (updater.enabled False):
         the button is hidden and no signal ever fires.
         """
+        self._install_update_glow()
         u = self.updater
         u.available.connect(self._on_update_available)
         u.up_to_date.connect(
@@ -847,7 +887,65 @@ class TerminalPanel(QMainWindow):
         )
         u.busy_changed.connect(self._update_btn.setDisabled)
 
+    # -- "an update is waiting" glow -----------------------------------------
+
+    #: The Update button's look while a release is waiting -- a solid red that
+    #: overrides the toolbar QSS, so the cue survives even where the animated
+    #: halo below can't composite (some remote-desktop / software-render paths).
+    _UPDATE_GLOW_QSS = (
+        "QPushButton { background: #b32a1f; border: 1px solid #ff6a5c;"
+        " color: #ffffff; border-radius: 6px; padding: 5px 12px;"
+        " font-size: 11px; font-weight: 700; min-height: 15px; }"
+        "QPushButton:hover { background: #c9382b; border-color: #ff8577; }"
+        "QPushButton:disabled { background: #6d241c; color: #d9a49d;"
+        " border-color: #a3463c; }"
+    )
+
+    def _install_update_glow(self) -> None:
+        """Make the Update button impossible to miss once a release is waiting.
+
+        Two layers: a solid red restyle of the button (:data:`_UPDATE_GLOW_QSS`)
+        that always shows, plus a ``QGraphicsDropShadowEffect`` used as a halo
+        (offset 0) whose blur radius pulses on a loop. Both are inert -- effect
+        disabled, stylesheet cleared -- until :meth:`_set_update_glow` turns them
+        on, which only happens when ``updater.available`` fires.
+        """
+        self._update_glow = QGraphicsDropShadowEffect(self)
+        self._update_glow.setColor(QColor("#ff3b30"))
+        self._update_glow.setOffset(0, 0)
+        self._update_glow.setBlurRadius(0)
+        self._update_glow.setEnabled(False)
+        self._update_btn.setGraphicsEffect(self._update_glow)
+
+        self._update_pulse = QPropertyAnimation(self._update_glow, b"blurRadius", self)
+        self._update_pulse.setDuration(1500)
+        self._update_pulse.setKeyValueAt(0.0, 5)
+        self._update_pulse.setKeyValueAt(0.5, 22)   # swell
+        self._update_pulse.setKeyValueAt(1.0, 5)    # and back, seamlessly
+        self._update_pulse.setEasingCurve(QEasingCurve.InOutSine)
+        self._update_pulse.setLoopCount(-1)
+
+    def _set_update_glow(self, on: bool) -> None:
+        glow = getattr(self, "_update_glow", None)
+        if glow is None:
+            return
+        if on:
+            self._update_btn.setText("Update ●")
+            self._update_btn.setStyleSheet(self._UPDATE_GLOW_QSS)
+            self._update_btn.setToolTip("A new version of AgentDeck is ready to install")
+            glow.setEnabled(True)
+            if self._update_pulse.state() != QPropertyAnimation.Running:
+                self._update_pulse.start()
+        else:
+            self._update_pulse.stop()
+            glow.setEnabled(False)
+            glow.setBlurRadius(0)
+            self._update_btn.setStyleSheet("")
+            self._update_btn.setText("Update")
+            self._update_btn.setToolTip("Check for a newer version of AgentDeck")
+
     def _on_update_available(self, version: str, notes: str) -> None:
+        self._set_update_glow(True)
         box = QMessageBox(self)
         box.setWindowTitle("Update available")
         box.setText(
@@ -861,6 +959,8 @@ class TerminalPanel(QMainWindow):
             self.updater.download()
 
     def _on_update_ready(self, version: str) -> None:
+        # Downloaded and acknowledged -- the glow has done its job.
+        self._set_update_glow(False)
         reply = QMessageBox.question(
             self,
             "Restart to update",
@@ -878,11 +978,76 @@ class TerminalPanel(QMainWindow):
         self._shutdown_all()
         self.updater.apply_and_restart()
 
+    # -- account ----------------------------------------------------------
+
+    def _wire_account(self) -> None:
+        a = self.account
+        a.signed_in.connect(self._on_account_signed_in)
+        a.signed_out.connect(
+            lambda: self.statusBar().showMessage("Signed out of AgentDeck", 4000)
+        )
+        a.error.connect(
+            lambda msg: self.statusBar().showMessage(f"Account: {msg}", 6000)
+        )
+
+    def _on_account_signed_in(self, _user: dict) -> None:
+        self.statusBar().showMessage(
+            f"Signed in as {self.account.email or self.account.display_name}", 4000
+        )
+        # Pull this account's cloud settings and merge the ones that reached us.
+        try:
+            cloud = self.account.pull_cloud_settings()
+        except Exception:  # noqa: BLE001
+            cloud = None
+        if cloud:
+            self.config.update(cloud)
+            try:
+                save_config(self.config)
+            except (OSError, ValueError):
+                pass
+
+    def _open_account_dialog(self) -> None:
+        AccountDialog(self.account, self.config, self).exec()
+        self._account_chip.refresh()
+
+    def _show_shortcuts(self) -> None:
+        rows = [
+            ("Ctrl+Shift+T", "New terminal pane"),
+            ("Ctrl+Shift+W", "Close the active pane"),
+            ("Ctrl+Shift+E", "Expand / restore the active pane"),
+            ("Ctrl+Shift+R", "Reset a stuck full-screen pane"),
+            ("Ctrl+Tab  /  Ctrl+Shift+Tab", "Next / previous pane"),
+            ("Alt+1 … Alt+9", "Jump to pane N"),
+            ("Ctrl+Shift+N", "New workspace"),
+            ("Ctrl+Shift+PgUp / PgDn", "Previous / next workspace"),
+            ("Ctrl+B", "Show / hide the workspace sidebar"),
+            ("Ctrl+Shift+X", "Start / stop voice input"),
+            ("Ctrl+ +  /  Ctrl+ -  /  Ctrl+0", "Font larger / smaller / reset"),
+        ]
+        body = "\n".join(f"{k:<28}{v}" for k, v in rows)
+        box = QMessageBox(self)
+        box.setWindowTitle("Keyboard shortcuts")
+        box.setText("<pre style='font-family:Cascadia Mono,Consolas'>" + body + "</pre>")
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About AgentDeck",
+            f"<b>AgentDeck</b> v{__version__}<br><br>"
+            "Every terminal, every agent, one deck.<br><br>"
+            "<a href='https://github.com/atik806/AgentDeck'>"
+            "github.com/atik806/AgentDeck</a>",
+        )
+
     # -- teardown ----------------------------------------------------------
 
     def _shutdown_all(self) -> None:
         self._watchdog.stop()
+        self._set_update_glow(False)
         self._voice_engine.shutdown()
+        self.account.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 
