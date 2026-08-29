@@ -703,7 +703,7 @@ class TerminalPanel(QMainWindow):
         )
         try:
             save_config(self.config)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self.statusBar().showMessage(f"Couldn't save settings: {exc}", 3000)
 
     def _bump_font(self, delta: int) -> None:
