@@ -199,6 +199,24 @@ class UpdateController(QObject):
             self._busy = value
             self.busy_changed.emit(value)
 
+    def _spawn_worker(self, mode: str, info=None) -> "_Worker":
+        """Create the worker for one op and make sure it is disposed on finish.
+
+        Without the ``finished`` -> ``deleteLater`` hook every check/download
+        would leave its ``QThread`` object parented to this controller for the
+        life of the process.
+        """
+        worker = _Worker(self._mgr, mode, info=info, parent=self)
+
+        def _reap() -> None:
+            worker.deleteLater()
+            if self._worker is worker:
+                self._worker = None
+
+        worker.finished.connect(_reap)
+        self._worker = worker
+        return worker
+
     # -- operations ----------------------------------------------------------
 
     def check(self, *, silent: bool = False) -> None:
