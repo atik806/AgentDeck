@@ -28,7 +28,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agents import CUSTOM_KEY, PLAIN_KEY, available_agents, resolve_agent
+from agents import (
+    CUSTOM_KEY,
+    PLAIN_KEY,
+    agent_label,
+    all_agents,
+    resolve_agent,
+)
+from agents_ui import InstallHint
 from workspace import MAX_PANES
 
 __all__ = ["NewWorkspaceDialog"]
@@ -114,9 +121,12 @@ class NewWorkspaceDialog(QDialog):
         outer.addSpacing(4)
         outer.addWidget(self._label("Agent"))
 
+        self._installed: dict[str, bool] = {}
         self._combo = QComboBox(self)
-        for key, label, command in available_agents():
-            self._combo.addItem(f"{label}  —  {command}", key)
+        for key, label, command, ok in all_agents():
+            self._installed[key] = ok
+            suffix = "" if ok else "   ·  not installed"
+            self._combo.addItem(f"{label}  —  {command}{suffix}", key)
         self._combo.addItem("Plain shell — no agent", PLAIN_KEY)
         self._combo.addItem("Custom command…", CUSTOM_KEY)
         start = self._combo.findData(default_agent)
@@ -130,6 +140,12 @@ class NewWorkspaceDialog(QDialog):
         self._custom.setPlaceholderText("e.g.  aider --model sonnet")
         self._custom.textChanged.connect(self._sync)
         outer.addWidget(self._custom)
+
+        #: InstallHint for a not-installed pick, built lazily.
+        self._hint: Optional[InstallHint] = None
+        self._hint_key = ""
+        self._hint_slot = QVBoxLayout()
+        outer.addLayout(self._hint_slot)
 
         outer.addSpacing(4)
         row = QHBoxLayout()
@@ -174,19 +190,56 @@ class NewWorkspaceDialog(QDialog):
     def _agent_key(self) -> str:
         return self._combo.currentData()
 
+    def _real_missing(self) -> bool:
+        key = self._agent_key()
+        return key not in (PLAIN_KEY, CUSTOM_KEY) and not self._installed.get(key, True)
+
+    def _show_hint(self) -> None:
+        key = self._agent_key()
+        if self._hint is not None and self._hint_key == key:
+            self._hint.setVisible(True)
+            return
+        if self._hint is not None:
+            self._hint.setParent(None)
+            self._hint.deleteLater()
+        self._hint = InstallHint(key, accent=_BLUE)
+        self._hint_key = key
+        self._hint.rechecked.connect(self._on_rechecked)
+        self._hint_slot.addWidget(self._hint)
+
+    def _on_rechecked(self, ok: bool) -> None:
+        if ok:
+            self._installed[self._hint_key] = True
+        self._sync()
+
     def _sync(self) -> None:
-        is_custom = self._agent_key() == CUSTOM_KEY
+        key = self._agent_key()
+        is_custom = key == CUSTOM_KEY
         self._custom.setVisible(is_custom)
 
-        command = resolve_agent(self._agent_key(), self._custom.text())
+        missing = self._real_missing()
+        if missing:
+            self._show_hint()
+        elif self._hint is not None:
+            self._hint.setVisible(False)
+
+        command = resolve_agent(key, self._custom.text())
         n = self._count.value()
         plural = "s" if n != 1 else ""
-        if command:
+        if missing:
+            self._note.setText(
+                f"{agent_label(key)} isn't installed — follow the steps above, "
+                f"then Re-check."
+            )
+        elif command:
             self._note.setText(f"Runs  {command}  in {n} terminal{plural}.")
         else:
             self._note.setText(f"Opens {n} plain shell{plural}.")
 
-        self._create.setEnabled(not (is_custom and not self._custom.text().strip()))
+        self._create.setEnabled(
+            not missing
+            and not (is_custom and not self._custom.text().strip())
+        )
 
     def _accept(self) -> None:
         key = self._agent_key()
