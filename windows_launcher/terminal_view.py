@@ -784,8 +784,14 @@ class TerminalCanvas(QWidget):
             event.accept()
             return
 
-        # Page keys scroll the buffer when shifted, like a pager.
-        if mods & Qt.ShiftModifier and event.key() in (Qt.Key_PageUp, Qt.Key_PageDown):
+        # Page keys scroll the buffer when shifted, like a pager. Ctrl+Shift+Page
+        # is the panel's switch-workspace shortcut, so leave that combination for
+        # the QAction rather than also scrolling here.
+        if (
+            mods & Qt.ShiftModifier
+            and not (mods & Qt.ControlModifier)
+            and event.key() in (Qt.Key_PageUp, Qt.Key_PageDown)
+        ):
             delta = self.visible_rows() - 1
             if event.key() == Qt.Key_PageUp:
                 delta = -delta
