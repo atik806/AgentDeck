@@ -249,11 +249,11 @@ class UpdateController(QObject):
         if self._mgr is None or self._pending is None or self._busy:
             return
         self._set_busy(True)
-        self._worker = _Worker(self._mgr, "download", info=self._pending, parent=self)
-        self._worker.progressed.connect(self.progress)
-        self._worker.downloaded.connect(self._on_downloaded)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        worker = self._spawn_worker("download", info=self._pending)
+        worker.progressed.connect(self.progress)
+        worker.downloaded.connect(self._on_downloaded)
+        worker.failed.connect(self._on_failed)
+        worker.start()
 
     def _on_downloaded(self, info) -> None:
         self._set_busy(False)
