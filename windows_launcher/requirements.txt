@@ -21,3 +21,11 @@ numpy>=1.26,<2.0
 # source, voice_engine.py adds it to sys.path automatically. For a frozen build
 # install it as a real package so PyInstaller can collect it:
 #     pip install ../voice_capture
+
+# --- Accounts / cloud sync (see docs/ACCOUNTS.md) ------------------------
+# Sign-in and settings sync talk to Supabase over plain HTTPS -- no supabase
+# SDK, to keep the frozen build light. Optional at runtime: with no network
+# (or a signed-out user) the app is fully usable, the account chip just shows
+# "Sign in".
+requests>=2.32,<3
+certifi>=2024.0

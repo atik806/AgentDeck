@@ -99,6 +99,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Microphone: null = system default, int = device id, str = name substring.
     "voice_mic_device": None,
 
+    # --- Account (Supabase; see docs/ACCOUNTS.md) ---
+    # Skip the sign-in window and open straight into the app (also: --no-login).
+    # Once a session is stored the window is skipped anyway.
+    "skip_login": False,
+    # Mirror the cloud-synced settings keys to the signed-in account.
+    "account_cloud_sync": True,
+    # Last signed-in email, for the account chip before the session loads.
+    "account_email": "",
+
     # --- Updates (see updater.py; only active in a Velopack-installed build) ---
     # Check GitHub for a newer AgentDeck shortly after launch.
     "auto_check_updates": True,
@@ -141,6 +150,9 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_overlay_y": int,
     "voice_model": str,
     "voice_mic_device": (int, str, type(None)),
+    "skip_login": bool,
+    "account_cloud_sync": bool,
+    "account_email": str,
     "auto_check_updates": bool,
     "update_channel": str,
     "update_prerelease": bool,

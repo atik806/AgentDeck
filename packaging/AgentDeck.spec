@@ -35,10 +35,16 @@ datas += collect_data_files("_sounddevice_data")   # portaudio DLL
 # webrtcvad is handled by packaging/hooks/hook-webrtcvad.py (the contrib hook
 # breaks on the -wheels distribution name).
 
+# Account sign-in + settings sync (see windows_launcher/supabase_auth.py). Plain
+# `requests` over HTTPS -- no supabase SDK. certifi's CA bundle must ride along
+# or TLS verification fails in the frozen app.
+datas += collect_data_files("certifi")
+
 hiddenimports += [
     "_cffi_backend", "_sounddevice",
     "_webrtcvad", "webrtcvad",
     "_pywhispercpp",
+    "requests", "certifi", "urllib3", "charset_normalizer", "idna",
 ]
 
 # The voice pipeline lives in the sibling `voice_capture` package. It must be
