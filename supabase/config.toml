@@ -1,0 +1,43 @@
+# Supabase config for the AgentDeck project.
+#
+# This repo does NOT run a local Supabase stack -- the app talks to the hosted
+# project directly. This file exists so `supabase link --project-ref
+# pxlrabmoohrfaptsotzx` + `supabase db push` can apply supabase/migrations/.
+# Full reference: https://supabase.com/docs/guides/local-development/cli/config
+
+project_id = "pxlrabmoohrfaptsotzx"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+# The desktop app signs in through a loopback redirect on an ephemeral port, so
+# the hosted project must allowlist http://127.0.0.1:* (Dashboard -> Auth ->
+# URL Configuration). These values are for a local `supabase start` only.
+site_url = "http://127.0.0.1"
+additional_redirect_urls = ["http://127.0.0.1:*", "http://localhost:*"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+enable_signup = true
+
+[auth.external.google]
+enabled = true
+# Set SUPABASE_AUTH_GOOGLE_CLIENT_ID / SUPABASE_AUTH_GOOGLE_SECRET in the
+# environment before `supabase start`; the hosted project is configured from the
+# Dashboard instead (Auth -> Providers -> Google).
+client_id = "env(SUPABASE_AUTH_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_GOOGLE_SECRET)"
+skip_nonce_check = false
