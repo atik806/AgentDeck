@@ -1,9 +1,9 @@
-"""The sign-in front door -- shown once, before the setup wizard.
+"""The sign-in front door -- shown before the setup wizard, and again if the
+session is ever lost while the app is running.
 
-AgentDeck works fully offline; an account only adds cloud sync of your
-workspaces / agents and the profile chip in the toolbar. So this dialog always
-offers a way straight past it ("Continue without an account"), and closing it
-outright (the [X]) is treated by ``main.py`` as "quit".
+A signed-in account is **required** to use AgentDeck: it is the only way past
+this dialog. The secondary button just quits the app; closing it outright (the
+[X]) does the same.
 
 It owns no auth code: it drives an :class:`account.AccountController` and
 reflects the signals it emits back (``busy_changed`` / ``signed_in`` /
@@ -44,7 +44,7 @@ _ASSET_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
 
 
 class LoginWindow(QDialog):
-    """Choose "Continue with Google" or "Continue without an account"."""
+    """Sign in with Google, or quit. There is no "use it signed-out" path."""
 
     def __init__(
         self,
@@ -56,7 +56,8 @@ class LoginWindow(QDialog):
         super().__init__(parent)
         self._account = account
         self._config = config or {}
-        #: "signed-in" | "offline" once the dialog is accepted; "" while open.
+        #: "signed-in" once the dialog is accepted; "" while it is still open
+        #: (a rejected dialog means "quit").
         self._mode = ""
 
         self.setWindowTitle("AgentDeck — sign in")
@@ -106,7 +107,7 @@ class LoginWindow(QDialog):
         title.setAlignment(Qt.AlignCenter)
         outer.addWidget(title)
 
-        sub = QLabel("Sign in to sync your workspaces and agents across machines.")
+        sub = QLabel("Sign in with your Google account to use AgentDeck.")
         sub.setObjectName("sub")
         sub.setAlignment(Qt.AlignCenter)
         sub.setWordWrap(True)
@@ -120,7 +121,7 @@ class LoginWindow(QDialog):
         self._primary.clicked.connect(self._on_primary)
         outer.addWidget(self._primary)
 
-        self._link = QPushButton("Continue without an account")
+        self._link = QPushButton("Quit AgentDeck")
         self._link.setObjectName("link")
         self._link.setCursor(Qt.PointingHandCursor)
         self._link.clicked.connect(self._on_link)
@@ -138,7 +139,7 @@ class LoginWindow(QDialog):
         foot = QHBoxLayout()
         ver = QLabel(f"v{__version__}")
         ver.setObjectName("foot")
-        hint = QLabel("You can sign in later from the ⚙ menu.")
+        hint = QLabel("An account is required to use AgentDeck.")
         hint.setObjectName("foot")
         foot.addWidget(ver)
         foot.addStretch(1)
@@ -153,7 +154,10 @@ class LoginWindow(QDialog):
     # -- state -----------------------------------------------------------------
 
     def result_mode(self) -> str:
-        """``"signed-in"`` or ``"offline"`` -- valid only after the dialog accepts."""
+        """``"signed-in"`` -- valid only after the dialog accepts.
+
+        A rejected dialog leaves this ``""``; the caller treats that as "quit".
+        """
         return self._mode
 
     @property
@@ -163,7 +167,7 @@ class LoginWindow(QDialog):
     def _set_idle(self) -> None:
         self._primary.setEnabled(True)
         self._primary.setText("Continue with Google")
-        self._link.setText("Continue without an account")
+        self._link.setText("Quit AgentDeck")
 
     def _set_waiting(self) -> None:
         self._primary.setEnabled(False)
@@ -183,8 +187,8 @@ class LoginWindow(QDialog):
             self._account.cancel_sign_in()
             self._set_idle()
             return
-        self._mode = "offline"
-        self.accept()
+        # Not signed in and not signing in -> the only thing left is to quit.
+        self.reject()
 
     # -- account signals ---------------------------------------------------
 

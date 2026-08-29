@@ -100,9 +100,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "voice_mic_device": None,
 
     # --- Account (Supabase; see docs/ACCOUNTS.md) ---
-    # Skip the sign-in window and open straight into the app (also: --no-login).
-    # Once a session is stored the window is skipped anyway.
-    "skip_login": False,
+    # Signing in is mandatory -- there is no config knob to skip it. The window
+    # is shown at launch until a session is stored (--no-login is a build-only
+    # flag used by packaging/build.py's smoke test).
     # Mirror the cloud-synced settings keys to the signed-in account.
     "account_cloud_sync": True,
     # Last signed-in email, for the account chip before the session loads.
@@ -150,7 +150,6 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_overlay_y": int,
     "voice_model": str,
     "voice_mic_device": (int, str, type(None)),
-    "skip_login": bool,
     "account_cloud_sync": bool,
     "account_email": str,
     "auto_check_updates": bool,
@@ -191,6 +190,11 @@ def _migrate(data: Dict[str, Any]) -> bool:
         version = 1
 
     changed = False
+
+    # 'skip_login' was removed when a signed-in account became mandatory. Drop a
+    # stale copy so it doesn't linger in the file (runs regardless of version).
+    if data.pop("skip_login", None) is not None:
+        changed = True
 
     if version < 2:
         # v1 wrote these as the size of the launcher dialog. In v2 the window is

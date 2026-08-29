@@ -169,8 +169,11 @@ class AccountController(QObject):
         return self._plan or "free"
 
     def needs_login(self) -> bool:
-        """True when the login window should be shown before the panel opens."""
-        return not self.is_signed_in and not self._config.get("skip_login", False)
+        """True when the login window must be shown before the panel opens.
+
+        A signed-in account is mandatory, so this is simply "no session yet".
+        """
+        return not self.is_signed_in
 
     # -- actions -----------------------------------------------------------------
 
@@ -354,7 +357,7 @@ class AccountController(QObject):
         if "provider is not enabled" in low:
             self.error.emit(
                 "Google sign-in isn't enabled on the server yet. "
-                "You can continue without an account."
+                "Please try again later."
             )
             return
         self.error.emit(message)

@@ -1,9 +1,11 @@
 # AgentDeck accounts
 
-AgentDeck can sign you in with Google (via Supabase) to give the app a face in
-the toolbar and to sync your setup between machines. **It is entirely optional** —
-"Continue without an account" on the login window, and everything works exactly
-as before. Nothing account-related ever blocks a terminal.
+AgentDeck signs you in with Google (via Supabase) to give the app a face in the
+toolbar and to sync your setup between machines. **A signed-in account is
+required** — the login window's only way forward is "Continue with Google"; the
+other button quits. If the session is lost while the app is running (Sign out,
+or an expired refresh token) the login window comes back, and dismissing it
+closes AgentDeck.
 
 ## What signing in gives you
 
@@ -19,15 +21,14 @@ account dialog, to forget the account. A cached avatar sits beside it.
 
 ## The flow
 
-1. App start → **login window** (only when no session is stored and
-   `skip_login` is off).
+1. App start → **login window** (whenever no session is stored).
 2. **Continue with Google** opens your browser to Supabase's consent page. AgentDeck
    runs a one-shot loopback HTTP server on `127.0.0.1` (port `51737`, or an
    ephemeral one if taken); Supabase redirects the browser back to it with an
    auth code; AgentDeck exchanges it (PKCE) for a session and closes the tab.
-3. **Continue without an account** → straight to the setup wizard, signed out.
-
-Sign in later any time from the account chip / ⚙ gear → *Continue with Google*.
+   On success the setup wizard follows.
+3. **Quit AgentDeck** (or closing the window) ends the process — there is no
+   signed-out mode.
 
 ## Dashboard prerequisites (one-time, done in the Supabase dashboard)
 
@@ -75,14 +76,14 @@ supabase db push
 
 | Knob | Where | Effect |
 |---|---|---|
-| `--no-login` | CLI flag | Skip the login window for this run. |
-| `skip_login` | `config.json` | Always skip the login window (you can still sign in from the gear). |
+| `--no-login` | CLI flag | Skip the login window for this run. Build-only — `packaging/build.py`'s frozen-build smoke test uses it; not for normal use. |
 | `account_cloud_sync` | `config.json` / account dialog checkbox | Mirror settings to the account. |
 | `account_email` | `config.json` | Last signed-in email; shown on the chip before the session loads. Set by the app. |
 | `AGENTDECK_SUPABASE_URL` | env var | Point the app at a different Supabase project. |
 | `AGENTDECK_SUPABASE_KEY` | env var | Publishable key for that project. |
 
-`--no-wizard` / `--smoke` runs also skip the login window.
+`--smoke` runs also skip the login window. `--no-wizard` skips only the wizard,
+not the login window.
 
 ## Security notes
 

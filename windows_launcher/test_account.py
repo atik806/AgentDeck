@@ -232,9 +232,9 @@ check("needs_login() true", c.needs_login() is True)
 check("user is None", c.user is None)
 check("email falls back to config", c.email == "")
 
-print("[2] skip_login config suppresses the login window")
-c2 = fresh({"skip_login": True})
-check("needs_login() false when skip_login set", c2.needs_login() is False)
+print("[2] a signed-in account is mandatory -- no config knob skips it")
+c2 = fresh({"skip_login": True})  # stale key must have no effect
+check("needs_login() stays true regardless of a leftover skip_login", c2.needs_login() is True)
 
 print("[3] a stored, valid session is restored on construct")
 _STORE.clear()
@@ -308,7 +308,8 @@ GoogleSignIn.raise_exc = Exception("Unsupported provider: provider is not enable
 c9.sign_in_with_google()
 pump(lambda: msgs)
 GoogleSignIn.raise_exc = None
-check("friendly provider-disabled message", msgs and "without an account" in msgs[-1])
+check("friendly provider-disabled message",
+      msgs and "try again later" in msgs[-1].lower())
 
 print("[10] an expired stored session refreshes on construct")
 _STORE.clear()

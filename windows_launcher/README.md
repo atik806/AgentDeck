@@ -68,17 +68,19 @@ See [`packaging/README.md`](../packaging/README.md). In short: bump
 Velopack `vpk pack`), then `vpk upload github --tag v<version>` — or just push a
 `v*` tag and let `.github/workflows/release.yml` do it.
 
-## Accounts (optional)
+## Accounts (required)
 
-Before the wizard, a **sign-in window** offers **Continue with Google** (via
-Supabase) or **Continue without an account**. Signing in is entirely optional —
-nothing account-related ever blocks a terminal — and adds a toolbar profile chip
-plus cloud sync of a small config slice (working folder, recent folders, agent,
-terminal count, layout, font, shell, theme) across machines. The session is
-stored DPAPI-encrypted at `%APPDATA%\multi-terminal\session.bin`; **Sign out**
-in the ⚙ account dialog forgets it. `--no-login` (or `"skip_login": true`)
-skips the window. Full setup — enabling the Google provider, the redirect
-allowlist and the database migration — is in [`docs/ACCOUNTS.md`](../docs/ACCOUNTS.md).
+Before the wizard, a **sign-in window** requires **Continue with Google** (via
+Supabase) — a signed-in account is mandatory; the only other button quits. It
+also brings a toolbar profile chip and cloud sync of a small config slice
+(working folder, recent folders, agent, terminal count, layout, font, shell,
+theme) across machines. The session is stored DPAPI-encrypted at
+`%APPDATA%\multi-terminal\session.bin`; **Sign out** in the ⚙ account dialog
+forgets it and puts the sign-in window back up. If the session is lost while the
+app is running, you're prompted to sign in again. `--no-login` (build-only,
+used by the packaging smoke test) skips the window. Full setup — enabling the
+Google provider, the redirect allowlist and the database migration — is in
+[`docs/ACCOUNTS.md`](../docs/ACCOUNTS.md).
 
 ## Setup wizard
 

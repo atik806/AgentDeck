@@ -207,26 +207,22 @@ def main() -> int:
         enabled="--no-splash" not in sys.argv and config.get("show_splash", True),
     )
 
-    # The account sign-in window comes before the wizard. AgentDeck is fully
-    # usable signed-out, so it always offers "Continue without an account";
-    # only closing it outright (the [X]) means "quit". It is skipped once a
-    # session is stored, and by --no-login / --smoke / config.skip_login.
+    # The account sign-in window comes before the wizard. A signed-in account is
+    # required to use AgentDeck: the dialog's only way forward is "Continue with
+    # Google" -- anything else (Quit, the [X]) ends the process here. It is
+    # skipped only once a session is already stored, and by the --no-login /
+    # --smoke flags used by packaging/build.py's frozen-build smoke test.
     from account import AccountController
 
     account = AccountController(config)
-    _skip_login = (
-        "--no-login" in sys.argv
-        or "--smoke" in sys.argv
-        or config.get("skip_login", False)
-    )
+    _skip_login = "--no-login" in sys.argv or "--smoke" in sys.argv
     if account.needs_login() and not _skip_login:
         from login_window import LoginWindow
 
         login = LoginWindow(account, config, icon=_load_icon())
-        if login.exec() != QDialog.Accepted:
+        if login.exec() != QDialog.Accepted or not account.is_signed_in:
             return 0
-        if login.result_mode() == "signed-in":
-            _apply_cloud_settings(config, account)
+        _apply_cloud_settings(config, account)
 
     # The setup wizard is the next front door. --no-wizard (or config.skip_wizard)
     # opens straight from saved settings, for run.bat / scripted use.

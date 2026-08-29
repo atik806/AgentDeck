@@ -58,21 +58,21 @@ acc = FakeAccount()
 w = LoginWindow(acc, {})
 check("primary is the Google button", w._primary.text() == "Continue with Google")
 check("primary enabled", w._primary.isEnabled())
-check("secondary offers the offline path",
-      w._link.text() == "Continue without an account")
+check("secondary is the quit button (no signed-out path)",
+      w._link.text() == "Quit AgentDeck")
 check("no result mode yet", w.result_mode() == "")
 check("status line hidden", not w._status.isVisibleTo(w))
 
 
 # ---------------------------------------------------------------------------
-print("[2] 'without an account' accepts in offline mode")
+print("[2] the secondary button rejects the dialog (quit), never accepts")
 acc = FakeAccount()
 w = LoginWindow(acc, {})
 done = []
 w.finished.connect(done.append)
 w._on_link()
-check("dialog accepted", done == [QDialog.Accepted])
-check("mode is offline", w.result_mode() == "offline")
+check("dialog rejected", done == [QDialog.Rejected])
+check("no result mode -- nothing signed in", w.result_mode() == "")
 check("account was never touched", acc.calls == [])
 
 
@@ -113,8 +113,8 @@ w = LoginWindow(acc, {})
 w._on_primary()
 acc.error.emit("Google sign-in isn't enabled for this AgentDeck project yet.")
 check("button back to idle", w._primary.text() == "Continue with Google" and w._primary.isEnabled())
-check("secondary back to the offline link",
-      w._link.text() == "Continue without an account")
+check("secondary back to the quit button",
+      w._link.text() == "Quit AgentDeck")
 check("status visible with the message",
       w._status.isVisibleTo(w) and "isn't enabled" in w._status.text())
 check("no result mode (still open)", w.result_mode() == "")

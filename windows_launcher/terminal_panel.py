@@ -983,12 +983,39 @@ class TerminalPanel(QMainWindow):
     def _wire_account(self) -> None:
         a = self.account
         a.signed_in.connect(self._on_account_signed_in)
-        a.signed_out.connect(
-            lambda: self.statusBar().showMessage("Signed out of AgentDeck", 4000)
-        )
+        a.signed_out.connect(self._on_account_signed_out)
         a.error.connect(
             lambda msg: self.statusBar().showMessage(f"Account: {msg}", 6000)
         )
+
+    def _on_account_signed_out(self) -> None:
+        """A signed-in account is required -- ask for one again, or quit.
+
+        Fires on an explicit Sign out and on a dead refresh token. AgentDeck is
+        never usable unauthenticated, so we put the sign-in window back up; if
+        the user dismisses it without signing in, the window closes.
+        """
+        self.statusBar().showMessage("Signed out of AgentDeck", 4000)
+        self._require_login()
+
+    def _require_login(self) -> None:
+        if getattr(self, "_relogin_active", False):
+            return
+        self._relogin_active = True
+        try:
+            from login_window import LoginWindow
+
+            login = LoginWindow(self.account, self.config, icon=self.windowIcon())
+            accepted = login.exec() == QDialog.Accepted and self.account.is_signed_in
+            login.deleteLater()
+            if accepted:
+                self._account_chip.refresh()
+                return
+            # Dismissed without signing in -> the app can't be used.
+            self._force_quit = True
+            self.close()
+        finally:
+            self._relogin_active = False
 
     def _on_account_signed_in(self, _user: dict) -> None:
         self.statusBar().showMessage(
@@ -1053,7 +1080,7 @@ class TerminalPanel(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         running = sum(workspace.running_count() for workspace in self._workspaces)
-        if running:
+        if running and not getattr(self, "_force_quit", False):
             reply = QMessageBox.question(
                 self,
                 "Close AgentDeck",
