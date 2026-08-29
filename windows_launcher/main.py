@@ -158,7 +158,7 @@ def _persist_choices(config: dict, choices: dict) -> None:
     )
     try:
         save_config(config)
-    except OSError:
+    except (OSError, ValueError):
         pass  # a read-only config dir must not stop the app from opening
 
 
