@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import time
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -21,8 +22,21 @@ SW_MAXIMIZE = 3
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 
-# Load Windows API functions
+# Load Windows API functions. Pin argument/return types: without these ctypes
+# assumes C int for every argument, which truncates a 64-bit HWND.
 user32 = ctypes.windll.user32
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.EnumWindows.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_int, wintypes.UINT,
+]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.GetSystemMetrics.restype = ctypes.c_int
 
 @dataclass
 class LaunchResult:
