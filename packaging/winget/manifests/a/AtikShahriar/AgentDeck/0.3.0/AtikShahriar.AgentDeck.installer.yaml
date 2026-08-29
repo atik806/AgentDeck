@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: AtikShahriar.AgentDeck
+PackageVersion: 0.3.0
+InstallerLocale: en-US
+InstallerType: exe
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: "--silent"
+  SilentWithProgress: "--silent"
+ElevationRequirement: elevationProhibited
+UpgradeBehavior: install
+ReleaseDate: 2026-08-29
+AppsAndFeaturesEntries:
+  - DisplayName: AgentDeck
+    DisplayVersion: 0.3.0
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/atik806/AgentDeck/releases/download/v0.3.0/AgentDeck-win-Setup.exe
+    InstallerSha256: FC8E95D3D0969845484A50D6816419E4BEBC6AA330CBA098C79EF20CA487D790
+ManifestType: installer
+ManifestVersion: 1.6.0

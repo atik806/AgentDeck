@@ -14,16 +14,27 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from plugins_panel import plugin_icon
 
 __all__ = ["WorkspaceSidebar"]
 
 
 _SIDEBAR_QSS = """
 QWidget#workspaceSidebar { background: #141414; }
+QWidget#wsNav { background: #141414; }
+QToolButton#navBtn {
+    color: #b7b7b7; background: transparent; border: none; text-align: left;
+    padding: 7px 10px; font-size: 12px; border-radius: 6px;
+}
+QToolButton#navBtn:hover { background: #1f1f1f; color: #ffffff; }
+QToolButton#navBtn:checked { background: #23232b; color: #ffffff; }
+QFrame#navRule { background: #232323; max-height: 1px; border: none; }
 QWidget#wsHeader { background: #141414; }
 QLabel#wsTitle {
     color: #8a8a8a; font-size: 10px; font-weight: bold; letter-spacing: 1px;
@@ -194,6 +205,8 @@ class WorkspaceSidebar(QWidget):
 
     #: A row was clicked. Carries the workspace.
     selected = Signal(object)
+    #: The "Plugins" nav button was pressed.
+    plugins_selected = Signal()
     #: The "+" button was pressed.
     created = Signal()
     #: A row's close button was pressed. Carries the workspace.
@@ -212,6 +225,31 @@ class WorkspaceSidebar(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        # -- nav strip: sits above the WORKSPACES list, one row per destination.
+        nav = QWidget(self)
+        nav.setObjectName("wsNav")
+        nav.setAttribute(Qt.WA_StyledBackground, True)
+        nav_box = QVBoxLayout(nav)
+        nav_box.setContentsMargins(6, 6, 6, 5)
+        nav_box.setSpacing(2)
+
+        self._plugins_btn = QToolButton(nav)
+        self._plugins_btn.setObjectName("navBtn")
+        self._plugins_btn.setText("Plugins")
+        self._plugins_btn.setIcon(plugin_icon(16))
+        self._plugins_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._plugins_btn.setCheckable(True)
+        self._plugins_btn.setCursor(Qt.PointingHandCursor)
+        self._plugins_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._plugins_btn.clicked.connect(lambda: self.plugins_selected.emit())
+        nav_box.addWidget(self._plugins_btn)
+        root.addWidget(nav)
+
+        rule = QFrame(self)
+        rule.setObjectName("navRule")
+        rule.setFixedHeight(1)
+        root.addWidget(rule)
 
         header = QWidget(self)
         header.setObjectName("wsHeader")
@@ -270,3 +308,7 @@ class WorkspaceSidebar(QWidget):
             self._list.insertWidget(self._list.count() - 1, row)
 
         self._count.setText(str(len(workspaces)))
+
+    def set_plugins_active(self, active: bool) -> None:
+        """Reflect whether the PLUGINS view (not a workspace) is on screen."""
+        self._plugins_btn.setChecked(bool(active))

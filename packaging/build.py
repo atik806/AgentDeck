@@ -21,6 +21,7 @@ Prerequisites: see windows_launcher/requirements-build.txt.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -129,6 +130,41 @@ def smoke() -> None:
     print("[build] smoke launch ok")
 
 
+def sign_args() -> list[str]:
+    """Authenticode-signing args for ``vpk pack``, from the environment.
+
+    Set ``AGENTDECK_SIGN_TEMPLATE`` to a signing command containing the literal
+    ``{{file}}`` placeholder; ``vpk`` runs it once per built binary (the app exe,
+    Setup.exe, Update.exe) so the whole release is signed and Windows SmartScreen
+    stops showing "Unknown publisher". Examples:
+
+      Azure Trusted Signing ($10/mo, no hardware token, CI-friendly) via the
+      ``sign`` dotnet tool (``dotnet tool install -g sign``):
+        sign code trusted-signing {{file}}
+          --trusted-signing-endpoint     https://eus.codesigning.azure.net/
+          --trusted-signing-account      <account>
+          --trusted-signing-certificate-profile <profile>
+        (Azure creds come from AZURE_TENANT_ID / AZURE_CLIENT_ID /
+         AZURE_CLIENT_SECRET in the environment.)
+
+      A local .pfx / OV cert with the Windows SDK signtool:
+        signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256
+          /f C:\\path\\cert.pfx /p <password> {{file}}
+
+    Unset -> unsigned build (SmartScreen will warn on first run). That is the
+    only thing wrong with the current installer.
+    """
+    template = os.environ.get("AGENTDECK_SIGN_TEMPLATE", "").strip()
+    if not template:
+        print("[build] WARNING: AGENTDECK_SIGN_TEMPLATE not set — building an "
+              "UNSIGNED release (Windows SmartScreen will warn on first run)")
+        return []
+    if "{{file}}" not in template:
+        fail("AGENTDECK_SIGN_TEMPLATE must contain the literal {{file}} placeholder")
+    print("[build] signing enabled via AGENTDECK_SIGN_TEMPLATE")
+    return ["--signTemplate", template]
+
+
 def vpk_pack(version: str) -> None:
     if shutil.which("vpk") is None:
         fail("vpk not on PATH — dotnet tool install -g vpk")
@@ -141,7 +177,8 @@ def vpk_pack(version: str) -> None:
          "--mainExe", "AgentDeck.exe",
          "--packTitle", "AgentDeck",
          "--icon", str(LAUNCHER / "assets" / "icon.ico"),
-         "--outputDir", str(RELEASES)],
+         "--outputDir", str(RELEASES),
+         *sign_args()],
         cwd=REPO, check=True,
     )
 

@@ -45,6 +45,7 @@ from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton
 from new_workspace_dialog import NewWorkspaceDialog
+from plugins_panel import PluginsPanel
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
 from vt_screen import DEFAULT_SCROLLBACK, Palette
@@ -139,6 +140,8 @@ class TerminalPanel(QMainWindow):
         self._workspaces: list[Workspace] = []
         self._active_ws: Optional[Workspace] = None
         self._ws_seq = 0
+        # True while the sidebar's PLUGINS view is showing instead of a workspace.
+        self._plugins_active = False
         # Set before anything can show the window: showEvent reads it.
         self._focus_primed = False
 
@@ -398,14 +401,23 @@ class TerminalPanel(QMainWindow):
 
         self._sidebar = WorkspaceSidebar(central)
         self._sidebar.selected.connect(self._select_workspace)
+        self._sidebar.plugins_selected.connect(self._show_plugins)
         self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
 
+        # The workspace pages live in _ws_stack; _main_stack flips the whole
+        # terminal area over to the PLUGINS panel and back. Keeping _ws_stack a
+        # workspace-only stack means its .count() still equals the workspace
+        # count (older callers + the test suite rely on that).
         self._ws_stack = QStackedWidget(central)
+        self._plugins_panel = PluginsPanel(central)
+        self._main_stack = QStackedWidget(central)
+        self._main_stack.addWidget(self._ws_stack)
+        self._main_stack.addWidget(self._plugins_panel)
 
         row.addWidget(self._sidebar)
-        row.addWidget(self._ws_stack, 1)
+        row.addWidget(self._main_stack, 1)
         self.setCentralWidget(central)
 
         status = self.statusBar()
@@ -529,9 +541,30 @@ class TerminalPanel(QMainWindow):
         self._select_workspace(workspace)
         return workspace
 
+    def _show_plugins(self) -> None:
+        """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""
+        self._plugins_active = True
+        self._main_stack.setCurrentWidget(self._plugins_panel)
+        overlay = getattr(self, "_voice_overlay", None)
+        if overlay is not None:
+            overlay.setVisible(False)
+        self._refresh_sidebar()
+
+    def _leave_plugins(self) -> None:
+        """Back to the workspaces view. No-op when already there."""
+        if not self._plugins_active:
+            return
+        self._plugins_active = False
+        self._main_stack.setCurrentWidget(self._ws_stack)
+        overlay = getattr(self, "_voice_overlay", None)
+        if overlay is not None and self.config.get("voice_overlay_visible", True):
+            overlay.setVisible(True)
+            self._position_overlay()
+
     def _select_workspace(self, workspace: Workspace) -> None:
         if workspace not in self._workspaces:
             return
+        self._leave_plugins()
         self._active_ws = workspace
         self._ws_stack.setCurrentWidget(workspace)
         self._refresh_sidebar()
@@ -604,7 +637,9 @@ class TerminalPanel(QMainWindow):
         self._refresh_status()
 
     def _refresh_sidebar(self) -> None:
-        self._sidebar.refresh(self._workspaces, self._active_ws)
+        active = None if self._plugins_active else self._active_ws
+        self._sidebar.refresh(self._workspaces, active)
+        self._sidebar.set_plugins_active(self._plugins_active)
 
     def _toggle_sidebar(self, show: Optional[bool] = None) -> None:
         if show is None:

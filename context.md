@@ -149,9 +149,10 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    `main.py` calls `agents.pretrust_folder()` before building the panel — for a
    Claude Code agent it writes `projects[<folder>].hasTrustDialogAccepted=true`
    in `~/.claude.json` so every pane opens straight into Claude instead of its
-   "trust this folder?" prompt (`pretrust_agent_folder` config toggle, default
-   on). Tests: `test_agents.py`, `test_setup_wizard.py` (offscreen-OK),
-   panel suite §29.
+   "trust this folder?" prompt (`pretrust_agent_folder` config toggle, **default
+   off** — it suppresses a security prompt; and even when on, `pretrust_folder()`
+   refuses any folder carrying its own `.claude/` or `.mcp.json` config). Tests:
+   `test_agents.py`, `test_setup_wizard.py` (offscreen-OK), panel suite §29.
 
 7. **Toolbar restyle (2026-08-29)** — `terminal_panel._TOOLBAR_QSS`: consistent
    button sizing, subtle checked tint (was solid blue), styled combo arrows,
@@ -190,6 +191,19 @@ console — hence the crash-to-MessageBox handler in `main.py`).
      Rebuild after editing: `assets\build_icons.py windows_launcher\assets\icon.svg
      windows_launcher\assets assets`.
 
+9. **Sidebar nav strip + Plugins panel (2026-08-29)** — `workspace_sidebar.py`
+   now has a small nav strip above the WORKSPACES list (`#wsNav`), currently one
+   item: a checkable **Plugins** button (`plugin_icon()` drawn puzzle-piece —
+   emoji renders broken here). It emits `plugins_selected`. `plugins_panel.py`
+   (`PluginsPanel`) is a styled "coming soon" empty state. `terminal_panel.py`
+   wraps the workspace `QStackedWidget` in an outer `_main_stack` (`_ws_stack`
+   at 0, `_plugins_panel` at 1) — `_ws_stack.count()` stays == workspace count,
+   which older callers/tests rely on. `_show_plugins()` / `_leave_plugins()`
+   flip `_main_stack` and hide/restore the voice overlay; `_plugins_active`
+   gates `_refresh_sidebar` (passes `active=None` so no row highlights, keeps
+   the list populated). Clicking any workspace / creating one leaves the panel.
+   Tests: `test_plugins_panel.py` (offline), panel suite §24b.
+
 ## Running / testing
 
 ```cmd
@@ -203,6 +217,7 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_setup_wizard.py   # wizard pages/validation; offline
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
 .venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
+.venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are
@@ -272,16 +287,25 @@ installer/updater, published to **GitHub Releases**.
 - `packaging/` — `AgentDeck.spec` (onedir; `collect_all` winpty/sounddevice/
   pywhispercpp, `collect_submodules('voice_capture')`, big Qt `excludes`),
   `hooks/hook-pywhispercpp.py` (delvewheel root DLLs), `build.py` (freeze +
-  bundle asserts + smoke + `vpk pack`), `README.md` (runbook).
+  bundle asserts + smoke + `vpk pack` + `checksums.py`), `checksums.py`
+  (`SHA256SUMS.txt` over `packaging/Releases/`), `README.md` (runbook).
+- `windows_launcher/constraints.txt` — exact pins for the whole dependency
+  closure; CI installs with `-c constraints.txt`. Regenerate on a deliberate
+  bump (`pip freeze` from `.venv-build`, minus the editable/self lines).
 - `.github/workflows/release.yml` — push a `v*` tag → build on `windows-latest`
-  → `vpk upload github`.
+  → `vpk upload github`, then `gh release upload SHA256SUMS.txt`. Actions are
+  pinned to commit SHAs; Azure signing secrets are scoped to the build step
+  only (never `$GITHUB_ENV`).
 - **Not touched:** `voice_engine.py` (its `sys.path` hack is skipped when frozen;
   `voice_capture` must be `pip install`ed into the build venv instead).
 - Build with **python.org 3.11** in `windows_launcher/.venv-build` — the run
   `.venv` is MS Store Python and can't build. `pywin32` was dropped
   (unused; only `ctypes.windll` is used).
-- Unsigned for now → SmartScreen "More info → Run anyway". Per-user install to
-  `%LOCALAPPDATA%\AgentDeck\` (no UAC) is what makes self-update work.
+- Unsigned unless the `AZURE_*` / `TRUSTED_SIGNING_*` repo secrets are set (then
+  the CI signs every binary with Azure Trusted Signing); unsigned → SmartScreen
+  "More info → Run anyway". Either way every release carries `SHA256SUMS.txt`.
+  Per-user install to `%LOCALAPPDATA%\AgentDeck\` (no UAC) is what makes
+  self-update work.
 
 ## Gotchas hit before
 

@@ -474,6 +474,27 @@ def _():
     check("shown again", panel._sidebar.isVisible(), True)
 
 
+@step
+def _():
+    print("== 24b. the Plugins nav item swaps in the plugins panel ==")
+    check("workspaces view on screen", panel._main_stack.currentWidget() is panel._ws_stack, True)
+    panel._sidebar.plugins_selected.emit()
+    check("plugins panel now on screen",
+          panel._main_stack.currentWidget() is panel._plugins_panel, True)
+    check("panel tracks it", panel._plugins_active, True)
+    check("nav button checked", panel._sidebar._plugins_btn.isChecked(), True)
+    check("no workspace row highlighted",
+          any(panel._sidebar._list.itemAt(i).widget().property("active") == "true"
+              for i in range(panel._sidebar._list.count() - 1)), False)
+    check("shells kept running behind it",
+          panel._workspaces[0].running_count() > 0, True)
+    panel._select_workspace(panel._workspaces[0])
+    check("back to the workspaces view",
+          panel._main_stack.currentWidget() is panel._ws_stack, True)
+    check("panel cleared the flag", panel._plugins_active, False)
+    check("nav button unchecked", panel._sidebar._plugins_btn.isChecked(), False)
+
+
 # -- 6. the voice overlay --------------------------------------------------
 #
 # The engine itself is never started here -- that would open the mic and pull a
