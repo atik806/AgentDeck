@@ -868,6 +868,9 @@ class TerminalView(QWidget):
         # printing its banner / first prompt, i.e. it is ready for input.
         self._startup_command = (startup_command or "").strip()
         self._startup_sent = not self._startup_command
+        # When the pty last produced output; the alt-screen watchdog uses it to
+        # skip its process-table walk while a program is visibly still painting.
+        self._last_output_at = 0.0
 
         self.canvas = TerminalCanvas(self._screen, preferred_font(font_size), self)
         self.scrollbar = QScrollBar(Qt.Vertical, self)
@@ -930,6 +933,7 @@ class TerminalView(QWidget):
 
         chunk = "".join(self._pending)
         self._pending.clear()
+        self._last_output_at = time.monotonic()
 
         if not self._startup_sent:
             # The shell has produced output, so it is alive and about to
