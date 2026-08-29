@@ -402,12 +402,21 @@ def _():
 @step
 def _():
     print("== 19. renaming a workspace updates its row ==")
-    panel._rename_workspace(panel._workspaces[0], "BridgeMind")
+    rows = panel._sidebar._list
+    row0 = rows.itemAt(0).widget()
+    check("the row has a rename (edit) button", hasattr(row0, "_edit"), True)
+    # the edit button drives the same inline rename as a double-click
+    row0._begin_rename()
+    check("edit button opened the name field", not row0._name.isReadOnly(), True)
+    row0._name.setText("BridgeMind")
+    row0._commit_rename()
 
 
 @step
 def _():
     check("row shows the new name", ws_names(), ["BridgeMind", "Workspace 2"])
+    check("workspace object was renamed too",
+          panel._workspaces[0].name, "BridgeMind")
 
 
 @step

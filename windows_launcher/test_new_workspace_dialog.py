@@ -109,6 +109,21 @@ check("preview mentions plain shells", "plain shell" in d._note.text().lower())
 
 
 # ---------------------------------------------------------------------------
+print("[3b] workspace name field")
+d = NewWorkspaceDialog(default_name="Workspace 3")
+check("name prefilled with the default", d._name.text() == "Workspace 3")
+d._name.setText("  Backend  ")
+d._accept()
+check("name is trimmed and carried", d.result_choice()["name"] == "Backend")
+
+d = NewWorkspaceDialog(default_name="Workspace 4")
+d._name.clear()
+d._accept()
+check("empty name -> '' (caller falls back to the default)",
+      d.result_choice()["name"] == "")
+
+
+# ---------------------------------------------------------------------------
 print("[4] result dict + accept")
 d = NewWorkspaceDialog(default_agent=CUSTOM_KEY)
 d._custom.setText("codex --full-auto")
