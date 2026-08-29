@@ -2,6 +2,12 @@ name: release
 
 # Push a tag like v0.1.1 (after bumping windows_launcher/version.py) to build
 # the Windows app and publish it to GitHub Releases.
+#
+# Pick ONE release path -- don't do both for the same version:
+#   * CI:    bump version.py, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`
+#   * local: `packaging/build.py` then `vpk upload github ...` (this also
+#            creates the tag, which fires this workflow -- the "already
+#            published" guard below then no-ops the publish step)
 on:
   push:
     tags:
@@ -45,12 +51,33 @@ jobs:
       - name: Build + pack
         run: python packaging/build.py
 
+      # If this tag already has a published, non-draft release with assets
+      # (e.g. it was published locally with `vpk upload`, which creates the
+      # tag), there's nothing to do -- skip the publish step instead of failing.
+      - name: Is the release already published?
+        id: check
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $h = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "ci" }
+          $tag = "${{ github.ref_name }}"
+          try {
+            $r = Invoke-RestMethod -Headers $h `
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+            $done = (-not $r.draft) -and (@($r.assets).Count -gt 0)
+          } catch { $done = $false }
+          "already=$done" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "already published: $done"
+
       - name: Publish to GitHub Releases
+        if: steps.check.outputs.already != 'True'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           vpk upload github
           --repoUrl ${{ github.server_url }}/${{ github.repository }}
-          --publish
+          --outputDir packaging/Releases
+          --publish true
           --releaseName "AgentDeck ${{ github.ref_name }}"
           --tag ${{ github.ref_name }}

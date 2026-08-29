@@ -39,13 +39,23 @@ windows_launcher\.venv-build\Scripts\python packaging\build.py
 #    -> packaging\Releases\          (AgentDeck-win-Setup.exe, *-full.nupkg,
 #                                     *-delta.nupkg from 0.1.1 on, releases.win.json)
 
-# 3. publish
-vpk upload github --repoUrl https://github.com/atik806/AgentDeck --publish ^
+# 3. publish   (needs `gh auth login` or a GITHUB_TOKEN env var)
+vpk upload github --repoUrl https://github.com/atik806/AgentDeck ^
+    --outputDir packaging\Releases --publish true ^
     --releaseName "AgentDeck 0.1.1" --tag v0.1.1
 ```
 
+`--outputDir packaging\Releases` is required -- that's where `build.py` puts the
+packages; without it `vpk` looks in `.\Releases\` and fails with "Could not find
+assets file for channel 'win'".
+
 Velopack builds the delta against the previous release automatically, so after
 the first install users download only the diff.
+
+**Pick one path per version** -- either publish locally (step 3, which also
+creates the `vX.Y.Z` tag) **or** push the tag and let CI publish. Not both:
+`vpk upload` creating the tag fires the CI workflow, which then detects the
+release is already published and skips its own publish step.
 
 Users get the update by clicking **Update** in the toolbar (or automatically —
 `auto_check_updates` prompts them shortly after launch).

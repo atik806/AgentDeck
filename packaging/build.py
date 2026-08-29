@@ -167,9 +167,10 @@ def main() -> int:
 
     vpk_pack(version)
     print(f"\n[build] done. Releases in {RELEASES}\n")
-    print("Publish with:")
+    print("Publish with (needs gh auth / a GITHUB_TOKEN):")
     print(f'  vpk upload github --repoUrl https://github.com/atik806/AgentDeck '
-          f'--publish --releaseName "AgentDeck {version}" --tag v{version}')
+          f'--outputDir packaging/Releases --publish true '
+          f'--releaseName "AgentDeck {version}" --tag v{version}')
     return 0
 
 
