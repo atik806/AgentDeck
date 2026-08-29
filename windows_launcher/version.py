@@ -15,7 +15,7 @@ from __future__ import annotations
 
 #: Bump this for every release. Plain ``MAJOR.MINOR.PATCH`` (SemVer) -- Velopack
 #: and GitHub tags (``v<version>``) both expect that shape.
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 #: Velopack pack id / update-feed identity. Also the install-folder name
 #: (``%LOCALAPPDATA%\AgentDeck``). **Never change it** once a release is public --
