@@ -52,9 +52,10 @@ QLabel#wsBadge {
     padding: 0 5px; font-size: 10px;
 }
 QFrame#wsRow[active="true"] QLabel#wsBadge { background: #34343e; color: #cfcfcf; }
-QToolButton#wsClose {
+QToolButton#wsEdit, QToolButton#wsClose {
     color: #9a9a9a; background: transparent; border: none; font-size: 11px;
 }
+QToolButton#wsEdit:hover { color: #ffffff; background: #2d2d2d; border-radius: 3px; }
 QToolButton#wsClose:hover { color: #ffffff; background: #c02020; border-radius: 3px; }
 
 QScrollArea { background: #141414; border: none; }
@@ -116,6 +117,15 @@ class _WorkspaceRow(QFrame):
         self._badge.setObjectName("wsBadge")
         self._badge.setAlignment(Qt.AlignCenter)
 
+        self._edit = QToolButton(self)
+        self._edit.setObjectName("wsEdit")
+        self._edit.setText("✎")
+        self._edit.setCursor(Qt.PointingHandCursor)
+        self._edit.setFixedSize(18, 18)
+        self._edit.setToolTip("Rename workspace")
+        self._edit.setVisible(active)
+        self._edit.clicked.connect(self._begin_rename)
+
         self._close = QToolButton(self)
         self._close.setObjectName("wsClose")
         self._close.setText("✕")
@@ -129,15 +139,18 @@ class _WorkspaceRow(QFrame):
         row.addWidget(self._swatch)
         row.addWidget(self._name, 1)
         row.addWidget(self._badge)
+        row.addWidget(self._edit)
         row.addWidget(self._close)
 
     # -- interaction -----------------------------------------------------------
 
     def enterEvent(self, event) -> None:  # noqa: N802
+        self._edit.setVisible(True)
         self._close.setVisible(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
+        self._edit.setVisible(self._active)
         self._close.setVisible(self._active)
         super().leaveEvent(event)
 

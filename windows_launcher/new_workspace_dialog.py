@@ -55,6 +55,7 @@ class NewWorkspaceDialog(QDialog):
     def __init__(
         self,
         *,
+        default_name: str = "",
         default_agent: str = PLAIN_KEY,
         default_custom: str = "",
         default_count: int = 4,
@@ -117,6 +118,15 @@ class NewWorkspaceDialog(QDialog):
         sub.setObjectName("sub")
         sub.setWordWrap(True)
         outer.addWidget(sub)
+
+        outer.addSpacing(4)
+        outer.addWidget(self._label("Name"))
+        self._name = QLineEdit(default_name, self)
+        self._name.setPlaceholderText(default_name or "Workspace")
+        # Prefilled with the next "Workspace N" -- selected so the user can just
+        # type over it, or leave it and press Create.
+        self._name.selectAll()
+        outer.addWidget(self._name)
 
         outer.addSpacing(4)
         outer.addWidget(self._label("Agent"))
@@ -245,6 +255,7 @@ class NewWorkspaceDialog(QDialog):
         key = self._agent_key()
         custom = self._custom.text().strip()
         self._result = {
+            "name": self._name.text().strip(),
             "agent_key": key,
             "agent_custom": custom,
             "agent_command": resolve_agent(key, custom),

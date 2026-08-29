@@ -164,16 +164,18 @@ rather than focusing something you cannot see.
 ## Workspaces
 
 The **WORKSPACES** sidebar on the left holds independent groups of panes. Click a
-row to switch; `＋` (or `Ctrl+Shift+N`) makes a new one, seeded with
-`default_count` panes. Double-click a name to rename it. The number on each row is
-that workspace's pane count.
+row to switch; `＋` (or `Ctrl+Shift+N`) opens the new-workspace dialog — name it
+(defaults to `Workspace N`), pick the agent, pick the pane count. The number on
+each row is that workspace's pane count.
+
+Rename any time: hover a row (or the active one) and click the **✎** button, or
+double-click the name. Layout, shell and font settings are shared across every
+workspace. The **✕** next to ✎ closes it — with live shells it asks first, and
+the last workspace can't be closed.
 
 Only the active workspace is on screen — the rest are hidden, but their shells
-keep running and their scrollback is intact when you switch back. Layout, shell
-and font settings are shared across every workspace. Hover a row (or the active
-one) for its `✕`; closing a workspace with live shells asks first, and the last
-workspace can't be closed. `Ctrl+B` hides the sidebar; `Ctrl+Shift+PgDn` /
-`Ctrl+Shift+PgUp` step between workspaces without it.
+keep running and their scrollback is intact when you switch back. `Ctrl+B` hides
+the sidebar; `Ctrl+Shift+PgDn` / `Ctrl+Shift+PgUp` step between workspaces.
 
 ## Configuration
 

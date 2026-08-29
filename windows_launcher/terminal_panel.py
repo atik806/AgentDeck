@@ -415,6 +415,10 @@ class TerminalPanel(QMainWindow):
         self._ws_seq += 1
         return f"Workspace {self._ws_seq}"
 
+    def _peek_ws_name(self) -> str:
+        """The name a new workspace would get, without consuming the counter."""
+        return f"Workspace {self._ws_seq + 1}"
+
     def _new_workspace_interactive(self) -> None:
         """Ask which agent to run, then open a workspace running it.
 
@@ -423,6 +427,7 @@ class TerminalPanel(QMainWindow):
         and the tests.
         """
         dialog = NewWorkspaceDialog(
+            default_name=self._peek_ws_name(),
             default_agent=self._last_ws_agent,
             default_custom=self._last_ws_agent_custom,
             default_count=self._default_count,
@@ -440,7 +445,9 @@ class TerminalPanel(QMainWindow):
         if command and self.config.get("pretrust_agent_folder", True):
             pretrust_folder(command, self._working_folder)
 
+        name = (picked.get("name") or "").strip() or None
         self._add_workspace(
+            name=name,
             pane_count=int(picked.get("count", self._default_count)),
             startup_command=command or None,
         )
@@ -453,8 +460,11 @@ class TerminalPanel(QMainWindow):
         startup_command: Optional[str] = None,
     ) -> Workspace:
         accent = _WS_ACCENTS[len(self._workspaces) % len(_WS_ACCENTS)]
+        # Advance the counter for every workspace so a later default name never
+        # collides with an earlier one, even when some were named by hand.
+        auto = self._next_ws_name()
         workspace = Workspace(
-            name or self._next_ws_name(),
+            name or auto,
             accent,
             shell=self._shell,
             font_size=self._font_size,
