@@ -205,7 +205,7 @@ def load_config() -> Dict[str, Any]:
         return dict(DEFAULT_CONFIG)
 
     try:
-        with open(CONFIG_FILE, "r") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[WARN] Failed to load config ({exc}), using defaults.")
