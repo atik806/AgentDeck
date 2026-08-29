@@ -548,10 +548,14 @@ class TerminalPanel(QMainWindow):
 
     def _on_workspace_empty(self, workspace: Workspace) -> None:
         # The last pane of a workspace was closed. Drop the workspace, unless it
-        # is the only one -- then it means "close the app", so let closeEvent ask.
+        # is the only one -- then it means "close the app".
         if len(self._workspaces) > 1:
             self._close_workspace(workspace)
         else:
+            # close_pane deferred the final pane to us without killing its
+            # shell; tear it down here so closeEvent doesn't then re-prompt
+            # "shells still running" for a pane the user explicitly closed.
+            workspace.shutdown()
             self.close()
 
     def _rename_workspace(self, workspace: Workspace, name: str) -> None:
