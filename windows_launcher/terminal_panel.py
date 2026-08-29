@@ -258,6 +258,13 @@ class TerminalPanel(QMainWindow):
             " padding: 0 8px 0 3px; background: transparent; }"
         )
         bar.addWidget(wordmark)
+
+        ver = QLabel(f"v{__version__}", bar)
+        ver.setStyleSheet(
+            "color: #6e6e6e; font-size: 10px; padding: 0 6px 0 0;"
+            " background: transparent;"
+        )
+        bar.addWidget(ver)
         bar.addSeparator()
 
         self._sidebar_btn = QToolButton(bar)
