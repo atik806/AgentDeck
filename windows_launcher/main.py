@@ -51,6 +51,53 @@ def _log_path() -> Path:
     return Path(base) / "multi-terminal" / _ERROR_LOG
 
 
+def _report_crash_to_cloud(report: str, summary: str) -> None:
+    """Best-effort: if a session is stored and error reporting is on, POST the
+    crash to public.app_errors. Silent on any failure -- a crash reporter that
+    crashes is worse than no crash reporter.
+
+    Runs on a short-lived daemon thread so a slow network can't hold the error
+    dialog hostage; process exit may cut it short, which is fine.
+    """
+    def _send() -> None:
+        try:
+            from config import load_config
+            from supabase_auth import SessionStore, rest_insert
+            from version import __version__
+
+            if not load_config().get("error_reporting", True):
+                return
+            session = SessionStore().load()
+            if session is None:
+                return
+            import platform
+
+            rest_insert(
+                "app_errors",
+                {
+                    "user_id": session.user_id,
+                    "app_version": __version__,
+                    "kind": "crash",
+                    "phase": "runtime" if _started else "startup",
+                    "message": (summary or "AgentDeck crashed")[:4000],
+                    "traceback": report[:20000],
+                    "os": platform.platform(),
+                },
+                session.access_token,
+            )
+        except Exception:
+            pass
+
+    try:
+        import threading
+
+        worker = threading.Thread(target=_send, name="crash-report", daemon=True)
+        worker.start()
+        worker.join(8.0)
+    except Exception:
+        pass
+
+
 def _report_fatal(exc_type, exc, tb) -> None:
     """Make an unhandled exception visible when there is no console to see it."""
     report = "".join(traceback.format_exception(exc_type, exc, tb))
@@ -66,6 +113,10 @@ def _report_fatal(exc_type, exc, tb) -> None:
         where = f"\n\nFull report written to:\n{path}"
     except OSError:
         pass
+
+    _report_crash_to_cloud(
+        report, "".join(traceback.format_exception_only(exc_type, exc)).strip()
+    )
 
     # MessageBoxW rather than QMessageBox: Qt is one of the things that can be
     # missing or broken at this point, and user32 never is.

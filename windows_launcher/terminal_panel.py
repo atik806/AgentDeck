@@ -1109,9 +1109,19 @@ class TerminalPanel(QMainWindow):
         a = self.account
         a.signed_in.connect(self._on_account_signed_in)
         a.signed_out.connect(self._on_account_signed_out)
-        a.error.connect(
-            lambda msg: self.statusBar().showMessage(f"Account: {msg}", 6000)
-        )
+        a.error.connect(self._on_account_error)
+
+    # Benign account-error messages that aren't worth a crash report: the user
+    # backing out, or a session that just needs re-authing.
+    _QUIET_ACCOUNT_ERRORS = ("cancel", "session expired", "not signed in", "sign in again")
+
+    def _on_account_error(self, msg: str) -> None:
+        self.statusBar().showMessage(f"Account: {msg}", 6000)
+        low = (msg or "").lower()
+        if not any(s in low for s in self._QUIET_ACCOUNT_ERRORS):
+            self.account.report_error(
+                msg, kind="error", phase="runtime", context={"source": "account"}
+            )
 
     def _on_account_signed_out(self) -> None:
         """A signed-in account is required -- ask for one again, or quit.

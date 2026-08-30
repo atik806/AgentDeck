@@ -49,6 +49,7 @@ __all__ = [
     "fetch_user",
     "rest_select",
     "rest_upsert",
+    "rest_insert",
     "SessionStore",
 ]
 
@@ -567,6 +568,32 @@ def rest_upsert(
     except ValueError:
         return []
     return out if isinstance(out, list) else [out]
+
+
+def rest_insert(
+    table: str,
+    row: dict,
+    access_token: str,
+    *,
+    url: str = SUPABASE_URL,
+    key: str = SUPABASE_KEY,
+) -> None:
+    """Plain INSERT of one row -- no merge-duplicates, no representation echoed
+    back. Used for append-only tables like ``app_errors``."""
+    try:
+        resp = requests.post(
+            f"{url.rstrip('/')}/rest/v1/{table}",
+            headers=_headers(
+                key,
+                access_token,
+                {"Content-Type": "application/json", "Prefer": "return=minimal"},
+            ),
+            json=row,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise AuthError(f"Couldn't reach Supabase: {exc}") from exc
+    _check(resp, "Sending the report")
 
 
 # ---------------------------------------------------------------------------

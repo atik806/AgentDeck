@@ -142,13 +142,20 @@ def rest_upsert(table, row, access_token, *, url=None, key=None):
     return [row]
 
 
+def rest_insert(table, row, access_token, *, url=None, key=None):
+    if getattr(rest_insert, "fail", False):
+        raise Exception("boom: insert failed")
+    _STORE.setdefault("inserts", []).append((table, row))
+
+
 def build_pkce():
     return ("verifier", "challenge")
 
 
 for _name in (
     "AuthError", "Session", "SessionStore", "GoogleSignIn",
-    "refresh", "sign_out", "fetch_user", "rest_select", "rest_upsert", "build_pkce",
+    "refresh", "sign_out", "fetch_user", "rest_select", "rest_upsert",
+    "rest_insert", "build_pkce",
 ):
     setattr(_fake, _name, globals()[_name])
 _fake.SUPABASE_URL = "https://fake.supabase.co"
@@ -380,6 +387,47 @@ pump(lambda: prof or errs15)
 rest_select.fail_next = 0
 check("profile still arrives after a transparent re-auth", bool(prof) and errs15 == [])
 check("session was swapped to the refreshed token", c15.session.access_token == "at2")
+
+print("[17] report_error inserts a row when signed in and reporting is on")
+_STORE.pop("inserts", None)
+rest_insert.fail = False
+c17 = fresh({"error_reporting": True})
+GoogleSignIn.next_result = Session()
+c17.sign_in_with_google()
+pump(lambda: c17.is_signed_in)
+c17.report_error("something broke", kind="error", context={"source": "test"})
+pump(lambda: _STORE.get("inserts"))
+itable, irow = _STORE["inserts"][-1]
+check("insert targeted app_errors", itable == "app_errors")
+check("row carries the message + user + kind",
+      irow["message"] == "something broke" and irow["user_id"] == "u-123"
+      and irow["kind"] == "error" and irow["context"] == {"source": "test"})
+
+print("[18] report_error is a no-op when signed out or disabled")
+_STORE.pop("inserts", None)
+c18a = fresh({"error_reporting": True})  # signed out
+c18a.report_error("ignored")
+c18b = fresh({"error_reporting": False})
+GoogleSignIn.next_result = Session()
+c18b.sign_in_with_google()
+pump(lambda: c18b.is_signed_in)
+c18b.report_error("also ignored")
+pump(lambda: False, ms=200)  # let any stray worker run
+check("nothing inserted while signed out / disabled", _STORE.get("inserts") is None)
+
+print("[19] a failed report is swallowed and never re-emits error")
+_STORE.pop("inserts", None)
+rest_insert.fail = True
+c19 = fresh({"error_reporting": True})
+GoogleSignIn.next_result = Session()
+c19.sign_in_with_google()
+pump(lambda: c19.is_signed_in)
+errs19 = []
+c19.error.connect(errs19.append)
+c19.report_error("will fail to send")
+pump(lambda: False, ms=300)
+rest_insert.fail = False
+check("no error signal from a failed report", errs19 == [])
 
 print("[16] shutdown() is safe and stops workers")
 c16 = fresh()

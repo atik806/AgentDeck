@@ -111,6 +111,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "account_cloud_sync": True,
     # Last signed-in email, for the account chip before the session loads.
     "account_email": "",
+    # Send crash reports and non-fatal error reports to the signed-in account
+    # (table public.app_errors). Off = nothing leaves the machine; crashes still
+    # go to %APPDATA%\multi-terminal\last-error.log either way.
+    "error_reporting": True,
 
     # --- Updates (see updater.py; only active in a Velopack-installed build) ---
     # Check GitHub for a newer AgentDeck shortly after launch.
@@ -156,6 +160,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_mic_device": (int, str, type(None)),
     "account_cloud_sync": bool,
     "account_email": str,
+    "error_reporting": bool,
     "auto_check_updates": bool,
     "update_channel": str,
     "update_prerelease": bool,

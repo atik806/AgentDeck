@@ -18,6 +18,7 @@ worker threads don't pile up.
 
 from __future__ import annotations
 
+import platform
 import threading
 from typing import Callable, Optional
 
@@ -26,6 +27,11 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 import supabase_auth
 from supabase_auth import AuthError
 from config import _get_config_dir, save_config
+
+try:
+    from version import __version__ as _APP_VERSION
+except Exception:  # noqa: BLE001 - version.py is import-cheap, but never block on it
+    _APP_VERSION = ""
 
 __all__ = ["AccountController", "CLOUD_KEYS"]
 
@@ -305,6 +311,48 @@ class AccountController(QObject):
             )
 
         self._run(_do, lambda _r: None, on_fail=self._on_rest_failed)
+
+    def report_error(
+        self,
+        message: str,
+        *,
+        kind: str = "error",
+        phase: str = "runtime",
+        traceback: Optional[str] = None,
+        context: Optional[dict] = None,
+    ) -> None:
+        """Best-effort: record a crash / non-fatal failure to the account.
+
+        A no-op when error reporting is switched off (``config["error_reporting"]``)
+        or nobody is signed in. Runs on a worker; a failed send is swallowed the
+        same way ``push_cloud_settings`` swallows a failed sync.
+        """
+        if not self._config.get("error_reporting", True) or self._session is None:
+            return
+        message = (message or "").strip()
+        if not message:
+            return
+
+        row = {
+            "user_id": self._session.user_id,
+            "app_version": _APP_VERSION,
+            "kind": kind,
+            "phase": phase,
+            "message": message[:4000],
+            "traceback": str(traceback)[:20000] if traceback else None,
+            "context": context if isinstance(context, dict) else {},
+            "os": platform.platform(),
+        }
+
+        def _do():
+            return self._rest_with_reauth(
+                lambda tok: supabase_auth.rest_insert("app_errors", row, tok)
+            )
+
+        # A failed report is swallowed silently: routing it through
+        # _on_rest_failed would re-emit `error`, which a caller wired to
+        # report_error would turn into an endless reporting loop.
+        self._run(_do, lambda _r: None, on_fail=lambda _m: None)
 
     def shutdown(self) -> None:
         """Stop background work for the window's closeEvent."""

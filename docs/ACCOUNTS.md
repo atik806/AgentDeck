@@ -79,8 +79,25 @@ supabase db push
 | `--smoke` | CLI flag | Skip the login window for this run. Build-only — `packaging/build.py`'s frozen-build check uses it. (`--no-login` is honoured only alongside `--smoke`; on its own it does nothing.) |
 | `account_cloud_sync` | `config.json` / account dialog checkbox | Mirror settings to the account. |
 | `account_email` | `config.json` | Last signed-in email; shown on the chip before the session loads. Set by the app. |
+| `error_reporting` | `config.json` | Send crash + non-fatal error reports to your account (`public.app_errors`). Default on. Off = nothing leaves the machine; crashes still write `%APPDATA%\multi-terminal\last-error.log`. |
 | `AGENTDECK_SUPABASE_URL` | env var | Point the app at a different Supabase project. |
 | `AGENTDECK_SUPABASE_KEY` | env var | Publishable key for that project. |
+
+## Admin dashboard
+
+The team's **VibeFlow Admin** app (a separate web project) has an *AgentDeck*
+section that reads this Supabase project to list users, flip a user's `plan`
+between `free` / `pro`, inspect a user's synced `user_settings`, watch GitHub
+release download counts, and triage the crash feed below.
+
+- **`public.app_errors`** — created by `supabase/migrations/20260830120000_app_errors.sql`.
+  One row per crash (`kind = 'crash'`, written best-effort from `main.py`'s
+  fatal handler) or reported non-fatal failure (`kind = 'error'`, via
+  `AccountController.report_error`). RLS: a client may insert and read **its own**
+  rows only; the admin dashboard reads everything through the **service-role
+  key**, which lives only in that app's server environment — **never** in this
+  repo or the shipped binary. Apply the migration the same way as the accounts
+  one (`supabase db push`, or paste into the SQL editor).
 
 `--no-wizard` skips only the wizard, not the login window.
 
