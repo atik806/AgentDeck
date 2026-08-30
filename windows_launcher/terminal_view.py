@@ -63,6 +63,14 @@ _ALT_WATCH_MS = 2000
 #: and only then does the watchdog actually probe.
 _ALT_QUIET_S = 3.0
 
+#: How long after the last burst of pty output a pane still counts as "busy".
+#: An agent that is thinking or running a tool paints continuously (a spinner,
+#: streaming text); once it is back at its prompt waiting for the user the pty
+#: goes silent. The sidebar's activity dot reads :meth:`TerminalView.is_busy`
+#: off this -- long enough to bridge the gap between spinner frames, short
+#: enough that the glow dies promptly when the agent stops.
+_BUSY_WINDOW_S = 2.5
+
 #: pyte stores private modes shifted left by 5 (see pyte.Screen.set_mode).
 _MODE_BRACKETED_PASTE = 2004 << 5
 
@@ -1120,6 +1128,17 @@ class TerminalView(QWidget):
 
     def is_alive(self) -> bool:
         return self.session.is_alive()
+
+    def is_busy(self) -> bool:
+        """True while the pane is actively producing output.
+
+        Used by the workspace sidebar's glow dot as "an agent is working
+        here". A shell idle at its prompt sends nothing, so this is False;
+        an agent streaming a reply or running a command keeps it True.
+        """
+        if not self._last_output_at:
+            return False
+        return (time.monotonic() - self._last_output_at) < _BUSY_WINDOW_S
 
     @property
     def error(self) -> Optional[str]:

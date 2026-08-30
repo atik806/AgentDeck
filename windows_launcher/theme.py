@@ -52,6 +52,8 @@ _DARK = {
     "pro": "#e3b341",
     "danger": "#e0666b",
     "danger_hover": "#c02020",
+    # the sidebar "an agent is working here" glow dot
+    "activity": "#3fb950",
     # sidebar
     "sidebar_bg": "#141414",
     "sidebar_hover": "#1f1f1f",
@@ -108,6 +110,7 @@ _LIGHT = {
     "pro": "#9a6b00",
     "danger": "#c8342f",
     "danger_hover": "#b02722",
+    "activity": "#2da44e",
     "sidebar_bg": "#f0f0f2",
     "sidebar_hover": "#e5e5e9",
     "sidebar_active": "#dde6fb",

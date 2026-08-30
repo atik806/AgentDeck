@@ -7,7 +7,8 @@ it is handed and emits plain signals back -- it never touches a pane or a shell.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -79,6 +80,79 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
 
+class _ActivityDot(QWidget):
+    """A small dot that glows while an agent is working in its workspace.
+
+    Idle it paints nothing -- the row simply shows no dot. Busy it paints a
+    solid dot wrapped in a soft halo whose radius and opacity breathe on a
+    loop, so a workspace with an agent mid-task stands out in the list even
+    when it is not the one on screen. The widget keeps its slot in the row
+    layout either way, so switching between the two never shifts the badge.
+    """
+
+    _SIZE = 16
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedSize(self._SIZE, self._SIZE)
+        # A dot over a clickable row must not eat the click that selects it.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._busy = False
+        self._phase = 0.0
+
+        self._pulse = QVariantAnimation(self)
+        self._pulse.setStartValue(0.0)
+        self._pulse.setEndValue(1.0)
+        self._pulse.setDuration(1400)
+        self._pulse.setLoopCount(-1)
+        self._pulse.setEasingCurve(QEasingCurve.InOutSine)
+        self._pulse.valueChanged.connect(self._on_pulse)
+
+    def _on_pulse(self, value) -> None:
+        self._phase = float(value)
+        self.update()
+
+    def set_busy(self, busy: bool) -> None:
+        busy = bool(busy)
+        if busy == self._busy:
+            return
+        self._busy = busy
+        if busy:
+            self.setToolTip("An agent is working in this workspace")
+            self._pulse.start()
+        else:
+            self._pulse.stop()
+            self.setToolTip("")
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._busy:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        base = QColor(theme.color("activity"))
+
+        # Halo: swells from ~4px to ~8px and fades as it grows.
+        halo_r = 4.0 + 4.0 * self._phase
+        glow = QColor(base)
+        glow.setAlpha(int(150 * (1.0 - self._phase)) + 25)
+        transparent = QColor(base)
+        transparent.setAlpha(0)
+        gradient = QRadialGradient(centre, halo_r)
+        gradient.setColorAt(0.0, glow)
+        gradient.setColorAt(1.0, transparent)
+        painter.setBrush(gradient)
+        painter.drawEllipse(centre, halo_r, halo_r)
+
+        # Core dot: steady, always fully opaque.
+        painter.setBrush(base)
+        painter.drawEllipse(centre, 3.0, 3.0)
+        painter.end()
+
+
 class _WorkspaceRow(QFrame):
     """One selectable row: swatch, editable name, pane-count badge, close."""
 
@@ -127,6 +201,10 @@ class _WorkspaceRow(QFrame):
         self._name.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._name.editingFinished.connect(self._commit_rename)
 
+        # Glows while an agent is working in this workspace; sits just left of
+        # the pane-count badge and keeps its slot whether it is lit or not.
+        self._dot = _ActivityDot(self)
+
         self._badge = QLabel(str(workspace.pane_count), self)
         self._badge.setObjectName("wsBadge")
         self._badge.setAlignment(Qt.AlignCenter)
@@ -152,9 +230,23 @@ class _WorkspaceRow(QFrame):
         row.addWidget(self._accent)
         row.addWidget(self._swatch)
         row.addWidget(self._name, 1)
+        row.addWidget(self._dot)
         row.addWidget(self._badge)
         row.addWidget(self._edit)
         row.addWidget(self._close)
+
+        self._sync_activity()
+
+    # -- activity -------------------------------------------------------------
+
+    @property
+    def workspace(self):
+        return self._ws
+
+    def _sync_activity(self) -> None:
+        """Light or clear the glow dot from the workspace's live busy state."""
+        probe = getattr(self._ws, "is_busy", None)
+        self._dot.set_busy(bool(probe()) if callable(probe) else False)
 
     # -- interaction -----------------------------------------------------------
 
@@ -315,6 +407,17 @@ class WorkspaceSidebar(QWidget):
             self._list.insertWidget(self._list.count() - 1, row)
 
         self._count.setText(str(len(workspaces)))
+
+    def refresh_activity(self) -> None:
+        """Update every row's glow dot from its workspace's live busy state.
+
+        Cheap enough for the panel's 1 s status tick: no row is rebuilt, each
+        dot just flips on or off (and only the rows that changed repaint).
+        """
+        for i in range(self._list.count()):
+            row = self._list.itemAt(i).widget()
+            if isinstance(row, _WorkspaceRow):
+                row._sync_activity()
 
     def set_plugins_active(self, active: bool) -> None:
         """Reflect whether the PLUGINS view (not a workspace) is on screen."""
