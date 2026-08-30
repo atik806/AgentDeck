@@ -313,9 +313,11 @@ def main() -> int:
     panel.show()
 
     # Quiet check for a newer release shortly after the window is up. Only fires
-    # for a Velopack-installed build; a hit shows the "update available" dialog.
+    # for a Velopack-installed build on a Pro plan (Free keeps the manual Update
+    # button); _auto_check_updates re-checks the plan and runs at most once, so
+    # it is also called from _apply_entitlements when the plan resolves later.
     if config.get("auto_check_updates", True) and panel.updater.enabled:
-        QTimer.singleShot(1500, lambda: panel.updater.check(silent=True))
+        QTimer.singleShot(1500, panel._auto_check_updates)
 
     # --smoke: used by packaging/build.py to verify a frozen build actually
     # runs. Wait for the shells to come up, then exit 0 (or 3 if none did).

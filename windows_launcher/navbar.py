@@ -291,8 +291,13 @@ class AccountChip(QToolButton):
         return email.split("@", 1)[0] if email else "Account"
 
     def _plan_text(self) -> str:
-        plan = str(getattr(self._account, "plan", "free") or "free").strip().lower()
-        return "PRO" if plan in ("pro", "paid", "team", "plus") else "FREE"
+        plan = getattr(self._account, "plan", "free")
+        try:
+            import entitlements
+            return "PRO" if entitlements.is_pro(plan) else "FREE"
+        except Exception:  # noqa: BLE001
+            p = str(plan or "free").strip().lower()
+            return "PRO" if p in ("pro", "paid", "team", "plus") else "FREE"
 
     def _tooltip(self) -> str:
         if not self._signed_in():

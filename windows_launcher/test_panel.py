@@ -62,9 +62,23 @@ def text(pane):
 
 
 app = QApplication(sys.argv)
+
+
+def _pro_account(cfg):
+    """This suite exercises pane mechanics, not the Free/Pro gate -- run it as
+    Pro so the Free pane/workspace caps never get in the way."""
+    from account import AccountController
+
+    acc = AccountController(cfg)
+    acc._plan = "pro"
+    return acc
+
+
+_p_cfg = {"default_count": 4, "default_shell": "cmd", "font_size": 11, "layout": "grid"}
 panel = TerminalPanel(
-    {"default_count": 4, "default_shell": "cmd", "font_size": 11, "layout": "grid"},
+    _p_cfg,
     persist_settings=False,
+    account=_pro_account(_p_cfg),
 )
 panel.resize(1400, 880)
 panel.show()
@@ -592,11 +606,13 @@ def _():
 
     folder = os.path.dirname(os.path.abspath(__file__))
     state["startup_folder"] = folder
+    _p2_cfg = {"default_count": 2, "default_shell": "cmd", "font_size": 11,
+               "layout": "columns"}
     state["panel2"] = TerminalPanel(
-        {"default_count": 2, "default_shell": "cmd", "font_size": 11,
-         "layout": "columns"},
+        _p2_cfg,
         persist_settings=False,
         startup={"folder": folder, "count": 2, "agent_command": "echo AGENT_OK"},
+        account=_pro_account(_p2_cfg),
     )
     state["panel2"].resize(1100, 640)
     state["panel2"].show()

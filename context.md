@@ -222,6 +222,44 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     the voice overlay, the setup wizard, and the launch splash stay dark.
     Tests: `test_theme.py` (offline).
 
+11. **Workspace activity glow dot (2026-08-31)** — each row in the WORKSPACES
+    sidebar carries an `_ActivityDot` (`workspace_sidebar.py`) that glows green
+    with a breathing halo while an agent is working in that workspace, and
+    paints nothing when idle (its layout slot is kept either way, so the badge
+    never shifts). "Working" = the pane is producing pty output: `TerminalView`
+    already stamps `_last_output_at` on every flush, so `TerminalView.is_busy()`
+    is `now - _last_output_at < _BUSY_WINDOW_S` (2.5 s — bridges spinner
+    frames); `TerminalPane.is_busy()` / `Workspace.is_busy()` fan it up. The
+    panel's 1 s `_watchdog` (`_refresh_status`) calls
+    `WorkspaceSidebar.refresh_activity()`, which flips each existing row's dot
+    without rebuilding it (rebuilding would kill the pulse animation). New theme
+    token `activity`. Tests: `test_plugins_panel.py` §3 (offline).
+
+12. **Free / Pro plan gating (2026-08-31)** — before this `profile.plan` only
+    drove the toolbar badge; now it gates features per the pricing page at
+    `vibeflow.tech/agentdeck`. New `entitlements.py` (Qt-free, single source of
+    truth): Free = 1 workspace / ≤4 panes / manual updates; Pro = unlimited
+    workspaces & panes, voice input (Ctrl+Shift+X), cloud settings sync,
+    background auto-update, per-workspace folders & agents. `is_pro()` set =
+    `pro|paid|team|plus`. Wiring: `Workspace(max_panes=)` + `set_max_panes()`
+    clamp `initialize`/`add_pane`; `terminal_panel._apply_entitlements()` (runs
+    on `account.profile_ready` and once at wiring) sets every workspace's cap,
+    swaps the voice-button tooltip, one-shot tops the first workspace back up to
+    `default_count` if Pro resolves after launch, and kicks
+    `_auto_check_updates()` (Pro only, once). `_new_workspace_interactive`
+    blocks a 2nd workspace for Free; `_toggle_voice` / `_toggle_overlay_visible`
+    gate via `_voice_gated()`; `_prompt_upgrade(feature)` = status line + a
+    QMessageBox whose "See Pro" opens the pricing URL. `account.py`:
+    `pull_cloud_settings` now reads the profile row first (learns the plan,
+    emits `profile_ready`) then gates the settings read on `cloud_sync_enabled`;
+    `push_cloud_settings` gated too; `__init__` + `_refresh._done` auto-fetch the
+    profile so a restored session resolves the plan without opening the account
+    dialog. `account_dialog` sync checkbox disabled + "(Pro)" for Free.
+    `main.py` startup update check → `panel._auto_check_updates`. Tests:
+    `test_entitlements.py` (offline, 27), `test_panel_entitlements.py`
+    (offscreen, 14), `test_account.py` +[16b]. `test_panel.py` builds its panels
+    with a Pro `AccountController` (it tests pane mechanics, not the gate).
+
 ## Running / testing
 
 ```cmd

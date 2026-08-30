@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
+import entitlements
 import supabase_auth
 from supabase_auth import AuthError
 from config import _get_config_dir, save_config
@@ -136,8 +137,14 @@ class AccountController(QObject):
             self._sync_email(self._session.email)
             if self._session.is_expired():
                 # Don't block startup on the network: refresh in the background,
-                # and if it fails the user simply lands signed-out.
+                # and if it fails the user simply lands signed-out. The profile
+                # (and with it the plan / entitlements) is fetched once the
+                # refresh lands -- see _refresh._done.
                 self._refresh(reason="startup")
+            else:
+                # Restored, still-valid session: learn the plan straight away so
+                # Pro entitlements aren't gated off until the account dialog opens.
+                self.fetch_profile()
 
     # -- state ---------------------------------------------------------------
 
@@ -265,11 +272,12 @@ class AccountController(QObject):
     def pull_cloud_settings(self) -> Optional[dict]:
         """Read this account's saved settings. Blocks briefly (<=8s), then gives up.
 
-        Called once, right after a sign-in, by the integration code. Returns the
-        cloud ``data`` filtered to :data:`CLOUD_KEYS`, or ``None`` when sync is
-        off / not signed in / the read failed.
+        Called once, right after a sign-in, by the integration code. Learns the
+        plan first (it gates settings sync and drives the badge), then returns
+        the cloud ``data`` filtered to :data:`CLOUD_KEYS` -- or ``None`` when
+        sync is off, the plan is Free, nobody is signed in, or the read failed.
         """
-        if not self._config.get("account_cloud_sync", True) or self._session is None:
+        if self._session is None:
             return None
 
         uid = self._session.user_id
@@ -277,6 +285,27 @@ class AccountController(QObject):
 
         def _work():
             try:
+                # The plan comes back on the profile row; fetch it first so the
+                # sync gate below (and the toolbar badge) reflect reality rather
+                # than the "free" placeholder set at sign-in.
+                rows = self._rest_with_reauth(
+                    lambda tok: supabase_auth.rest_select(
+                        "profiles", tok,
+                        params={"id": f"eq.{uid}", "select": "*"},
+                    )
+                )
+                profile = rows[0] if rows and isinstance(rows[0], dict) else {}
+                if profile:
+                    box["profile"] = profile
+                    plan = profile.get("plan")
+                    if isinstance(plan, str) and plan:
+                        self._plan = plan
+
+                if not self._config.get("account_cloud_sync", True):
+                    return
+                if not entitlements.cloud_sync_enabled(self._plan):
+                    return
+
                 rows = self._rest_with_reauth(
                     lambda tok: supabase_auth.rest_select(
                         "user_settings", tok,
@@ -293,10 +322,19 @@ class AccountController(QObject):
         thread = threading.Thread(target=_work, name="account-pull", daemon=True)
         thread.start()
         thread.join(8.0)
+
+        profile = box.get("profile")
+        if isinstance(profile, dict) and profile:
+            # Back onto the GUI thread: the badge + panel entitlements listen here.
+            QTimer.singleShot(0, lambda: self.profile_ready.emit(profile))
         return box.get("data")
 
     def push_cloud_settings(self, data: dict) -> None:
-        if not self._config.get("account_cloud_sync", True) or self._session is None:
+        if (
+            not self._config.get("account_cloud_sync", True)
+            or self._session is None
+            or not entitlements.cloud_sync_enabled(self._plan)
+        ):
             return
         payload = _filter_cloud(data)
         if not payload:
@@ -381,6 +419,8 @@ class AccountController(QObject):
             self._session = new_session
             self._save_session(new_session)
             self._sync_email(new_session.email)
+            # Now there is a valid token, catch up the profile / plan.
+            self.fetch_profile()
 
         def _fail(_msg):
             # The refresh token is dead -- there is no session any more.

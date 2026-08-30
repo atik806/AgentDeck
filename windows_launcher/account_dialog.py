@@ -214,6 +214,7 @@ class AccountDialog(QDialog):
         self._sync.setChecked(bool(self._config.get("account_cloud_sync", True)))
         self._sync.toggled.connect(self._on_sync_toggled)
         self._outer.addWidget(self._sync)
+        self._apply_plan(acc.plan)  # also gates the sync row now that it exists
 
         docs = QPushButton("Account help & privacy")
         docs.setObjectName("link")
@@ -244,7 +245,11 @@ class AccountDialog(QDialog):
     def _apply_plan(self, plan: str) -> None:
         if not hasattr(self, "_badge"):
             return
-        pro = str(plan or "").lower() == "pro"
+        try:
+            import entitlements
+            pro = entitlements.is_pro(plan)
+        except Exception:  # noqa: BLE001
+            pro = str(plan or "").lower() == "pro"
         self._badge.setText("PRO" if pro else "FREE")
         if pro:
             self._badge.setStyleSheet(
@@ -253,6 +258,17 @@ class AccountDialog(QDialog):
         else:
             self._badge.setStyleSheet(
                 f"QLabel#badge {{ color: {_MUTED()}; background: {_CARD()}; }}"
+            )
+
+        # Cloud settings sync is a Pro feature -- show the control either way, but
+        # a Free user can't arm it.
+        sync = getattr(self, "_sync", None)
+        if sync is not None:
+            sync.setEnabled(pro)
+            sync.setText(
+                "Sync my workspaces and agents to this account"
+                if pro else
+                "Sync my workspaces and agents to this account  (Pro)"
             )
 
     # -- signed-out layout ------------------------------------------------

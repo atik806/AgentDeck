@@ -131,7 +131,8 @@ def rest_select(table, access_token, *, params=None, url=None, key=None):
         rest_select.fail_next = n - 1
         raise Exception("401 Unauthorized")
     if table == "profiles":
-        return [{"id": "u-123", "plan": "pro", "display_name": "Sam Tester"}]
+        plan = getattr(rest_select, "profile_plan", "pro")
+        return [{"id": "u-123", "plan": plan, "display_name": "Sam Tester"}]
     if table == "user_settings":
         return [{"data": {"font_size": 14, "layout": "columns", "not_a_synced_key": 99}}]
     return []
@@ -359,10 +360,11 @@ check("pull is None when sync is off", c13b.pull_cloud_settings() is None)
 
 print("[14] push_cloud_settings upserts a filtered payload")
 _STORE.pop("upserts", None)
+rest_select.profile_plan = "pro"
 c14 = fresh({"account_cloud_sync": True})
 GoogleSignIn.next_result = Session()
 c14.sign_in_with_google()
-pump(lambda: c14.is_signed_in)
+pump(lambda: c14.is_signed_in and c14.plan == "pro")  # sync needs a resolved Pro plan
 c14.push_cloud_settings({"font_size": 20, "window_height": 700, "layout": "rows"})
 pump(lambda: _STORE.get("upserts"))
 table, row = _STORE["upserts"][-1]
@@ -387,6 +389,19 @@ pump(lambda: prof or errs15)
 rest_select.fail_next = 0
 check("profile still arrives after a transparent re-auth", bool(prof) and errs15 == [])
 check("session was swapped to the refreshed token", c15.session.access_token == "at2")
+
+print("[16b] cloud settings sync is gated to Pro even when account_cloud_sync is on")
+_STORE.pop("upserts", None)
+rest_select.profile_plan = "free"
+c16b = fresh({"account_cloud_sync": True})
+GoogleSignIn.next_result = Session()
+c16b.sign_in_with_google()
+pump(lambda: c16b.is_signed_in and c16b.plan == "free")
+c16b.push_cloud_settings({"font_size": 20, "layout": "rows"})
+pump(lambda: False, ms=250)
+check("free plan: nothing pushed", _STORE.get("upserts") is None)
+check("free plan: pull returns None", c16b.pull_cloud_settings() is None)
+rest_select.profile_plan = "pro"  # restore for any later cases
 
 print("[17] report_error inserts a row when signed in and reporting is on")
 _STORE.pop("inserts", None)

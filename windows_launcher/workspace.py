@@ -266,6 +266,10 @@ class TerminalPane(QFrame):
     def is_alive(self) -> bool:
         return self.view.is_alive()
 
+    def is_busy(self) -> bool:
+        """True while this pane's shell is actively producing output."""
+        return self.view.is_busy()
+
     def apply_theme(self) -> None:
         """Repaint the pane chrome + its terminal for the current theme."""
         self.view.apply_theme()
@@ -363,6 +367,7 @@ class Workspace(QWidget):
         layout_mode: str,
         cwd: Optional[str] = None,
         startup_command: Optional[str] = None,
+        max_panes: int = MAX_PANES,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -373,6 +378,9 @@ class Workspace(QWidget):
         self._font_size = font_size
         self._scrollback = scrollback
         self._layout_mode = layout_mode
+        # Plan cap on panes (Free = 4, Pro = MAX_PANES). Clamped to the hard
+        # ceiling either way; TerminalPanel keeps it current on a plan change.
+        self._max_panes = max(1, min(MAX_PANES, int(max_panes)))
         # Folder the panes start in, and (for the initial batch only) a command
         # to run once each shell is up -- the setup wizard's working folder and
         # chosen agent.
@@ -394,7 +402,7 @@ class Workspace(QWidget):
 
     def initialize(self, count: int) -> None:
         """Fill a fresh workspace with ``count`` panes and lay them out once."""
-        count = max(1, min(MAX_PANES, int(count)))
+        count = max(1, min(self._max_panes, int(count)))
         for _ in range(count):
             self._spawn_pane(with_startup=True)
         self._relayout()
@@ -439,8 +447,14 @@ class Workspace(QWidget):
         return pane
 
     def add_pane(self, focus: bool = True) -> Optional[TerminalPane]:
-        if len(self._panes) >= MAX_PANES:
-            self.notice.emit(f"Pane limit reached ({MAX_PANES})")
+        if len(self._panes) >= self._max_panes:
+            if self._max_panes < MAX_PANES:
+                self.notice.emit(
+                    f"Free plan: {self._max_panes} panes per workspace — "
+                    f"upgrade to Pro for up to {MAX_PANES}"
+                )
+            else:
+                self.notice.emit(f"Pane limit reached ({MAX_PANES})")
             return None
 
         pane = self._spawn_pane()
@@ -573,6 +587,15 @@ class Workspace(QWidget):
     def set_shell(self, shell: str) -> None:
         self._shell = shell
 
+    def set_max_panes(self, limit: int) -> None:
+        """Update the plan cap on panes (e.g. after the account plan resolves).
+        Never removes panes that already exist."""
+        self._max_panes = max(1, min(MAX_PANES, int(limit)))
+
+    @property
+    def max_panes(self) -> int:
+        return self._max_panes
+
     # -- status ------------------------------------------------------------
 
     def poll(self) -> None:
@@ -584,6 +607,14 @@ class Workspace(QWidget):
 
     def any_alive(self) -> bool:
         return any(pane.is_alive() for pane in self._panes)
+
+    def is_busy(self) -> bool:
+        """True while any live pane is actively producing output.
+
+        The sidebar reads this as "an agent is working in this workspace"
+        and glows the workspace's activity dot while it holds.
+        """
+        return any(pane.is_alive() and pane.is_busy() for pane in self._panes)
 
     def shutdown(self) -> None:
         for pane in self._panes:

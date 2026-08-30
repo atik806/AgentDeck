@@ -22,8 +22,15 @@ from PySide6.QtCore import (
     QRect,
     Qt,
     QTimer,
+    QUrl,
 )
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -41,6 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import entitlements
 import theme
 from account import AccountController
 from account_dialog import AccountDialog
@@ -564,6 +572,14 @@ class TerminalPanel(QMainWindow):
         The plain :meth:`_add_workspace` stays dialog-free for the startup path
         and the tests.
         """
+        if len(self._workspaces) >= entitlements.max_workspaces(self.account.plan):
+            self._prompt_upgrade(
+                "Multiple workspaces",
+                "The Free plan runs one workspace. Pro adds unlimited "
+                "workspaces & panes, per-workspace folders and agents.",
+            )
+            return
+
         dialog = NewWorkspaceDialog(
             default_name=self._peek_ws_name(),
             default_agent=self._last_ws_agent,
@@ -608,6 +624,7 @@ class TerminalPanel(QMainWindow):
             font_size=self._font_size,
             scrollback=self._scrollback,
             layout_mode=self._layout_setting,
+            max_panes=int(entitlements.max_panes(self.account.plan)),
             # Every workspace starts in the chosen folder. The first workspace
             # auto-runs the setup wizard's agent; a later one runs whatever the
             # "new workspace" dialog picked (passed in as startup_command).
@@ -792,8 +809,20 @@ class TerminalPanel(QMainWindow):
         if overlay.isVisible():
             overlay.raise_()
 
+    def _voice_gated(self) -> bool:
+        """True (and shows the upsell) when the plan can't use voice input."""
+        if entitlements.voice_enabled(self._plan()):
+            return False
+        self._prompt_upgrade(
+            "Voice-to-text input",
+            "Dictate straight into a terminal with Ctrl+Shift+X on AgentDeck Pro.",
+        )
+        return True
+
     def _toggle_voice(self) -> None:
         """Ctrl+Shift+X -- reveal the widget if hidden, then start/stop listening."""
+        if self._voice_gated():
+            return
         if not self._voice_overlay.isVisible():
             self._set_overlay_visible(True)
         self._voice_engine.toggle()
@@ -808,6 +837,10 @@ class TerminalPanel(QMainWindow):
         self._save_settings()
 
     def _toggle_overlay_visible(self) -> None:
+        # Showing the widget at all is a Pro action (it's the voice-input UI).
+        if not self._voice_overlay.isVisible() and self._voice_gated():
+            self._voice_btn.setChecked(False)
+            return
         self._set_overlay_visible(not self._voice_overlay.isVisible())
 
     def _on_voice_state(self, state: str) -> None:
@@ -906,6 +939,9 @@ class TerminalPanel(QMainWindow):
     def _refresh_status(self) -> None:
         for workspace in self._workspaces:
             workspace.poll()
+
+        # Light the sidebar's glow dot on any workspace with an agent working.
+        self._sidebar.refresh_activity()
 
         workspace = self._active_ws
         if workspace is None:
@@ -1110,6 +1146,80 @@ class TerminalPanel(QMainWindow):
         a.signed_in.connect(self._on_account_signed_in)
         a.signed_out.connect(self._on_account_signed_out)
         a.error.connect(self._on_account_error)
+        # The plan lands here (fresh sign-in, restored session, or a manual
+        # refresh); re-run the Free/Pro gates whenever it does.
+        a.profile_ready.connect(lambda _p: self._apply_entitlements())
+        # Sync the initial UI state to whatever plan we already know (Free until
+        # the first profile_ready).
+        self._auto_update_checked = False
+        self._apply_entitlements()
+
+    def _plan(self) -> str:
+        return self.account.plan if self.account is not None else "free"
+
+    def _apply_entitlements(self) -> None:
+        """Fold the current plan's limits into the live UI. Idempotent."""
+        plan = self._plan()
+        pro = entitlements.is_pro(plan)
+
+        # Panes: raise/lower every workspace's cap. Never removes panes; a Pro
+        # user whose first workspace was clamped at 4 gets topped up to their
+        # configured count.
+        cap = int(entitlements.max_panes(plan))
+        for ws in self._workspaces:
+            ws.set_max_panes(cap)
+        # One-shot: a Pro user whose first workspace was clamped to 4 while the
+        # plan was still resolving gets topped up to their configured count.
+        # Only right after launch (before they've touched anything) and never
+        # while a pane is zoomed.
+        if pro and not getattr(self, "_entitlements_topped_up", False):
+            self._entitlements_topped_up = True
+            first = self._workspaces[0] if self._workspaces else None
+            want = min(cap, self._default_count)
+            if first is not None and not first.is_zoomed and first.pane_count < want:
+                for _ in range(want - first.pane_count):
+                    first.add_pane(focus=False)
+
+        # Voice button: still visible for Free (so the feature is discoverable),
+        # but its tooltip says it's Pro; the click is gated in _toggle_voice.
+        if hasattr(self, "_voice_btn"):
+            self._voice_btn.setToolTip(
+                "Show/hide the voice input widget  ·  Ctrl+Shift+X starts/stops listening"
+                if pro else
+                "Voice-to-text input is a Pro feature"
+            )
+
+        # Background update check on launch is Pro; Free keeps the manual button.
+        if pro:
+            self._auto_check_updates()
+
+    def _auto_check_updates(self) -> None:
+        """One quiet check for a newer release — Pro only, once per run."""
+        if getattr(self, "_auto_update_checked", False):
+            return
+        if not entitlements.auto_update_enabled(self._plan()):
+            return
+        if not self.config.get("auto_check_updates", True):
+            return
+        if not getattr(self, "updater", None) or not self.updater.enabled:
+            return
+        self._auto_update_checked = True
+        self.updater.check(silent=True)
+
+    def _prompt_upgrade(self, feature: str, detail: str = "") -> None:
+        """Explain a Pro-gated feature and offer to open the pricing page."""
+        self.statusBar().showMessage(entitlements.upgrade_hint(feature), 6000)
+        box = QMessageBox(self)
+        box.setWindowTitle("Pro feature")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"<b>{feature}</b> is part of AgentDeck Pro.")
+        if detail:
+            box.setInformativeText(detail)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Help)
+        box.button(QMessageBox.Ok).setText("Not now")
+        box.button(QMessageBox.Help).setText("See Pro")
+        if box.exec() == QMessageBox.Help:
+            QDesktopServices.openUrl(QUrl(entitlements.UPGRADE_URL))
 
     # Benign account-error messages that aren't worth a crash report: the user
     # backing out, or a session that just needs re-authing.
