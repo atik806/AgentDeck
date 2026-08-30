@@ -151,8 +151,13 @@ jobs:
       # step no-ops. `wingetcreate update` only publishes *updates*, so the
       # package must already exist in winget-pkgs: do the first submission by
       # hand from packaging/winget/ (see packaging/winget/README.md).
+      # Never fails the release: winget is a downstream convenience. `wingetcreate
+      # update` errors out until the first-submission PR (packaging/winget/) is
+      # merged into microsoft/winget-pkgs -- in that window (and on any transient
+      # wingetcreate/API failure) this step logs a ::warning:: and exits 0.
       - name: Update winget manifest
         if: steps.check.outputs.already != 'true'
+        continue-on-error: true
         shell: pwsh
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
@@ -165,3 +170,7 @@ jobs:
           $url = "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/AgentDeck-win-Setup.exe"
           curl.exe -sSL -o wingetcreate.exe https://aka.ms/wingetcreate/latest/self-contained
           .\wingetcreate.exe update AtikShahriar.AgentDeck --version $ver --urls "$url" --submit --token $env:WINGET_TOKEN
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::wingetcreate update failed (exit $LASTEXITCODE). This is expected until the first-submission PR for AtikShahriar.AgentDeck is merged into microsoft/winget-pkgs; see packaging/winget/README.md. The GitHub release itself is unaffected."
+            exit 0
+          }
