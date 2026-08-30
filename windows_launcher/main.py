@@ -200,6 +200,13 @@ def main() -> int:
     # A hint so any stray default-font widget matches the terminal, not the OS UI.
     app.setFont(QFont("Cascadia Mono, Consolas", 10))
 
+    # Resolve the light/dark theme and paint the app palette before any window
+    # (splash, login, wizard) is built.
+    import theme
+
+    theme.init(config)
+    theme.apply_palette(app)
+
     # The launch animation. Plays before the wizard; --no-splash / show_splash
     # config turn it off, and it can never block startup for more than a moment.
     show_splash(

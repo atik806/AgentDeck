@@ -45,8 +45,10 @@ _SAVE_CURSOR_MODE = 1048
 class Palette:
     """Maps pyte's colour tokens onto concrete ``QColor`` values.
 
-    The 16 ANSI slots use the Campbell scheme that ships as Windows Terminal's
-    default, so output looks the way users expect it to on this platform.
+    The 16 ANSI slots come from :mod:`theme` -- the Campbell scheme (Windows
+    Terminal's default) in dark mode, a GitHub-light set in light mode -- so a
+    fresh ``Palette()`` reflects whatever theme is active. The class attributes
+    stay as the dark defaults for any caller that reads them statically.
     """
 
     BACKGROUND = QColor("#0c0c0c")
@@ -54,32 +56,37 @@ class Palette:
     CURSOR = QColor("#cccccc")
     SELECTION = QColor(58, 110, 165, 130)
 
-    _ANSI = {
-        "black": "#0c0c0c",
-        "red": "#c50f1f",
-        "green": "#13a10e",
-        # pyte calls SGR 33 "brown", not "yellow".
-        "brown": "#c19c00",
-        "yellow": "#c19c00",
-        "blue": "#0037da",
-        "magenta": "#881798",
-        "cyan": "#3a96dd",
-        "white": "#cccccc",
-        "brightblack": "#767676",
-        "brightred": "#e74856",
-        "brightgreen": "#16c60c",
-        "brightbrown": "#f9f1a5",
-        "brightyellow": "#f9f1a5",
-        "brightblue": "#3b78ff",
-        "brightmagenta": "#b4009e",
-        # pyte 0.8.2 ships a typo for SGR 105; accept both spellings so bright
-        # magenta backgrounds don't silently fall back to the default colour.
-        "bfightmagenta": "#b4009e",
-        "brightcyan": "#61d6d6",
-        "brightwhite": "#f2f2f2",
-    }
+    #: Base names; ``_ANSI`` fills in per mode. pyte calls SGR 33 "brown", and
+    #: 0.8.2 ships a typo "bfightmagenta" for SGR 105 -- both are aliased below.
+    def __init__(self, mode: Optional[str] = None) -> None:
+        try:
+            import theme
 
-    def __init__(self) -> None:
+            self.mode = mode or theme.mode()
+            slots = theme.ansi(self.mode)
+            self.BACKGROUND = theme.qcolor("term_bg", self.mode)
+            self.FOREGROUND = theme.qcolor("term_fg", self.mode)
+            self.CURSOR = theme.qcolor("term_cursor", self.mode)
+            sel = theme.qcolor("term_selection", self.mode)
+            self.SELECTION = QColor(sel.red(), sel.green(), sel.blue(), 130)
+        except Exception:  # noqa: BLE001 - theme import must never break a pane
+            self.mode = "dark"
+            slots = {
+                "black": "#0c0c0c", "red": "#c50f1f", "green": "#13a10e",
+                "yellow": "#c19c00", "blue": "#0037da", "magenta": "#881798",
+                "cyan": "#3a96dd", "white": "#cccccc", "brightblack": "#767676",
+                "brightred": "#e74856", "brightgreen": "#16c60c",
+                "brightyellow": "#f9f1a5", "brightblue": "#3b78ff",
+                "brightmagenta": "#b4009e", "brightcyan": "#61d6d6",
+                "brightwhite": "#f2f2f2",
+            }
+
+        table = dict(slots)
+        table["brown"] = table.get("yellow", "#c19c00")
+        table["brightbrown"] = table.get("brightyellow", "#f9f1a5")
+        table["bfightmagenta"] = table.get("brightmagenta", "#b4009e")
+        self._ANSI = table
+
         self._cache: dict[str, QColor] = {}
         for name, value in self._ANSI.items():
             self._cache[name] = QColor(value)

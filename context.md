@@ -204,6 +204,24 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    the list populated). Clicking any workspace / creating one leaves the panel.
    Tests: `test_plugins_panel.py` (offline), panel suite §24b.
 
+10. **Light / dark theme (2026-08-30)** — `theme.py` owns every colour token
+    for both modes plus a `_Manager` QObject with a `changed(str)` signal.
+    `theme.init(config)` resolves `config["theme"]` (`system|light|dark`) once
+    at startup (`main.py`, before any window); the toolbar's **sun/moon button**
+    calls `theme.toggle()`. `terminal_panel._on_theme_changed` fans it out:
+    re-runs the toolbar QSS (`_toolbar_qss()` is now a method, not the old
+    `_TOOLBAR_QSS` constant), window/statusbar/brand, `sidebar.apply_theme()`,
+    `plugins_panel.apply_theme()`, and `workspace.apply_theme()` → each
+    `TerminalPane` → `TerminalView.apply_theme()` → `TerminalCanvas` rebuilds
+    its `Palette` (which now pulls terminal bg/fg + the 16 ANSI slots from
+    `theme`; light = a GitHub-light set) and repaints. Navbar custom-paint
+    colours and the account/new-workspace dialogs read `theme.color(...)` live.
+    The new **gear button** opens `settings_dialog.SettingsDialog` (theme,
+    splash/wizard, updates, Claude trust — writes straight into `config`).
+    Persisted via `config["theme"]` + `_save_settings()`. **Not yet themed:**
+    the voice overlay, the setup wizard, and the launch splash stay dark.
+    Tests: `test_theme.py` (offline).
+
 ## Running / testing
 
 ```cmd
@@ -218,6 +236,7 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
 .venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
 .venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
+.venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are

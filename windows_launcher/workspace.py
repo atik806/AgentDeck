@@ -29,8 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import theme
 from terminal_view import TerminalView
-from vt_screen import Palette
 
 __all__ = [
     "Workspace",
@@ -266,25 +266,34 @@ class TerminalPane(QFrame):
     def is_alive(self) -> bool:
         return self.view.is_alive()
 
+    def apply_theme(self) -> None:
+        """Repaint the pane chrome + its terminal for the current theme."""
+        self.view.apply_theme()
+        self._refresh_style()
+
     def _refresh_style(self) -> None:
         dead = not self.view.is_alive()
+        t = theme.color
         if dead:
-            border = "#a03030"
+            border = t("pane_border_dead")
         elif self._active:
-            border = "#3b78ff"
+            border = t("pane_border_active")
         else:
-            border = "#2b2b2b"
+            border = t("pane_border")
 
-        header_bg = "#1f1f1f" if self._active else "#171717"
+        header_bg = t("pane_header_bg_active") if self._active else t("pane_header_bg")
+        accent = t("accent")
+        on_accent = t("on_accent")
+        title = t("pane_title_dead") if dead else t("pane_title")
         self.setStyleSheet(
             f"""
             TerminalPane {{
                 border: 1px solid {border};
-                background: {Palette.BACKGROUND.name()};
+                background: {theme.color('term_bg')};
             }}
             QWidget#paneHeaderHost {{ background: {header_bg}; }}
             QLabel#paneBadge {{
-                color: #ffffff;
+                color: {on_accent};
                 background: {border};
                 border-radius: 7px;
                 padding: 0 6px;
@@ -292,24 +301,24 @@ class TerminalPane(QFrame):
                 font-weight: bold;
             }}
             QLabel#paneTitle {{
-                color: {'#d08080' if dead else '#b0b0b0'};
+                color: {title};
                 font-size: 11px;
             }}
             QPushButton#paneClose, QPushButton#paneRestart,
             QPushButton#paneExpand {{
-                color: #b0b0b0;
+                color: {t('pane_title')};
                 background: transparent;
                 border: none;
                 font-size: 11px;
                 padding: 1px 4px;
             }}
             QPushButton#paneExpand {{
-                color: {'#ffffff' if self._expanded else '#b0b0b0'};
-                background: {'#3b78ff' if self._expanded else 'transparent'};
+                color: {on_accent if self._expanded else t('pane_title')};
+                background: {accent if self._expanded else 'transparent'};
             }}
-            QPushButton#paneClose:hover {{ color: #ffffff; background: #c02020; }}
-            QPushButton#paneRestart:hover {{ color: #ffffff; background: #3b78ff; }}
-            QPushButton#paneExpand:hover {{ color: #ffffff; background: #3b78ff; }}
+            QPushButton#paneClose:hover {{ color: {on_accent}; background: {t('danger_hover')}; }}
+            QPushButton#paneRestart:hover {{ color: {on_accent}; background: {accent}; }}
+            QPushButton#paneExpand:hover {{ color: {on_accent}; background: {accent}; }}
             """
         )
 
@@ -681,8 +690,15 @@ class Workspace(QWidget):
     @staticmethod
     def _style_splitter(splitter: QSplitter) -> None:
         splitter.setStyleSheet(
-            """
-            QSplitter::handle { background: #101010; }
-            QSplitter::handle:hover { background: #3b78ff; }
+            f"""
+            QSplitter::handle {{ background: {theme.color('splitter')}; }}
+            QSplitter::handle:hover {{ background: {theme.color('accent')}; }}
             """
         )
+
+    def apply_theme(self) -> None:
+        """Fan a theme change out to every pane and splitter handle."""
+        for pane in self._panes:
+            pane.apply_theme()
+        for splitter in self.findChildren(QSplitter):
+            self._style_splitter(splitter)

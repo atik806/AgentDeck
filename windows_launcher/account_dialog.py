@@ -43,15 +43,19 @@ from config import save_config
 
 __all__ = ["AccountDialog"]
 
-_BG = "#1b1b1b"
-_CARD = "#242424"
-_BORDER = "#363636"
-_TEXT = "#e6e6e6"
-_MUTED = "#8c8c8c"
-_BLUE = "#3b78ff"
-_BLUE_HI = "#5590ff"
-_GOLD = "#e3b341"
-_DANGER = "#e0666b"
+import theme
+
+# Colour tokens, resolved against the active light/dark theme every read (this
+# dialog is modal and rebuilt each time it opens, so that is always current).
+def _BG() -> str: return theme.color("card_bg")
+def _CARD() -> str: return theme.color("card_raised")
+def _BORDER() -> str: return theme.color("card_border")
+def _TEXT() -> str: return theme.color("dialog_text")
+def _MUTED() -> str: return theme.color("text_muted")
+def _BLUE() -> str: return theme.color("accent")
+def _BLUE_HI() -> str: return theme.color("accent_hover")
+def _GOLD() -> str: return theme.color("pro")
+def _DANGER() -> str: return theme.color("danger")
 
 _AVATAR_PX = 44
 
@@ -76,7 +80,8 @@ def _fallback_avatar(text: str, size: int, accent: str) -> QPixmap:
 
 
 def _avatar_pixmap(data: Optional[bytes], size: int, fallback_text: str,
-                   accent: str = _BLUE) -> QPixmap:
+                   accent: Optional[str] = None) -> QPixmap:
+    accent = accent or _BLUE()
     if _circular_avatar is not None:
         return _circular_avatar(data, size, fallback_text, accent)
     if not data:
@@ -120,35 +125,35 @@ class AccountDialog(QDialog):
         self.setMinimumWidth(400)
         self.setStyleSheet(
             f"""
-            QDialog {{ background: {_BG}; }}
-            QLabel {{ color: {_TEXT}; }}
+            QDialog {{ background: {_BG()}; }}
+            QLabel {{ color: {_TEXT()}; }}
             QLabel#name {{ font-size: 15px; font-weight: 700; }}
-            QLabel#email {{ color: {_MUTED}; font-size: 11px; }}
-            QLabel#pitch {{ color: {_MUTED}; font-size: 12px; }}
+            QLabel#email {{ color: {_MUTED()}; font-size: 11px; }}
+            QLabel#pitch {{ color: {_MUTED()}; font-size: 12px; }}
             QLabel#badge {{
                 font-size: 9px; font-weight: 800; border-radius: 6px;
                 padding: 2px 7px;
             }}
-            QCheckBox {{ color: {_TEXT}; font-size: 12px; spacing: 8px; }}
+            QCheckBox {{ color: {_TEXT()}; font-size: 12px; spacing: 8px; }}
             QCheckBox::indicator {{ width: 15px; height: 15px; }}
             QPushButton {{
-                background: {_CARD}; color: {_TEXT};
-                border: 1px solid {_BORDER}; border-radius: 7px;
+                background: {_CARD()}; color: {_TEXT()};
+                border: 1px solid {_BORDER()}; border-radius: 7px;
                 padding: 8px 16px; font-size: 12px;
             }}
-            QPushButton:hover {{ border-color: {_BLUE}; }}
+            QPushButton:hover {{ border-color: {_BLUE()}; }}
             QPushButton#primary {{
-                background: {_BLUE}; color: #ffffff; border-color: {_BLUE};
+                background: {_BLUE()}; color: {theme.color('on_accent')}; border-color: {_BLUE()};
                 font-weight: 700;
             }}
-            QPushButton#primary:hover {{ background: {_BLUE_HI};
-                                         border-color: {_BLUE_HI}; }}
-            QPushButton#danger {{ color: {_DANGER}; }}
-            QPushButton#danger:hover {{ border-color: {_DANGER};
-                                        background: #2c2020; }}
+            QPushButton#primary:hover {{ background: {_BLUE_HI()};
+                                         border-color: {_BLUE_HI()}; }}
+            QPushButton#danger {{ color: {_DANGER()}; }}
+            QPushButton#danger:hover {{ border-color: {_DANGER()};
+                                        background: {theme.color('accent_soft_bg')}; }}
             QPushButton#link {{ background: transparent; border: none;
-                                color: {_MUTED}; padding: 6px 2px; font-size: 11px; }}
-            QPushButton#link:hover {{ color: {_BLUE}; }}
+                                color: {_MUTED()}; padding: 6px 2px; font-size: 11px; }}
+            QPushButton#link:hover {{ color: {_BLUE()}; }}
             """
         )
 
@@ -202,7 +207,7 @@ class AccountDialog(QDialog):
 
         line = QWidget()
         line.setFixedHeight(1)
-        line.setStyleSheet(f"background: {_BORDER};")
+        line.setStyleSheet(f"background: {_BORDER()};")
         self._outer.addWidget(line)
 
         self._sync = QCheckBox("Sync my workspaces and agents to this account")
@@ -243,11 +248,11 @@ class AccountDialog(QDialog):
         self._badge.setText("PRO" if pro else "FREE")
         if pro:
             self._badge.setStyleSheet(
-                f"QLabel#badge {{ color: #1a1a1a; background: {_GOLD}; }}"
+                f"QLabel#badge {{ color: {theme.color('window_bg')}; background: {_GOLD()}; }}"
             )
         else:
             self._badge.setStyleSheet(
-                f"QLabel#badge {{ color: {_MUTED}; background: {_CARD}; }}"
+                f"QLabel#badge {{ color: {_MUTED()}; background: {_CARD()}; }}"
             )
 
     # -- signed-out layout ------------------------------------------------

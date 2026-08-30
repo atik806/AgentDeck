@@ -30,7 +30,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QMenu, QToolButton, QWidget
 
-__all__ = ["AccountChip", "HelpButton", "circular_avatar", "gear_icon", "help_icon"]
+import theme
+
+__all__ = [
+    "AccountChip", "HelpButton", "circular_avatar",
+    "gear_icon", "help_icon", "theme_icon",
+]
 
 #: Where the help menu points.
 _DOCS_URL = "https://github.com/atik806/AgentDeck#readme"
@@ -41,16 +46,17 @@ def _open(url: str) -> None:
     """Hand a URL to the system browser."""
     QDesktopServices.openUrl(QUrl(url))
 
-# Toolbar surface colours -- kept in step with terminal_panel._TOOLBAR_QSS so a
-# custom-painted widget sits flush with the stylesheet-painted ones.
-_BG = "#272727"
-_BG_HOVER = "#333333"
-_BORDER = "#3b3b3b"
-_BORDER_HOVER = "#4f4f4f"
-_TEXT = "#e4e4e4"
-_MUTED = "#8f8f8f"
-_PRO = "#e3b341"
-_ACCENT = "#3b78ff"
+# Toolbar surface colours come from `theme` so a custom-painted widget sits
+# flush with the stylesheet-painted ones in either light or dark mode. These
+# helpers read the *current* mode every call -- cheap, and always in step.
+def _BG() -> str: return theme.color("surface")
+def _BG_HOVER() -> str: return theme.color("surface_hover")
+def _BORDER() -> str: return theme.color("border")
+def _BORDER_HOVER() -> str: return theme.color("border_hover")
+def _TEXT() -> str: return theme.color("text")
+def _MUTED() -> str: return theme.color("text_muted")
+def _PRO() -> str: return theme.color("pro")
+def _ACCENT() -> str: return theme.color("accent")
 
 #: Toolbar control height (matches the fixed-size buttons next to it).
 _H = 27
@@ -64,7 +70,7 @@ def circular_avatar(
     data: Optional[bytes],
     size: int,
     fallback_text: str,
-    accent: str = _ACCENT,
+    accent: Optional[str] = None,
 ) -> QPixmap:
     """A round avatar ``size`` px across.
 
@@ -73,6 +79,7 @@ def circular_avatar(
     ``accent`` disc instead -- the same convention the workspace swatches use.
     """
     size = max(4, int(size))
+    accent = accent or _ACCENT()
     initial = (fallback_text or "?").strip()[:1].upper() or "?"
 
     image: Optional[QImage] = None
@@ -119,14 +126,18 @@ def circular_avatar(
     return pm
 
 
-def gear_icon(px: int = 16, color: str = "#d6d6d6") -> QIcon:
+def _icon_color(color: Optional[str]) -> QColor:
+    return QColor(color) if color else QColor(theme.color("text_muted"))
+
+
+def gear_icon(px: int = 16, color: Optional[str] = None) -> QIcon:
     """A drawn settings cog -- reliable where an emoji font isn't."""
     px = max(8, int(px))
     pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    c = QColor(color)
+    c = _icon_color(color)
     cx = cy = px / 2.0
     body_r = px * 0.30
     tooth_w = px * 0.16
@@ -152,14 +163,14 @@ def gear_icon(px: int = 16, color: str = "#d6d6d6") -> QIcon:
     return QIcon(pm)
 
 
-def help_icon(px: int = 16, color: str = "#d6d6d6") -> QIcon:
+def help_icon(px: int = 16, color: Optional[str] = None) -> QIcon:
     """A drawn "?" in a ring."""
     px = max(8, int(px))
     pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    c = QColor(color)
+    c = _icon_color(color)
     p.setPen(QPen(c, max(1.0, px * 0.09)))
     p.setBrush(Qt.NoBrush)
     m = px * 0.12
@@ -169,6 +180,47 @@ def help_icon(px: int = 16, color: str = "#d6d6d6") -> QIcon:
     f.setBold(True)
     p.setFont(f)
     p.drawText(pm.rect(), Qt.AlignCenter, "?")
+    p.end()
+    return QIcon(pm)
+
+
+def theme_icon(px: int = 16, color: Optional[str] = None, *, mode: Optional[str] = None) -> QIcon:
+    """A sun (shown in dark mode -> "switch to light") or a crescent moon
+    (shown in light mode -> "switch to dark"). ``mode`` is the *current* theme;
+    the glyph is the one you'd tap to leave it."""
+    px = max(8, int(px))
+    now = mode or theme.mode()
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    c = _icon_color(color)
+    cx = cy = px / 2.0
+
+    if now == "dark":
+        # sun
+        r = px * 0.20
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        pen = QPen(c, max(1.0, px * 0.08))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        for i in range(8):
+            a = math.radians(i * 45.0)
+            r0, r1 = px * 0.32, px * 0.44
+            p.drawLine(
+                QPointF(cx + r0 * math.cos(a), cy + r0 * math.sin(a)),
+                QPointF(cx + r1 * math.cos(a), cy + r1 * math.sin(a)),
+            )
+    else:
+        # crescent moon: a disc with a second disc punched out
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        p.drawEllipse(QPointF(cx, cy), px * 0.34, px * 0.34)
+        p.setCompositionMode(QPainter.CompositionMode_Clear)
+        p.drawEllipse(QPointF(cx + px * 0.16, cy - px * 0.06), px * 0.30, px * 0.30)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
     p.end()
     return QIcon(pm)
 
@@ -285,9 +337,10 @@ class AccountChip(QToolButton):
 
     def _avatar_pixmap(self, size: int) -> QPixmap:
         key = (size, id(self._avatar_bytes) if self._avatar_bytes else 0)
+        key = (*key, theme.mode())
         if self._avatar_pm is None or self._avatar_key != key:
             self._avatar_pm = circular_avatar(
-                self._avatar_bytes, size, self._display_label(), _ACCENT
+                self._avatar_bytes, size, self._display_label(), _ACCENT()
             )
             self._avatar_key = key
         return self._avatar_pm
@@ -310,18 +363,21 @@ class AccountChip(QToolButton):
         signed_in = self._signed_in()
 
         if signed_in:
-            bg = QColor(_BG_HOVER if hover else _BG)
-            border = QColor(_BORDER_HOVER if hover else _BORDER)
+            bg = QColor(_BG_HOVER() if hover else _BG())
+            border = QColor(_BORDER_HOVER() if hover else _BORDER())
         else:
-            bg = QColor("#21335b" if hover else "#1a2842")
-            border = QColor(_ACCENT)
+            soft = QColor(theme.color("accent_soft_bg"))
+            if hover:
+                soft = soft.lighter(112)
+            bg = soft
+            border = QColor(_ACCENT())
 
         p.setPen(QPen(border, 1))
         p.setBrush(bg)
         p.drawRoundedRect(rect, 6, 6)
 
         if not signed_in:
-            p.setPen(QColor("#cdd9f5"))
+            p.setPen(QColor(theme.color("accent_text")))
             f = QFont(self.font())
             f.setPixelSize(11)
             p.setFont(f)
@@ -338,7 +394,7 @@ class AccountChip(QToolButton):
         x = ax + d + 7
         badge_w = self._badge_width()
 
-        p.setPen(QColor(_TEXT))
+        p.setPen(QColor(_TEXT()))
         p.setFont(self._name_font())
         fm = p.fontMetrics()
         avail = self.width() - x - badge_w - 8 - 9
@@ -357,9 +413,9 @@ class AccountChip(QToolButton):
         bh = 14.0
         badge = QRectF(x, (self.height() - bh) / 2.0, badge_w, bh)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(_PRO) if is_pro else QColor("#3a3a3a"))
+        p.setBrush(QColor(_PRO()) if is_pro else QColor(theme.color("surface_hover")))
         p.drawRoundedRect(badge, 4, 4)
-        p.setPen(QColor("#1c1c1c") if is_pro else QColor("#c9c9c9"))
+        p.setPen(QColor(theme.color("window_bg")) if is_pro else QColor(_MUTED()))
         p.drawText(badge, Qt.AlignCenter, plan)
         p.end()
 
@@ -396,3 +452,6 @@ class HelpButton(QToolButton):
         menu.addAction("About AgentDeck", lambda *_: self.about_requested.emit())
         self.setMenu(menu)
         self._menu = menu
+
+    def apply_theme(self) -> None:
+        self.setIcon(help_icon(16))

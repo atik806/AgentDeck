@@ -8,15 +8,20 @@ Real plugin management lands in a later pass; keep the empty state and the
 
 from __future__ import annotations
 
+from typing import Optional
+
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+import theme
+
 __all__ = ["PluginsPanel", "plugin_icon"]
 
 
-def plugin_icon(px: int = 18, color: str = "#b7b7b7") -> QIcon:
+def plugin_icon(px: int = 18, color: Optional[str] = None) -> QIcon:
     """A drawn puzzle-piece -- an emoji glyph renders broken in this Qt build."""
+    color = color or theme.color("sidebar_text")
     px = max(8, int(px))
     pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
@@ -38,10 +43,12 @@ def plugin_icon(px: int = 18, color: str = "#b7b7b7") -> QIcon:
     return QIcon(pm)
 
 
-_QSS = """
-QWidget#pluginsPanel { background: #161616; }
-QLabel#pluginsTitle { color: #e6e6e6; font-size: 16px; font-weight: 700; }
-QLabel#pluginsBody { color: #8a8a8a; font-size: 12px; }
+def _qss() -> str:
+    t = theme.color
+    return f"""
+QWidget#pluginsPanel {{ background: {t('window_bg')}; }}
+QLabel#pluginsTitle {{ color: {t('text')}; font-size: 16px; font-weight: 700; }}
+QLabel#pluginsBody {{ color: {t('text_muted')}; font-size: 12px; }}
 """
 
 
@@ -52,16 +59,16 @@ class PluginsPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("pluginsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(_QSS)
+        self.setStyleSheet(_qss())
 
         root = QVBoxLayout(self)
         root.setContentsMargins(40, 40, 40, 40)
         root.setSpacing(10)
         root.addStretch(1)
 
-        icon = QLabel(self)
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setPixmap(plugin_icon(56, "#4a4a4a").pixmap(56, 56))
+        self._icon = QLabel(self)
+        self._icon.setAlignment(Qt.AlignCenter)
+        self._icon.setPixmap(plugin_icon(56, theme.color("border")).pixmap(56, 56))
 
         title = QLabel("No plugins yet", self)
         title.setObjectName("pluginsTitle")
@@ -71,7 +78,11 @@ class PluginsPanel(QWidget):
         body.setObjectName("pluginsBody")
         body.setAlignment(Qt.AlignCenter)
 
-        root.addWidget(icon)
+        root.addWidget(self._icon)
         root.addWidget(title)
         root.addWidget(body)
         root.addStretch(1)
+
+    def apply_theme(self) -> None:
+        self.setStyleSheet(_qss())
+        self._icon.setPixmap(plugin_icon(56, theme.color("border")).pixmap(56, 56))

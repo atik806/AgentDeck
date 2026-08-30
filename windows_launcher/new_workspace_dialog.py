@@ -40,13 +40,15 @@ from workspace import MAX_PANES
 
 __all__ = ["NewWorkspaceDialog"]
 
-_BG = "#1b1b1b"
-_CARD = "#242424"
-_BORDER = "#363636"
-_TEXT = "#e6e6e6"
-_MUTED = "#8c8c8c"
-_BLUE = "#3b78ff"
-_BLUE_HI = "#5590ff"
+import theme
+
+def _BG() -> str: return theme.color("card_bg")
+def _CARD() -> str: return theme.color("card_raised")
+def _BORDER() -> str: return theme.color("card_border")
+def _TEXT() -> str: return theme.color("dialog_text")
+def _MUTED() -> str: return theme.color("text_muted")
+def _BLUE() -> str: return theme.color("accent")
+def _BLUE_HI() -> str: return theme.color("accent_hover")
 
 
 class NewWorkspaceDialog(QDialog):
@@ -69,38 +71,40 @@ class NewWorkspaceDialog(QDialog):
         self.setMinimumWidth(440)
         self.setStyleSheet(
             f"""
-            QDialog {{ background: {_BG}; }}
-            QLabel {{ color: {_TEXT}; }}
+            QDialog {{ background: {_BG()}; }}
+            QLabel {{ color: {_TEXT()}; }}
             QLabel#h1 {{ font-size: 16px; font-weight: 700; }}
-            QLabel#sub, QLabel#note {{ color: {_MUTED}; font-size: 11px; }}
+            QLabel#sub, QLabel#note {{ color: {_MUTED()}; font-size: 11px; }}
             QComboBox, QLineEdit, QSpinBox {{
-                background: {_CARD}; color: {_TEXT};
-                border: 1px solid {_BORDER}; border-radius: 7px;
+                background: {_CARD()}; color: {_TEXT()};
+                border: 1px solid {_BORDER()}; border-radius: 7px;
                 padding: 7px 10px; font-size: 12px;
             }}
             QComboBox:focus, QLineEdit:focus, QSpinBox:focus {{
-                border-color: {_BLUE};
+                border-color: {_BLUE()};
             }}
             QComboBox::drop-down {{ border: none; width: 18px; }}
             QComboBox QAbstractItemView {{
-                background: {_CARD}; color: {_TEXT};
-                border: 1px solid {_BORDER};
-                selection-background-color: {_BLUE}; selection-color: #ffffff;
+                background: {theme.color('menu_bg')}; color: {_TEXT()};
+                border: 1px solid {theme.color('menu_border')};
+                selection-background-color: {_BLUE()}; selection-color: {theme.color('on_accent')};
             }}
             QPushButton {{
-                background: {_CARD}; color: {_TEXT};
-                border: 1px solid {_BORDER}; border-radius: 7px;
+                background: {_CARD()}; color: {_TEXT()};
+                border: 1px solid {_BORDER()}; border-radius: 7px;
                 padding: 8px 16px; font-size: 12px;
             }}
-            QPushButton:hover {{ border-color: {_BLUE}; }}
+            QPushButton:hover {{ border-color: {_BLUE()}; }}
             QPushButton#primary {{
-                background: {_BLUE}; color: #ffffff; border-color: {_BLUE};
+                background: {_BLUE()}; color: {theme.color('on_accent')}; border-color: {_BLUE()};
                 font-weight: 700;
             }}
-            QPushButton#primary:hover {{ background: {_BLUE_HI};
-                                         border-color: {_BLUE_HI}; }}
+            QPushButton#primary:hover {{ background: {_BLUE_HI()};
+                                         border-color: {_BLUE_HI()}; }}
             QPushButton#primary:disabled {{
-                background: #2b3b58; color: #7f8ba3; border-color: #2b3b58;
+                background: {theme.color('accent_soft_bg')};
+                color: {theme.color('text_faint')};
+                border-color: {theme.color('accent_soft_bg')};
             }}
             """
         )
@@ -194,7 +198,9 @@ class NewWorkspaceDialog(QDialog):
     @staticmethod
     def _label(text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet("font-size: 11px; font-weight: 700; color: #a8a8a8;")
+        lbl.setStyleSheet(
+            f"font-size: 11px; font-weight: 700; color: {theme.color('text_muted')};"
+        )
         return lbl
 
     def _agent_key(self) -> str:
@@ -212,7 +218,7 @@ class NewWorkspaceDialog(QDialog):
         if self._hint is not None:
             self._hint.setParent(None)
             self._hint.deleteLater()
-        self._hint = InstallHint(key, accent=_BLUE)
+        self._hint = InstallHint(key, accent=_BLUE())
         self._hint_key = key
         self._hint.rechecked.connect(self._on_rechecked)
         self._hint_slot.addWidget(self._hint)

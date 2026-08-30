@@ -271,6 +271,13 @@ class TerminalCanvas(QWidget):
         self._ascent = 12.0
         self.set_font(font)
 
+    # -- theme -----------------------------------------------------------------
+
+    def apply_theme(self) -> None:
+        """Rebuild the colour palette for the current theme and repaint."""
+        self._palette = Palette()
+        self.update()
+
     # -- font / geometry ---------------------------------------------------
 
     def set_font(self, font: QFont) -> None:
@@ -1100,6 +1107,10 @@ class TerminalView(QWidget):
     def set_font_size(self, size: int) -> None:
         self._font_size = max(6, min(48, size))
         self.canvas.set_font(preferred_font(self._font_size))
+
+    def apply_theme(self) -> None:
+        """Repaint the terminal in the current light/dark theme."""
+        self.canvas.apply_theme()
 
     @property
     def font_size(self) -> int:

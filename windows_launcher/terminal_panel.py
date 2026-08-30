@@ -25,6 +25,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QGraphicsDropShadowEffect,
@@ -40,15 +41,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import theme
 from account import AccountController
 from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
-from navbar import AccountChip, HelpButton
+from navbar import AccountChip, HelpButton, gear_icon, theme_icon
 from new_workspace_dialog import NewWorkspaceDialog
 from plugins_panel import PluginsPanel
+from settings_dialog import SettingsDialog
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
-from vt_screen import DEFAULT_SCROLLBACK, Palette
+from vt_screen import DEFAULT_SCROLLBACK
 from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported for tests
     LAYOUT_COLUMNS,
     LAYOUT_GRID,
@@ -153,9 +156,11 @@ class TerminalPanel(QMainWindow):
             int(self.config.get("window_width", 1400)),
             int(self.config.get("window_height", 880)),
         )
-        self.setStyleSheet(
-            f"QMainWindow {{ background: {Palette.BACKGROUND.name()}; }}"
-        )
+
+        # Resolve light/dark once, then follow further toggles.
+        theme.init(self.config)
+        theme.manager().changed.connect(self._on_theme_changed)
+        self._apply_window_chrome()
 
         # Built before the toolbar so the toolbar can gate the Update button on
         # updater.enabled (False unless this is a Velopack-installed build).
@@ -210,59 +215,61 @@ class TerminalPanel(QMainWindow):
 
     # -- chrome --------------------------------------------------------------
 
-    _TOOLBAR_QSS = """
-        QToolBar {
-            background: #1a1a1a; border: none;
-            border-bottom: 1px solid #2b2b2b;
+    def _toolbar_qss(self) -> str:
+        t = theme.color
+        return f"""
+        QToolBar {{
+            background: {t('toolbar_bg')}; border: none;
+            border-bottom: 1px solid {t('toolbar_border')};
             padding: 6px 10px; spacing: 6px;
-        }
-        QToolBar::separator {
-            background: #323232; width: 1px; margin: 4px 4px;
-        }
-        QToolBar QLabel {
-            color: #6e6e6e; font-size: 10px; font-weight: 700;
+        }}
+        QToolBar::separator {{
+            background: {t('separator')}; width: 1px; margin: 4px 4px;
+        }}
+        QToolBar QLabel {{
+            color: {t('text_faint')}; font-size: 10px; font-weight: 700;
             padding: 0 3px 0 5px;
-        }
-        QToolBar QPushButton, QToolBar QToolButton {
-            color: #e4e4e4; background: #272727; border: 1px solid #3b3b3b;
+        }}
+        QToolBar QPushButton, QToolBar QToolButton {{
+            color: {t('text')}; background: {t('surface')}; border: 1px solid {t('border')};
             border-radius: 6px; padding: 5px 12px; font-size: 11px;
             min-height: 15px;
-        }
-        QToolBar QToolButton { padding: 5px 7px; }
-        QToolBar QPushButton:hover, QToolBar QToolButton:hover {
-            background: #333333; border-color: #4f4f4f;
-        }
-        QToolBar QPushButton:pressed, QToolBar QToolButton:pressed {
-            background: #3a3a3a;
-        }
-        QToolBar QToolButton:checked {
-            background: #223049; border-color: #3b78ff; color: #d3e2ff;
-        }
+        }}
+        QToolBar QToolButton {{ padding: 5px 7px; }}
+        QToolBar QPushButton:hover, QToolBar QToolButton:hover {{
+            background: {t('surface_hover')}; border-color: {t('border_hover')};
+        }}
+        QToolBar QPushButton:pressed, QToolBar QToolButton:pressed {{
+            background: {t('surface_pressed')};
+        }}
+        QToolBar QToolButton:checked {{
+            background: {t('accent_soft_bg')}; border-color: {t('accent')}; color: {t('accent_text')};
+        }}
         QToolBar QPushButton:focus, QToolBar QToolButton:focus,
-        QToolBar QComboBox:focus { outline: none; }
-        QToolBar QComboBox {
-            color: #e4e4e4; background: #272727; border: 1px solid #3b3b3b;
+        QToolBar QComboBox:focus {{ outline: none; }}
+        QToolBar QComboBox {{
+            color: {t('text')}; background: {t('surface')}; border: 1px solid {t('border')};
             border-radius: 6px; padding: 4px 8px; font-size: 11px; min-height: 15px;
-        }
-        QToolBar QComboBox:hover { border-color: #4f4f4f; }
-        QToolBar QComboBox::drop-down { border: none; width: 16px; }
-        QToolBar QComboBox::down-arrow {
+        }}
+        QToolBar QComboBox:hover {{ border-color: {t('border_hover')}; }}
+        QToolBar QComboBox::drop-down {{ border: none; width: 16px; }}
+        QToolBar QComboBox::down-arrow {{
             image: none; width: 0; height: 0; margin-right: 7px;
             border-left: 4px solid transparent; border-right: 4px solid transparent;
-            border-top: 5px solid #8f8f8f;
-        }
-        QComboBox QAbstractItemView {
-            color: #e4e4e4; background: #232323; border: 1px solid #3b3b3b;
+            border-top: 5px solid {t('text_muted')};
+        }}
+        QComboBox QAbstractItemView {{
+            color: {t('text')}; background: {t('menu_bg')}; border: 1px solid {t('menu_border')};
             border-radius: 6px; padding: 3px; outline: none;
-            selection-background-color: #3b78ff; selection-color: #ffffff;
-        }
-    """
+            selection-background-color: {t('accent')}; selection-color: {t('on_accent')};
+        }}
+        """
 
     def _build_toolbar(self) -> None:
         bar = QToolBar("Main", self)
         bar.setMovable(False)
         bar.setFloatable(False)
-        bar.setStyleSheet(self._TOOLBAR_QSS)
+        bar.setStyleSheet(self._toolbar_qss())
         self.addToolBar(bar)
 
         # -- AgentDeck brand: the mark + wordmark, so the app is named in-window
@@ -274,21 +281,14 @@ class TerminalPanel(QMainWindow):
             mark.setStyleSheet("padding: 0 2px 0 4px; background: transparent;")
             bar.addWidget(mark)
 
-        wordmark = QLabel("Agent<span style='color:#89b4fa'>Deck</span>", bar)
-        wordmark.setObjectName("brandName")
-        wordmark.setTextFormat(Qt.RichText)
-        wordmark.setStyleSheet(
-            "QLabel#brandName { color: #cdd6f4; font-size: 12px; font-weight: 800;"
-            " padding: 0 8px 0 3px; background: transparent; }"
-        )
-        bar.addWidget(wordmark)
+        self._wordmark = QLabel(bar)
+        self._wordmark.setObjectName("brandName")
+        self._wordmark.setTextFormat(Qt.RichText)
+        bar.addWidget(self._wordmark)
 
-        ver = QLabel(f"v{__version__}", bar)
-        ver.setStyleSheet(
-            "color: #6e6e6e; font-size: 10px; padding: 0 6px 0 0;"
-            " background: transparent;"
-        )
-        bar.addWidget(ver)
+        self._ver_label = QLabel(f"v{__version__}", bar)
+        bar.addWidget(self._ver_label)
+        self._style_brand()
         bar.addSeparator()
 
         self._sidebar_btn = QToolButton(bar)
@@ -378,11 +378,28 @@ class TerminalPanel(QMainWindow):
         bigger.clicked.connect(lambda: self._bump_font(1))
         bar.addWidget(bigger)
 
-        # -- right cluster: help + account -----------------------------------
+        # -- right cluster: theme · settings · help · account -----------------
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         spacer.setStyleSheet("background: transparent;")
         bar.addWidget(spacer)
+
+        self._theme_btn = QToolButton(bar)
+        self._theme_btn.setIcon(theme_icon(16))
+        self._theme_btn.setFixedSize(30, 27)
+        self._theme_btn.setCursor(Qt.PointingHandCursor)
+        self._theme_btn.setFocusPolicy(Qt.NoFocus)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        bar.addWidget(self._theme_btn)
+
+        self._settings_btn = QToolButton(bar)
+        self._settings_btn.setIcon(gear_icon(16))
+        self._settings_btn.setFixedSize(30, 27)
+        self._settings_btn.setCursor(Qt.PointingHandCursor)
+        self._settings_btn.setFocusPolicy(Qt.NoFocus)
+        self._settings_btn.setToolTip("Settings")
+        self._settings_btn.clicked.connect(self._open_settings)
+        bar.addWidget(self._settings_btn)
 
         self._help_btn = HelpButton(bar)
         self._help_btn.shortcuts_requested.connect(self._show_shortcuts)
@@ -392,6 +409,79 @@ class TerminalPanel(QMainWindow):
         self._account_chip = AccountChip(self.account, bar)
         self._account_chip.clicked.connect(lambda: self._open_account_dialog())
         bar.addWidget(self._account_chip)
+
+        self._toolbar = bar
+        self._refresh_theme_button()
+
+    # -- theme --------------------------------------------------------------
+
+    def _style_brand(self) -> None:
+        deck = theme.color("accent")
+        name = theme.color("text")
+        self._wordmark.setText(f"Agent<span style='color:{deck}'>Deck</span>")
+        self._wordmark.setStyleSheet(
+            f"QLabel#brandName {{ color: {name}; font-size: 12px; font-weight: 800;"
+            " padding: 0 8px 0 3px; background: transparent; }"
+        )
+        self._ver_label.setStyleSheet(
+            f"color: {theme.color('text_faint')}; font-size: 10px;"
+            " padding: 0 6px 0 0; background: transparent;"
+        )
+
+    def _style_status_bar(self) -> None:
+        self.statusBar().setStyleSheet(
+            f"color: {theme.color('status_text')};"
+            f" background: {theme.color('status_bg')}; font-size: 11px;"
+        )
+
+    def _apply_window_chrome(self) -> None:
+        self.setStyleSheet(
+            f"QMainWindow {{ background: {theme.color('window_bg')}; }}"
+        )
+
+    def _refresh_theme_button(self) -> None:
+        self._theme_btn.setIcon(theme_icon(16))
+        nxt = "light" if theme.mode() == "dark" else "dark"
+        self._theme_btn.setToolTip(f"Switch to {nxt} mode")
+
+    def _toggle_theme(self) -> None:
+        theme.toggle()  # fires theme.manager().changed -> _on_theme_changed
+
+    def _on_theme_changed(self, mode: str) -> None:
+        """Re-skin every surface the panel owns for the new light/dark mode."""
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply_palette(app)
+
+        self._apply_window_chrome()
+        self._toolbar.setStyleSheet(self._toolbar_qss())
+        self._style_brand()
+        self._style_status_bar()
+        self._refresh_theme_button()
+        self._settings_btn.setIcon(gear_icon(16))
+        self._help_btn.apply_theme()
+        self._account_chip.refresh()
+
+        self._sidebar.apply_theme()
+        self._plugins_panel.apply_theme()
+        for workspace in self._workspaces:
+            workspace.apply_theme()
+        self._refresh_sidebar()
+
+        self.config["theme"] = mode
+        self._save_settings()
+
+    def _open_settings(self) -> None:
+        before = dict(self.config)
+        dialog = SettingsDialog(self.config, self)
+        dialog.exec()
+        # The dialog writes straight into self.config; apply anything with a
+        # live effect (only the theme has one -- splash / wizard / update knobs
+        # are read fresh where they're used).
+        new_theme = str(self.config.get("theme", "system"))
+        if new_theme != before.get("theme"):
+            theme.set_mode(theme.init(self.config))
+        self._save_settings()
 
     def _build_body(self) -> None:
         central = QWidget(self)
@@ -421,9 +511,9 @@ class TerminalPanel(QMainWindow):
         self.setCentralWidget(central)
 
         status = self.statusBar()
-        status.setStyleSheet("color: #9a9a9a; background: #1b1b1b; font-size: 11px;")
         self._status_label = QLabel("", status)
         status.addPermanentWidget(self._status_label)
+        self._style_status_bar()
 
     def _build_shortcuts(self) -> None:
         def add(sequence: str, slot) -> None:

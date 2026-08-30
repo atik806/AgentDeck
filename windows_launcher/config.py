@@ -176,6 +176,7 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "layout": ("grid", "columns", "rows"),
     "default_shell": ("auto", "pwsh", "powershell", "cmd", "bash"),
     "update_channel": ("stable", "beta"),
+    "theme": ("system", "light", "dark"),
 }
 
 def ensure_dirs() -> None:

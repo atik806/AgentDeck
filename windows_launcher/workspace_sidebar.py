@@ -20,59 +20,62 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import theme
 from plugins_panel import plugin_icon
 
 __all__ = ["WorkspaceSidebar"]
 
 
-_SIDEBAR_QSS = """
-QWidget#workspaceSidebar { background: #141414; }
-QWidget#wsNav { background: #141414; }
-QToolButton#navBtn {
-    color: #b7b7b7; background: transparent; border: none; text-align: left;
+def _sidebar_qss() -> str:
+    t = theme.color
+    return f"""
+QWidget#workspaceSidebar {{ background: {t('sidebar_bg')}; }}
+QWidget#wsNav {{ background: {t('sidebar_bg')}; }}
+QToolButton#navBtn {{
+    color: {t('sidebar_text')}; background: transparent; border: none; text-align: left;
     padding: 7px 10px; font-size: 12px; border-radius: 6px;
-}
-QToolButton#navBtn:hover { background: #1f1f1f; color: #ffffff; }
-QToolButton#navBtn:checked { background: #23232b; color: #ffffff; }
-QFrame#navRule { background: #232323; max-height: 1px; border: none; }
-QWidget#wsHeader { background: #141414; }
-QLabel#wsTitle {
-    color: #8a8a8a; font-size: 10px; font-weight: bold; letter-spacing: 1px;
-}
-QLabel#wsCount {
-    color: #8a8a8a; background: #262626; border-radius: 7px;
+}}
+QToolButton#navBtn:hover {{ background: {t('sidebar_hover')}; color: {t('text')}; }}
+QToolButton#navBtn:checked {{ background: {t('sidebar_active')}; color: {t('text')}; }}
+QFrame#navRule {{ background: {t('separator')}; max-height: 1px; border: none; }}
+QWidget#wsHeader {{ background: {t('sidebar_bg')}; }}
+QLabel#wsTitle {{
+    color: {t('sidebar_heading')}; font-size: 10px; font-weight: bold; letter-spacing: 1px;
+}}
+QLabel#wsCount {{
+    color: {t('sidebar_heading')}; background: {t('sidebar_badge_bg')}; border-radius: 7px;
     padding: 0 5px; font-size: 10px;
-}
-QToolButton#wsAdd {
-    color: #b0b0b0; background: transparent; border: none; font-size: 16px;
-}
-QToolButton#wsAdd:hover { color: #ffffff; background: #2d2d2d; border-radius: 4px; }
+}}
+QToolButton#wsAdd {{
+    color: {t('sidebar_text')}; background: transparent; border: none; font-size: 16px;
+}}
+QToolButton#wsAdd:hover {{ color: {t('text')}; background: {t('sidebar_hover')}; border-radius: 4px; }}
 
-QFrame#wsRow { background: transparent; border-radius: 6px; }
-QFrame#wsRow[active="true"] { background: #23232b; }
-QLineEdit#wsName {
-    color: #cfcfcf; background: transparent; border: none; font-size: 12px;
+QFrame#wsRow {{ background: transparent; border-radius: 6px; }}
+QFrame#wsRow[active="true"] {{ background: {t('sidebar_active')}; }}
+QLineEdit#wsName {{
+    color: {t('sidebar_text')}; background: transparent; border: none; font-size: 12px;
     padding: 0;
-}
-QFrame#wsRow[active="true"] QLineEdit#wsName { color: #ffffff; }
-QLineEdit#wsName:!read-only {
-    background: #101014; border: 1px solid #3b78ff; border-radius: 3px;
-}
-QLabel#wsBadge {
-    color: #9a9a9a; background: #2b2b2b; border-radius: 7px;
+}}
+QFrame#wsRow[active="true"] QLineEdit#wsName {{ color: {t('text')}; }}
+QLineEdit#wsName:!read-only {{
+    background: {t('window_bg')}; border: 1px solid {t('accent')}; border-radius: 3px;
+}}
+QLabel#wsBadge {{
+    color: {t('sidebar_badge_text')}; background: {t('sidebar_badge_bg')}; border-radius: 7px;
     padding: 0 5px; font-size: 10px;
-}
-QFrame#wsRow[active="true"] QLabel#wsBadge { background: #34343e; color: #cfcfcf; }
-QToolButton#wsEdit, QToolButton#wsClose {
-    color: #9a9a9a; background: transparent; border: none; font-size: 11px;
-}
-QToolButton#wsEdit:hover { color: #ffffff; background: #2d2d2d; border-radius: 3px; }
-QToolButton#wsClose:hover { color: #ffffff; background: #c02020; border-radius: 3px; }
+}}
+QFrame#wsRow[active="true"] QLabel#wsBadge {{ background: {t('sidebar_hover')}; color: {t('text')}; }}
+QToolButton#wsEdit, QToolButton#wsClose {{
+    color: {t('sidebar_badge_text')}; background: transparent; border: none; font-size: 11px;
+}}
+QToolButton#wsEdit:hover {{ color: {t('text')}; background: {t('sidebar_hover')}; border-radius: 3px; }}
+QToolButton#wsClose:hover {{ color: {t('on_accent')}; background: {t('danger_hover')}; border-radius: 3px; }}
 
-QScrollArea { background: #141414; border: none; }
-QScrollBar:vertical { background: #141414; width: 8px; margin: 0; }
-QScrollBar::handle:vertical { background: #2d2d2d; border-radius: 4px; min-height: 20px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollArea {{ background: {t('sidebar_bg')}; border: none; }}
+QScrollBar:vertical {{ background: {t('sidebar_bg')}; width: 8px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {t('border')}; border-radius: 4px; min-height: 20px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
 
@@ -290,7 +293,11 @@ class WorkspaceSidebar(QWidget):
         self._scroll.setWidget(inner)
         root.addWidget(self._scroll, 1)
 
-        self.setStyleSheet(_SIDEBAR_QSS)
+        self.setStyleSheet(_sidebar_qss())
+
+    def apply_theme(self) -> None:
+        """Re-skin for the current light/dark theme."""
+        self.setStyleSheet(_sidebar_qss())
 
     def refresh(self, workspaces, active) -> None:
         """Rebuild every row. Cheap: there are only ever a handful of these."""
