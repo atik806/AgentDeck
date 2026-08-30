@@ -114,5 +114,7 @@ release download counts, and triage the crash feed below.
   form is only ever used off Windows, where DPAPI does not exist.
 - The sign-in flow is loopback PKCE: the one-time `code_verifier` never leaves
   the process, the callback server binds `127.0.0.1` with exclusive port
-  ownership, only accepts the redirect on `/` with no `Origin` header, and
-  rejects any callback that echoes a `state` other than the per-attempt nonce.
+  ownership, and only accepts the redirect on `/` with no `Origin` header. The
+  `state` parameter is **not** ours to set on `/auth/v1/authorize` — Supabase
+  owns it (it round-trips the flow-state id through Google), so we send only
+  `redirect_to` + the PKCE challenge and let PKCE guard the code exchange.

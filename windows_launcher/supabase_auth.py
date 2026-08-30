@@ -263,8 +263,10 @@ class _CallbackServer(HTTPServer):
     timeout = 0.4  # so handle_request() returns and we can poll for cancel
 
     def __init__(self, address: tuple[str, int], expected_state: str = ""):
-        #: CSRF nonce placed in the authorize URL; a callback that echoes a
-        #: ``state`` at all must echo this one.
+        #: Retained only as belt-and-braces: if some provider ever echoes a
+        #: ``state`` on the loopback callback it must match this, but Supabase's
+        #: PKCE flow echoes none (and we no longer put one in the authorize URL),
+        #: so in practice this is never consulted.
         self.expected_state = expected_state
         super().__init__(address, _CallbackHandler)
         #: ``("code", value)`` or ``("error", description)`` once the browser hits us.
@@ -395,13 +397,20 @@ class GoogleSignIn:
         port = server.server_address[1]
         self._redirect_uri = f"http://127.0.0.1:{port}"
 
+        # NB: do NOT pass a `state` here. On Supabase's /auth/v1/authorize the
+        # `state` parameter is server-owned -- it carries the flow-state id that
+        # Supabase round-trips through the provider. Sending our own value makes
+        # the provider echo back something Supabase can't parse, so the callback
+        # fails with `bad_oauth_state` ("OAuth state parameter is invalid") and
+        # redirects to the project Site URL instead of our loopback. PKCE (the
+        # code_verifier never leaves this process) plus the Origin/path checks on
+        # the callback are what guard this flow.
         authorize_url = (
             f"{self._url}/auth/v1/authorize?provider=google"
             f"&redirect_to={quote(self._redirect_uri, safe='')}"
             f"&code_challenge={challenge}"
             f"&code_challenge_method=s256"
             f"&flow_type=pkce"
-            f"&state={state}"
         )
 
         try:
