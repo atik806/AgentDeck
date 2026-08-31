@@ -388,6 +388,20 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       it on click (`updater.check` already emits `error` → status bar when
       `_mgr is None`).
 
+18. **Animated update download/install dialog (2026-08-31)** — the self-update
+    only ever showed a transient status-bar line while a release downloaded /
+    installed. New `update_progress.py` (`UpdateProgressDialog`, themed, modal,
+    no close box): a determinate `QProgressBar` that tracks download percent,
+    switches to an indeterminate sweeping chunk for the "Installing update —
+    restarting" phase, plus a looping opacity pulse on a ⬇/⚙ glyph so it never
+    looks frozen. `terminal_panel`: `_show_update_dialog` / `_close_update_dialog`
+    / `_forget_update_dialog` + `self._update_dialog`; `_on_update_available`
+    puts it up before `updater.download()`; `_on_update_progress` feeds it (still
+    also writes the status bar); `_on_update_error` closes it; `_on_update_ready`
+    → on "Restart now" it flips to `start_installing()`, `processEvents()` so it
+    paints, then `_shutdown_all()` + `apply_and_restart()`. No `updater.py`
+    change. Tests: `test_update_progress.py` (offline, 13 checks).
+
 ## Running / testing
 
 ```cmd
@@ -403,6 +417,7 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
 .venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
+.venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are

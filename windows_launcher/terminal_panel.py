@@ -75,6 +75,7 @@ from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported
 from workspace_sidebar import WorkspaceSidebar
 from voice_engine import VoiceEngine
 from voice_overlay import VoiceOverlay, mic_icon
+from update_progress import UpdateProgressDialog
 from updater import UpdateController
 from version import __version__
 
@@ -176,6 +177,7 @@ class TerminalPanel(QMainWindow):
         # Built before the toolbar so the toolbar can gate the Update button on
         # updater.enabled (False unless this is a Velopack-installed build).
         self.updater = UpdateController(self)
+        self._update_dialog: Optional[UpdateProgressDialog] = None
 
         self._build_toolbar()
         self._build_body()
@@ -1075,13 +1077,9 @@ class TerminalPanel(QMainWindow):
         u.up_to_date.connect(
             lambda: self.statusBar().showMessage("AgentDeck is up to date", 4000)
         )
-        u.progress.connect(
-            lambda pct: self.statusBar().showMessage(f"Downloading update… {pct}%", 2000)
-        )
+        u.progress.connect(self._on_update_progress)
         u.ready.connect(self._on_update_ready)
-        u.error.connect(
-            lambda msg: self.statusBar().showMessage(f"Update: {msg}", 6000)
-        )
+        u.error.connect(self._on_update_error)
         u.busy_changed.connect(self._update_btn.setDisabled)
 
     # -- "an update is waiting" glow -----------------------------------------
@@ -1153,7 +1151,35 @@ class TerminalPanel(QMainWindow):
         box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         box.button(QMessageBox.Ok).setText("Download")
         if box.exec() == QMessageBox.Ok:
+            self._show_update_dialog(version)
             self.updater.download()
+
+    # -- download / install progress ---------------------------------------
+
+    def _show_update_dialog(self, version: str) -> None:
+        """Put up (or reuse) the animated download/install progress dialog."""
+        if self._update_dialog is None:
+            self._update_dialog = UpdateProgressDialog(version, self)
+            self._update_dialog.finished.connect(self._forget_update_dialog)
+        self._update_dialog.show()
+        self._update_dialog.raise_()
+
+    def _forget_update_dialog(self, *_args) -> None:
+        self._update_dialog = None
+
+    def _close_update_dialog(self) -> None:
+        if self._update_dialog is not None:
+            self._update_dialog.finish()
+            self._update_dialog = None
+
+    def _on_update_progress(self, pct: int) -> None:
+        if self._update_dialog is not None:
+            self._update_dialog.set_progress(pct)
+        self.statusBar().showMessage(f"Downloading update… {pct}%", 2000)
+
+    def _on_update_error(self, msg: str) -> None:
+        self._close_update_dialog()
+        self.statusBar().showMessage(f"Update: {msg}", 6000)
 
     def _on_update_ready(self, version: str) -> None:
         # Downloaded and acknowledged -- the glow has done its job.
@@ -1166,14 +1192,23 @@ class TerminalPanel(QMainWindow):
             QMessageBox.Yes,
         )
         if reply != QMessageBox.Yes:
+            self._close_update_dialog()
             self.statusBar().showMessage(
                 "Update will apply next time you restart AgentDeck", 6000
             )
             return
+        # Show the "installing, restarting now" state and let it paint before the
+        # blocking apply call hands the process over to Velopack.
+        self._show_update_dialog(version)
+        if self._update_dialog is not None:
+            self._update_dialog.start_installing()
+        QApplication.processEvents()
         # The user already consented; tear the shells down explicitly and skip
         # the closeEvent "shells still running" prompt.
         self._shutdown_all()
         self.updater.apply_and_restart()
+        # apply_and_restart only returns if it failed -- clean the dialog up.
+        self._close_update_dialog()
 
     # -- account ----------------------------------------------------------
 
