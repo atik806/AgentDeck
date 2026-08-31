@@ -402,6 +402,35 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     paints, then `_shutdown_all()` + `apply_and_restart()`. No `updater.py`
     change. Tests: `test_update_progress.py` (offline, 13 checks).
 
+19. **Update controls moved into Settings + feature review (2026-08-31)** — the
+    toolbar **Update** button (`_update_btn`, `#toolbarUpdate` QSS, `_UPDATE_GLOW_QSS`)
+    is **gone**; updating now lives in `settings_dialog.py` → Updates section:
+    a **Check for updates** button + an inline status `QLabel` fed by the
+    `UpdateController` signals (`busy_changed`/`up_to_date`/`available`/`progress`/
+    `ready`/`error`) while the dialog is open, connections dropped in
+    `done()`/`closeEvent`. `SettingsDialog(..., updater=, current_version=)` new
+    kwargs; `terminal_panel._open_settings` passes them.
+    - The **"an update is waiting" glow** now pulses on the **gear/settings
+      button** (`_install_update_glow` → `self._settings_btn`), pointing at where
+      updates live; the solid-red text restyle is dropped (it was button-text
+      specific), just the halo + a tooltip swap.
+    - `_wire_updater` no longer touches `_update_btn`; the modal download prompt
+      / progress dialog / restart prompt still fire from the panel on a launch
+      check.
+    - **Feature fix:** the `update_channel` setting (Stable/Beta) was dead —
+      never reached Velopack. `updater._update_options(channel)` now builds a
+      `velopack.UpdateOptions(AllowVersionDowngrade=False,
+      MaximumDeltasBeforeFallback=10, ExplicitChannel=…)` (`""`/`"stable"` →
+      `None`; any binding-shape drift → `None` → URL-only ctor as before),
+      `UpdateController(channel=)` passes it, `terminal_panel` seeds it from
+      config. NB there is still **no beta release pipeline** (`build.py` packs
+      the default channel only) — the client wiring is correct but picking Beta
+      today finds nothing; the combo warns "restart to take effect".
+      `UpdateController.busy` property added.
+    Tests: `test_settings_dialog.py` (new, offline, 19), `test_panel_account.py`
+    [2]-[4] rewritten (glow on `_settings_btn`, no `_update_btn`), `test_updater.py`
+    green. `test_panel.py` unchanged (same lone offscreen "drop focus" flake).
+
 ## Running / testing
 
 ```cmd
@@ -418,6 +447,7 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
 .venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
+.venv\Scripts\python.exe test_settings_dialog.py       # Settings dialog + Updates section; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are

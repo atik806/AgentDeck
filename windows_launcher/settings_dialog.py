@@ -38,9 +38,19 @@ __all__ = ["SettingsDialog"]
 class SettingsDialog(QDialog):
     """App-wide preferences. Writes into ``config`` as the user toggles."""
 
-    def __init__(self, config: dict, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        config: dict,
+        parent: Optional[QWidget] = None,
+        *,
+        updater=None,
+        current_version: str = "",
+    ):
         super().__init__(parent)
         self._config = config
+        self._updater = updater
+        self._current_version = (current_version or "").lstrip("v")
+        self._upd_conns: list = []
 
         self.setWindowTitle("Settings")
         self.setModal(True)
@@ -105,11 +115,27 @@ class SettingsDialog(QDialog):
         self._channel.addItem("Beta (pre-releases)", "beta")
         idx = self._channel.findData(self._config.get("update_channel", "stable"))
         self._channel.setCurrentIndex(max(0, idx))
-        self._channel.currentIndexChanged.connect(
-            lambda _i: self._set("update_channel", self._channel.currentData())
-        )
+        self._channel.setToolTip("A channel change takes effect after you restart AgentDeck.")
+        self._channel.currentIndexChanged.connect(self._on_channel_pick)
         chan_row.addWidget(self._channel, 1)
         outer.addLayout(chan_row)
+
+        # The manual "check now" control -- this is where updating lives now,
+        # instead of a toolbar button.
+        outer.addSpacing(4)
+        upd_row = QHBoxLayout()
+        upd_row.setSpacing(8)
+        self._check_btn = QPushButton("Check for updates")
+        self._check_btn.clicked.connect(self._on_check_updates)
+        upd_row.addWidget(self._check_btn)
+        upd_row.addStretch(1)
+        outer.addLayout(upd_row)
+
+        self._upd_status = QLabel("")
+        self._upd_status.setObjectName("hint")
+        self._upd_status.setWordWrap(True)
+        outer.addWidget(self._upd_status)
+        self._wire_updates()
         outer.addSpacing(10)
 
         # -- Agents ------------------------------------------------------
@@ -136,6 +162,99 @@ class SettingsDialog(QDialog):
         done.clicked.connect(self.accept)
         btn_row.addWidget(done)
         outer.addLayout(btn_row)
+
+    # -- updates -----------------------------------------------------------
+
+    def _wire_updates(self) -> None:
+        """Hook the "Check for updates" button up to the UpdateController.
+
+        The controller's other outcomes (a modal "download?" prompt, the
+        animated progress dialog, the "restart now?" prompt) are still driven by
+        the panel -- this dialog only adds an inline status line and the manual
+        trigger, and drops its connections again when it closes.
+        """
+        u = self._updater
+        base = (
+            f"You're on AgentDeck v{self._current_version}."
+            if self._current_version else ""
+        )
+        if u is None:
+            self._check_btn.setEnabled(False)
+            self._upd_status.setText(base or "Updates aren't available in this build.")
+            return
+        if not getattr(u, "enabled", False):
+            self._check_btn.setEnabled(False)
+            self._upd_status.setText(
+                getattr(u, "unavailable_reason", "") or "Updates are unavailable here."
+            )
+            return
+
+        self._upd_status.setText(base)
+        self._upd_conns = [
+            (u.busy_changed, self._on_upd_busy),
+            (u.up_to_date, self._on_upd_up_to_date),
+            (u.available, self._on_upd_available),
+            (u.progress, self._on_upd_progress),
+            (u.ready, self._on_upd_ready),
+            (u.error, self._on_upd_error),
+        ]
+        for sig, slot in self._upd_conns:
+            sig.connect(slot)
+        # Reflect a check that is already running (e.g. the launch check).
+        if getattr(u, "busy", False):
+            self._on_upd_busy(True)
+
+    def _teardown_updates(self) -> None:
+        for sig, slot in self._upd_conns:
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._upd_conns = []
+
+    def _on_channel_pick(self, _idx: int) -> None:
+        self._set("update_channel", self._channel.currentData())
+        if self._updater is not None and getattr(self._updater, "enabled", False):
+            self._upd_status.setText("Restart AgentDeck for the channel change to take effect.")
+
+    def _on_check_updates(self) -> None:
+        if self._updater is None:
+            return
+        self._upd_status.setText("Checking for updates…")
+        self._updater.check(silent=False)
+
+    def _on_upd_busy(self, busy: bool) -> None:
+        self._check_btn.setEnabled(not busy)
+        if busy and "Downloading" not in self._upd_status.text():
+            self._upd_status.setText("Checking for updates…")
+
+    def _on_upd_up_to_date(self) -> None:
+        self._upd_status.setText(
+            f"AgentDeck v{self._current_version} is the latest version."
+            if self._current_version else "You're on the latest version."
+        )
+
+    def _on_upd_available(self, version: str, _notes: str) -> None:
+        self._upd_status.setText(f"AgentDeck {version} is available.")
+
+    def _on_upd_progress(self, pct: int) -> None:
+        self._upd_status.setText(f"Downloading update… {int(pct)}%")
+
+    def _on_upd_ready(self, version: str) -> None:
+        self._upd_status.setText(f"AgentDeck {version} downloaded — restart to finish.")
+
+    def _on_upd_error(self, message: str) -> None:
+        self._upd_status.setText(f"Update check failed: {message}")
+
+    # -- Qt lifecycle -----------------------------------------------------
+
+    def done(self, result: int) -> None:            # noqa: D102 - Qt override
+        self._teardown_updates()
+        super().done(result)
+
+    def closeEvent(self, event):                     # noqa: D102 - Qt override
+        self._teardown_updates()
+        super().closeEvent(event)
 
     # -- construction helpers ------------------------------------------------
 

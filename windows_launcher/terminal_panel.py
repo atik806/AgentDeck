@@ -176,7 +176,9 @@ class TerminalPanel(QMainWindow):
 
         # Built before the toolbar so the toolbar can gate the Update button on
         # updater.enabled (False unless this is a Velopack-installed build).
-        self.updater = UpdateController(self)
+        self.updater = UpdateController(
+            self, channel=str(self.config.get("update_channel", "stable") or "stable")
+        )
         self._update_dialog: Optional[UpdateProgressDialog] = None
 
         self._build_toolbar()
@@ -258,16 +260,6 @@ class TerminalPanel(QMainWindow):
         QToolBar QToolButton:checked {{
             background: {t('accent_soft_bg')}; border-color: {t('accent')}; color: {t('accent_text')};
         }}
-        QToolBar QPushButton#toolbarUpdate {{
-            background: {t('accent')}; color: {t('on_accent')};
-            border: 1px solid {t('accent')}; font-weight: 700;
-        }}
-        QToolBar QPushButton#toolbarUpdate:hover {{
-            background: {t('accent_hover')}; border-color: {t('accent_hover')};
-        }}
-        QToolBar QPushButton#toolbarUpdate:pressed {{
-            background: {t('accent_hover')};
-        }}
         QToolBar QPushButton:focus, QToolBar QToolButton:focus,
         QToolBar QComboBox:focus {{ outline: none; }}
         QToolBar QComboBox {{
@@ -329,7 +321,7 @@ class TerminalPanel(QMainWindow):
         bar.addWidget(new_ws_btn)
 
         self._voice_btn = QToolButton(bar)
-        self._voice_btn.setIcon(mic_icon(16, "#d6d6d6"))
+        self._voice_btn.setIcon(mic_icon(16))
         self._voice_btn.setCheckable(True)
         self._voice_btn.setFixedSize(30, 27)
         self._voice_btn.setToolTip(
@@ -337,18 +329,6 @@ class TerminalPanel(QMainWindow):
         )
         self._voice_btn.clicked.connect(lambda: self._toggle_overlay_visible())
         bar.addWidget(self._voice_btn)
-
-        self._update_btn = QPushButton("Update", bar)
-        self._update_btn.setObjectName("toolbarUpdate")
-        self._update_btn.setToolTip("Check for a newer version of AgentDeck")
-        self._update_btn.clicked.connect(lambda: self.updater.check(silent=False))
-        # Always shown (it's part of the toolbar's look); a build that can't
-        # update itself just reports why on click via updater.check().
-        if not self.updater.enabled:
-            self._update_btn.setToolTip(
-                self.updater.unavailable_reason or self._update_btn.toolTip()
-            )
-        bar.addWidget(self._update_btn)
 
         bar.addSeparator()
 
@@ -487,6 +467,7 @@ class TerminalPanel(QMainWindow):
         self._style_status_bar()
         self._refresh_theme_button()
         self._settings_btn.setIcon(gear_icon(16))
+        self._voice_btn.setIcon(mic_icon(16))
         self._help_btn.apply_theme()
         self._account_chip.refresh()
 
@@ -503,7 +484,11 @@ class TerminalPanel(QMainWindow):
 
     def _open_settings(self) -> None:
         before = dict(self.config)
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(
+            self.config, self,
+            updater=getattr(self, "updater", None),
+            current_version=__version__,
+        )
         dialog.exec()
         # The dialog writes straight into self.config; apply anything with a
         # live effect (only the theme has one -- splash / wizard / update knobs
@@ -1066,10 +1051,14 @@ class TerminalPanel(QMainWindow):
     # -- updates -----------------------------------------------------------
 
     def _wire_updater(self) -> None:
-        """Connect the UpdateController to the toolbar button and status bar.
+        """Connect the UpdateController to the status bar and the "update is
+        waiting" cue on the settings button.
 
-        Dormant when the app is not a Velopack install (updater.enabled False):
-        the button is hidden and no signal ever fires.
+        Updating is driven from the Settings dialog now (Updates section), but
+        these panel-level hooks stay live so a launch check still surfaces:
+        ``available`` shows the download prompt, ``progress`` feeds the animated
+        dialog, ``ready`` offers the restart. Dormant when the app is not a
+        Velopack install (``updater.enabled`` False) -- no signal ever fires.
         """
         self._install_update_glow()
         u = self.updater
@@ -1080,37 +1069,24 @@ class TerminalPanel(QMainWindow):
         u.progress.connect(self._on_update_progress)
         u.ready.connect(self._on_update_ready)
         u.error.connect(self._on_update_error)
-        u.busy_changed.connect(self._update_btn.setDisabled)
 
-    # -- "an update is waiting" glow -----------------------------------------
-
-    #: The Update button's look while a release is waiting -- a solid red that
-    #: overrides the toolbar QSS, so the cue survives even where the animated
-    #: halo below can't composite (some remote-desktop / software-render paths).
-    _UPDATE_GLOW_QSS = (
-        "QPushButton { background: #b32a1f; border: 1px solid #ff6a5c;"
-        " color: #ffffff; border-radius: 6px; padding: 5px 12px;"
-        " font-size: 11px; font-weight: 700; min-height: 15px; }"
-        "QPushButton:hover { background: #c9382b; border-color: #ff8577; }"
-        "QPushButton:disabled { background: #6d241c; color: #d9a49d;"
-        " border-color: #a3463c; }"
-    )
+    # -- "an update is waiting" glow ---------------------------------------
 
     def _install_update_glow(self) -> None:
-        """Make the Update button impossible to miss once a release is waiting.
+        """A pulsing halo on the gear/settings button once a release is waiting.
 
-        Two layers: a solid red restyle of the button (:data:`_UPDATE_GLOW_QSS`)
-        that always shows, plus a ``QGraphicsDropShadowEffect`` used as a halo
-        (offset 0) whose blur radius pulses on a loop. Both are inert -- effect
-        disabled, stylesheet cleared -- until :meth:`_set_update_glow` turns them
-        on, which only happens when ``updater.available`` fires.
+        A ``QGraphicsDropShadowEffect`` used as a halo (offset 0) whose blur
+        radius pulses on a loop -- inert until :meth:`_set_update_glow` turns it
+        on, which happens when ``updater.available`` fires. It points the user at
+        Settings, where the update controls now live. (QSS has no box-shadow, so
+        a graphics effect is the only way -- same trick as the pane focus glow.)
         """
         self._update_glow = QGraphicsDropShadowEffect(self)
         self._update_glow.setColor(QColor("#ff3b30"))
         self._update_glow.setOffset(0, 0)
         self._update_glow.setBlurRadius(0)
         self._update_glow.setEnabled(False)
-        self._update_btn.setGraphicsEffect(self._update_glow)
+        self._settings_btn.setGraphicsEffect(self._update_glow)
 
         self._update_pulse = QPropertyAnimation(self._update_glow, b"blurRadius", self)
         self._update_pulse.setDuration(1500)
@@ -1125,9 +1101,9 @@ class TerminalPanel(QMainWindow):
         if glow is None:
             return
         if on:
-            self._update_btn.setText("Update ●")
-            self._update_btn.setStyleSheet(self._UPDATE_GLOW_QSS)
-            self._update_btn.setToolTip("A new version of AgentDeck is ready to install")
+            self._settings_btn.setToolTip(
+                "A new AgentDeck version is available — open Settings to install it"
+            )
             glow.setEnabled(True)
             if self._update_pulse.state() != QPropertyAnimation.Running:
                 self._update_pulse.start()
@@ -1135,9 +1111,7 @@ class TerminalPanel(QMainWindow):
             self._update_pulse.stop()
             glow.setEnabled(False)
             glow.setBlurRadius(0)
-            self._update_btn.setStyleSheet("")
-            self._update_btn.setText("Update")
-            self._update_btn.setToolTip("Check for a newer version of AgentDeck")
+            self._settings_btn.setToolTip("Settings")
 
     def _on_update_available(self, version: str, notes: str) -> None:
         self._set_update_glow(True)

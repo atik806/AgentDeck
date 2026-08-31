@@ -72,29 +72,29 @@ check("help button exposes the two panel signals",
       and hasattr(panel._help_btn, "about_requested"))
 
 
-print("[2] update glow is installed but dormant")
-check("update button is always in the toolbar", panel._update_btn.isVisibleTo(panel))
+print("[2] update controls moved off the toolbar; the 'waiting' glow is dormant")
+check("no toolbar Update button", not hasattr(panel, "_update_btn"))
 check("glow effect exists", hasattr(panel, "_update_glow"))
+check("glow is on the settings button",
+      panel._settings_btn.graphicsEffect() is panel._update_glow)
 check("glow starts disabled", not panel._update_glow.isEnabled())
 check("glow colour is red", panel._update_glow.color().name() == "#ff3b30")
 check("glow offset is zero (a halo, not a shadow)",
       panel._update_glow.offset().manhattanLength() == 0)
-check("button text starts plain", panel._update_btn.text() == "Update")
+check("settings tooltip starts plain", panel._settings_btn.toolTip() == "Settings")
 
 
-print("[3] _set_update_glow toggles both layers")
+print("[3] _set_update_glow toggles the halo + the settings tooltip")
 panel._set_update_glow(True)
 check("effect enabled", panel._update_glow.isEnabled())
 check("pulse animation running",
       panel._update_pulse.state() == QAbstractAnimation.Running)
 check("pulse loops forever", panel._update_pulse.loopCount() == -1)
-check("button restyled solid red", "b32a1f" in panel._update_btn.styleSheet())
-check("button text flags it", panel._update_btn.text() == "Update ●")
+check("settings tooltip flags the update", "available" in panel._settings_btn.toolTip())
 panel._set_update_glow(False)
 check("effect disabled again", not panel._update_glow.isEnabled())
 check("pulse stopped", panel._update_pulse.state() != QAbstractAnimation.Running)
-check("stylesheet cleared", panel._update_btn.styleSheet() == "")
-check("button text restored", panel._update_btn.text() == "Update")
+check("settings tooltip restored", panel._settings_btn.toolTip() == "Settings")
 
 
 print("[4] the 'update available' signal path lights the glow")
@@ -103,8 +103,7 @@ print("[4] the 'update available' signal path lights the glow")
 panel.updater.available.disconnect(panel._on_update_available)
 panel.updater.available.connect(lambda *_: panel._set_update_glow(True))
 panel.updater.available.emit("9.9.9", "notes")
-check("glow lit by the available signal",
-      panel._update_glow.isEnabled() and panel._update_btn.text() == "Update ●")
+check("glow lit by the available signal", panel._update_glow.isEnabled())
 # `ready` (downloaded + acknowledged) clears it -- test the helper directly.
 panel._set_update_glow(False)
 check("glow clears once handled", not panel._update_glow.isEnabled())

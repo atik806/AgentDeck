@@ -106,6 +106,33 @@ def _release_notes(info) -> str:
 
 
 # ---------------------------------------------------------------------------
+# UpdateManager options
+# ---------------------------------------------------------------------------
+
+def _update_options(channel: str):
+    """Build a Velopack ``UpdateOptions`` for ``channel`` (``""`` / ``"stable"``
+    → the feed's default channel; anything else → that explicit channel).
+
+    Returns ``None`` if the binding doesn't expose ``UpdateOptions`` or the
+    shape has drifted -- the caller then constructs the manager with the feed
+    URL alone, exactly as before.
+    """
+    ch = (channel or "").strip().lower()
+    if ch in ("", "stable"):
+        explicit = None
+    else:
+        explicit = ch
+    try:
+        return velopack.UpdateOptions(
+            AllowVersionDowngrade=False,
+            MaximumDeltasBeforeFallback=10,
+            ExplicitChannel=explicit,
+        )
+    except Exception:  # noqa: BLE001 - fall back to the URL-only constructor
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
 
@@ -161,7 +188,7 @@ class UpdateController(QObject):
     error = Signal(str)
     busy_changed = Signal(bool)
 
-    def __init__(self, parent: Optional[QObject] = None):
+    def __init__(self, parent: Optional[QObject] = None, *, channel: str = ""):
         super().__init__(parent)
         self._mgr = None
         self._init_error = ""
@@ -172,7 +199,12 @@ class UpdateController(QObject):
 
         if _VELOPACK_OK and is_packaged():
             try:
-                self._mgr = velopack.UpdateManager(UPDATE_FEED_URL)
+                opts = _update_options(channel)
+                self._mgr = (
+                    velopack.UpdateManager(UPDATE_FEED_URL, opts)
+                    if opts is not None
+                    else velopack.UpdateManager(UPDATE_FEED_URL)
+                )
             except Exception as exc:  # noqa: BLE001
                 self._mgr = None
                 self._init_error = str(exc)
@@ -183,6 +215,11 @@ class UpdateController(QObject):
     def enabled(self) -> bool:
         """Whether updates can actually run (Velopack install + working binding)."""
         return self._mgr is not None
+
+    @property
+    def busy(self) -> bool:
+        """True while a check or download is in flight."""
+        return self._busy
 
     @property
     def unavailable_reason(self) -> str:
