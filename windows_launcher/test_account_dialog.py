@@ -38,13 +38,15 @@ class FakeAccount(QObject):
     avatar_ready = Signal(bytes)
     profile_ready = Signal(dict)
 
-    def __init__(self, *, signed_in=True, plan="free"):
+    def __init__(self, *, signed_in=True, plan="free", plan_expires_at=None):
         super().__init__()
         self.is_signed_in = signed_in
         self.display_name = "Ada Lovelace"
         self.email = "ada@example.com"
         self.avatar_url = "https://example.com/a.png"
         self.plan = plan
+        self.raw_plan = plan
+        self.plan_expires_at = plan_expires_at
         self.calls = []
 
     def fetch_avatar(self):
@@ -84,8 +86,29 @@ check("plan badge PRO", "PRO" in _labels(d))
 
 acc = FakeAccount(plan="free")
 d = AccountDialog(acc, {})
+acc.plan = "pro"  # the controller resolves the plan before it emits profile_ready
+acc.raw_plan = "pro"
 acc.profile_ready.emit({"plan": "pro"})
 check("profile_ready upgrades the badge", "PRO" in _labels(d))
+
+
+# ---------------------------------------------------------------------------
+print("[2b] a lapsed Pro shows the FREE badge and an 'expired' note")
+from datetime import datetime, timedelta, timezone as _tz
+
+_past = (datetime.now(_tz.utc) - timedelta(days=2)).isoformat()
+acc = FakeAccount(plan="free", plan_expires_at=_past)
+acc.raw_plan = "pro"  # stored plan is pro, but it has lapsed -> effective free
+d = AccountDialog(acc, {})
+texts = _labels(d)
+check("lapsed Pro -> FREE badge", "FREE" in texts and "PRO" not in texts)
+check("shows an expired note", any("expired" in t.lower() for t in texts))
+
+_future = (datetime.now(_tz.utc) + timedelta(days=20)).isoformat()
+acc = FakeAccount(plan="pro", plan_expires_at=_future)
+d = AccountDialog(acc, {})
+check("active Pro shows a renews note",
+      any("renews" in t.lower() for t in _labels(d)))
 
 
 # ---------------------------------------------------------------------------

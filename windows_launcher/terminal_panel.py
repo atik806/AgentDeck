@@ -11,6 +11,7 @@ test suite reach for are kept as thin proxies onto the active workspace.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -1149,10 +1150,52 @@ class TerminalPanel(QMainWindow):
         # The plan lands here (fresh sign-in, restored session, or a manual
         # refresh); re-run the Free/Pro gates whenever it does.
         a.profile_ready.connect(lambda _p: self._apply_entitlements())
+
+        # A subscription can lapse while the app is open. Two nudges:
+        #  * a slow poll re-fetches the profile every 30 min (also picks up an
+        #    admin-side plan change generally, not just expiry), and
+        #  * a one-shot timer fires at the exact plan_expires_at moment.
+        # Both just re-fetch + re-run the gates; the downgrade is non-destructive
+        # (panes already open stay, only new ones past the Free cap are blocked).
+        self._plan_watch = QTimer(self)
+        self._plan_watch.setInterval(30 * 60 * 1000)
+        self._plan_watch.timeout.connect(self._recheck_plan)
+        self._plan_watch.start()
+
+        self._plan_expiry_timer = QTimer(self)
+        self._plan_expiry_timer.setSingleShot(True)
+        self._plan_expiry_timer.timeout.connect(self._recheck_plan)
+
         # Sync the initial UI state to whatever plan we already know (Free until
         # the first profile_ready).
         self._auto_update_checked = False
         self._apply_entitlements()
+
+    def _recheck_plan(self) -> None:
+        """Re-pull the profile (if signed in) and re-apply the Free/Pro gates."""
+        acc = self.account
+        if acc is not None and getattr(acc, "is_signed_in", False):
+            try:
+                acc.fetch_profile()  # emits profile_ready -> _apply_entitlements
+            except Exception:  # noqa: BLE001 - a failed refresh must not crash the loop
+                pass
+        self._apply_entitlements()
+
+    def _arm_plan_expiry_timer(self) -> None:
+        """(Re)schedule the one-shot timer for the current plan_expires_at."""
+        timer = getattr(self, "_plan_expiry_timer", None)
+        if timer is None:
+            return
+        exp = entitlements.plan_expiry(getattr(self.account, "plan_expires_at", None))
+        if exp is None:
+            timer.stop()
+            return
+        delta = (exp - datetime.now(timezone.utc)).total_seconds()
+        if delta <= 0:
+            timer.stop()
+            return
+        # Cap the wait at 6h so a long-running clock drift still gets re-checked.
+        timer.start(max(1000, min(int(delta * 1000) + 2000, 6 * 60 * 60 * 1000)))
 
     def _plan(self) -> str:
         return self.account.plan if self.account is not None else "free"
@@ -1192,6 +1235,9 @@ class TerminalPanel(QMainWindow):
         # Background update check on launch is Pro; Free keeps the manual button.
         if pro:
             self._auto_check_updates()
+
+        # Re-arm the "expire at plan_expires_at" timer for whatever we now know.
+        self._arm_plan_expiry_timer()
 
     def _auto_check_updates(self) -> None:
         """One quiet check for a newer release — Pro only, once per run."""
@@ -1317,6 +1363,10 @@ class TerminalPanel(QMainWindow):
 
     def _shutdown_all(self) -> None:
         self._watchdog.stop()
+        if getattr(self, "_plan_watch", None) is not None:
+            self._plan_watch.stop()
+        if getattr(self, "_plan_expiry_timer", None) is not None:
+            self._plan_expiry_timer.stop()
         self._set_update_glow(False)
         self._voice_engine.shutdown()
         self.account.shutdown()

@@ -132,7 +132,9 @@ def rest_select(table, access_token, *, params=None, url=None, key=None):
         raise Exception("401 Unauthorized")
     if table == "profiles":
         plan = getattr(rest_select, "profile_plan", "pro")
-        return [{"id": "u-123", "plan": plan, "display_name": "Sam Tester"}]
+        row = {"id": "u-123", "plan": plan, "display_name": "Sam Tester"}
+        row["plan_expires_at"] = getattr(rest_select, "profile_expires_at", None)
+        return [row]
     if table == "user_settings":
         return [{"data": {"font_size": 14, "layout": "columns", "not_a_synced_key": 99}}]
     return []
@@ -279,6 +281,32 @@ pump(lambda: events["avatar"] and events["profile"])
 check("avatar_ready delivered bytes", events["avatar"] and events["avatar"][-1] == b"PNGDATA")
 check("profile_ready delivered the row", bool(events["profile"]))
 check("plan picked up from profile", c4.plan == "pro")
+
+print("[5c] an expired plan_expires_at makes plan read back as free")
+from datetime import datetime, timedelta, timezone as _tz
+
+rest_select.profile_plan = "pro"
+rest_select.profile_expires_at = (datetime.now(_tz.utc) - timedelta(days=1)).isoformat()
+c5c = fresh()
+GoogleSignIn.next_result = Session()
+ev5c = []
+c5c.profile_ready.connect(ev5c.append)
+c5c.sign_in_with_google()
+pump(lambda: ev5c)
+check("raw_plan is still the stored 'pro'", c5c.raw_plan == "pro")
+check("effective plan is 'free' once expired", c5c.plan == "free")
+check("plan_expires_at exposed", bool(c5c.plan_expires_at))
+check("expired Pro gets no settings sync", c5c.pull_cloud_settings() is None)
+
+rest_select.profile_expires_at = (datetime.now(_tz.utc) + timedelta(days=30)).isoformat()
+c5d = fresh()
+GoogleSignIn.next_result = Session()
+ev5d = []
+c5d.profile_ready.connect(ev5d.append)
+c5d.sign_in_with_google()
+pump(lambda: ev5d)
+check("a future expiry keeps Pro", c5d.plan == "pro")
+rest_select.profile_expires_at = None  # restore for later cases
 
 print("[6] sign out clears the session and re-arms login")
 c4.sign_out()

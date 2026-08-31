@@ -5,6 +5,7 @@
 
 import math
 import sys
+from datetime import datetime, timedelta, timezone
 
 import entitlements as e
 
@@ -49,6 +50,29 @@ check("hint mentions the feature", "Voice" in e.upgrade_hint("Voice"))
 check("hint carries the URL", e.UPGRADE_URL in e.upgrade_hint("x"))
 check("URL is the AgentDeck pricing page",
       e.UPGRADE_URL == "https://vibeflow.tech/agentdeck")
+
+print("[6] plan_active folds in the expiry date")
+_past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+_future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+check("pro + no expiry -> active", e.plan_active("pro", None) is True)
+check("pro + future expiry -> active", e.plan_active("pro", _future) is True)
+check("pro + past expiry -> not active", e.plan_active("pro", _past) is False)
+check("free + future expiry -> still not active", e.plan_active("free", _future) is False)
+check("pro + trailing-Z expiry parses",
+      e.plan_active("pro", "2099-01-01T00:00:00Z") is True)
+check("pro + past trailing-Z expiry parses",
+      e.plan_active("pro", "2000-01-01T00:00:00.500Z") is False)
+check("pro + naive (assumed UTC) future string",
+      e.plan_active("pro", "2099-01-01T00:00:00") is True)
+check("pro + garbage expiry -> treated as no expiry",
+      e.plan_active("pro", "not a date") is True)
+check("explicit now= is honoured",
+      e.plan_active("pro", _future,
+                    now=datetime.now(timezone.utc) + timedelta(days=2)) is False)
+check("plan_expiry(None) is None", e.plan_expiry(None) is None)
+check("plan_expiry('') is None", e.plan_expiry("") is None)
+check("plan_expiry returns an aware datetime",
+      e.plan_expiry(_future) is not None and e.plan_expiry(_future).tzinfo is not None)
 
 print("[5] PRO_MAX_PANES stays in step with workspace.MAX_PANES")
 try:

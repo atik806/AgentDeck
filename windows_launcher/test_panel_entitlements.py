@@ -83,6 +83,24 @@ check("_voice_gated() false for Pro", panel._voice_gated() is False)
 check("no upsell for Pro", _prompts == [])
 panel._new_workspace_interactive  # (not calling — needs the modal dialog)
 
+print("[5b] a lapsed plan_expires_at drops the panel back to Free limits")
+from datetime import datetime, timedelta, timezone as _tz
+
+panel.account._plan = "pro"
+panel.account._plan_expires_at = (datetime.now(_tz.utc) - timedelta(days=1)).isoformat()
+panel._apply_entitlements()
+check("effective plan is free once expired", panel.account.plan == "free")
+check("workspace cap back to 4",
+      panel._workspaces[0].max_panes == entitlements.FREE_MAX_PANES)
+_prompts.clear()
+check("_voice_gated() true again for a lapsed plan", panel._voice_gated() is True)
+
+panel.account._plan_expires_at = (datetime.now(_tz.utc) + timedelta(days=30)).isoformat()
+panel._apply_entitlements()
+check("a future expiry keeps Pro caps",
+      panel._workspaces[0].max_panes == entitlements.PRO_MAX_PANES)
+panel.account._plan_expires_at = None
+
 print("[6] a Pro panel starts its first workspace at default_count")
 acct2 = AccountController(_cfg)
 acct2._plan = "pro"

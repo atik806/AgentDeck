@@ -256,9 +256,35 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     profile so a restored session resolves the plan without opening the account
     dialog. `account_dialog` sync checkbox disabled + "(Pro)" for Free.
     `main.py` startup update check → `panel._auto_check_updates`. Tests:
-    `test_entitlements.py` (offline, 27), `test_panel_entitlements.py`
-    (offscreen, 14), `test_account.py` +[16b]. `test_panel.py` builds its panels
+    `test_entitlements.py` (offline), `test_panel_entitlements.py`
+    (offscreen), `test_account.py` +[16b]. `test_panel.py` builds its panels
     with a Pro `AccountController` (it tests pane mechanics, not the gate).
+
+13. **Automatic subscription expiry (2026-08-31)** — a Pro grant now carries an
+    end date and downgrades on its own. New migration
+    `supabase/migrations/20260831150000_plan_expiry.sql`: adds
+    `profiles.plan_expires_at timestamptz` (NULL = never) + `plan_interval`
+    (`month|year` hint for the admin renew button); a `security definer`
+    `public.expire_stale_plans()` that sets `plan='free'` where
+    `plan_expires_at < now()`; a **pg_cron** job (`expire-stale-plans`, every
+    15 min) that calls it; and it **drops `profiles: update own` / revokes
+    client UPDATE** on `profiles` (the client only ever selects it — this closes
+    a self-upgrade hole). Requires pg_cron enabled once on the hosted project.
+    Client: `entitlements.plan_active(plan, expires_at)` / `plan_expiry()` are
+    the new time-aware helpers (`is_pro()` stays a pure name check);
+    `AccountController.plan` now returns the **effective** plan (a lapsed Pro
+    reads back `"free"`), with `raw_plan` / `plan_expires_at` for the stored
+    values — so every existing gate downgrades with no call-site change.
+    `account.py` captures `plan_expires_at` from the profile row and the cloud-
+    sync gates read the effective plan. `terminal_panel`: a 30-min `_plan_watch`
+    re-fetches the profile, a one-shot `_plan_expiry_timer` fires at the exact
+    expiry moment, both → `_recheck_plan` → `_apply_entitlements` (non-
+    destructive: open panes stay, only new ones past the Free cap are blocked).
+    `account_dialog` shows a "Pro renews …" / "Pro expired …" line. VibeFlow
+    Admin (`api/agentdeck.js` + `AdminAgentDeck.jsx`, separate repo) gained the
+    expiry field + "Grant Pro · 1 month / 1 year" buttons. Tests:
+    `test_entitlements.py` [6], `test_account.py` [5c], `test_panel_entitlements.py`
+    [5b], `test_account_dialog.py` [2b], `test_navbar.py` (lapsed-badge checks).
 
 ## Running / testing
 

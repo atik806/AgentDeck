@@ -20,6 +20,7 @@ from anywhere without pulling Qt in. The plan string comes from
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 
 __all__ = [
     "UPGRADE_URL",
@@ -27,6 +28,8 @@ __all__ = [
     "FREE_MAX_PANES",
     "PRO_MAX_PANES",
     "is_pro",
+    "plan_active",
+    "plan_expiry",
     "max_workspaces",
     "max_panes",
     "voice_enabled",
@@ -48,8 +51,61 @@ _PRO_PLANS = frozenset({"pro", "paid", "team", "plus"})
 
 
 def is_pro(plan: str | None) -> bool:
-    """True when ``plan`` grants Pro features."""
+    """True when ``plan`` is a paid plan *name*.
+
+    Name only -- this does not consider whether the subscription has lapsed. For
+    the "is this account actually entitled to Pro right now" question use
+    :func:`plan_active`, which the app's ``AccountController.plan`` funnels
+    through.
+    """
     return str(plan or "").strip().lower() in _PRO_PLANS
+
+
+def plan_expiry(expires_at: object) -> "datetime | None":
+    """Parse a ``profiles.plan_expires_at`` value to an aware UTC datetime.
+
+    Accepts ``None`` / ``""`` (-> ``None`` = never expires), a ``datetime``, or
+    an ISO-8601 string (``2026-09-01T00:00:00+00:00``, a trailing ``Z``, with or
+    without microseconds, or a naive string which is assumed to be UTC).
+    Anything unparseable is treated as ``None`` rather than raising.
+    """
+    if expires_at is None or expires_at == "":
+        return None
+    if isinstance(expires_at, datetime):
+        dt = expires_at
+    else:
+        text = str(expires_at).strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def plan_active(
+    plan: str | None,
+    expires_at: object = None,
+    *,
+    now: "datetime | None" = None,
+) -> bool:
+    """True when ``plan`` is a Pro plan that has not passed its expiry.
+
+    ``expires_at`` of ``None`` means the grant never expires (comps / team /
+    lifetime). A past timestamp means Pro has lapsed and the account is Free.
+    """
+    if not is_pro(plan):
+        return False
+    exp = plan_expiry(expires_at)
+    if exp is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now < exp
 
 
 def max_workspaces(plan: str | None) -> float:

@@ -195,6 +195,10 @@ class AccountDialog(QDialog):
         email.setObjectName("email")
         col.addWidget(name)
         col.addWidget(email)
+        self._plan_note = QLabel("")
+        self._plan_note.setObjectName("email")
+        self._plan_note.setWordWrap(True)
+        col.addWidget(self._plan_note)
         head.addLayout(col, 1)
 
         self._badge = QLabel()
@@ -260,6 +264,8 @@ class AccountDialog(QDialog):
                 f"QLabel#badge {{ color: {_MUTED()}; background: {_CARD()}; }}"
             )
 
+        self._apply_plan_note(pro)
+
         # Cloud settings sync is a Pro feature -- show the control either way, but
         # a Free user can't arm it.
         sync = getattr(self, "_sync", None)
@@ -270,6 +276,29 @@ class AccountDialog(QDialog):
                 if pro else
                 "Sync my workspaces and agents to this account  (Pro)"
             )
+
+    def _apply_plan_note(self, pro: bool) -> None:
+        """One muted line under the email: when Pro renews, or that it lapsed."""
+        note = getattr(self, "_plan_note", None)
+        if note is None:
+            return
+        acc = self._account
+        raw = str(getattr(acc, "raw_plan", getattr(acc, "plan", "free")) or "free")
+        try:
+            import entitlements
+            exp = entitlements.plan_expiry(getattr(acc, "plan_expires_at", None))
+        except Exception:  # noqa: BLE001
+            exp = None
+
+        text = ""
+        if exp is not None:
+            when = exp.astimezone().strftime("%d %b %Y")
+            if pro:
+                text = f"Pro renews {when}"
+            elif entitlements.is_pro(raw):
+                text = f"Pro expired {when} — renew to restore Pro features"
+        note.setText(text)
+        note.setVisible(bool(text))
 
     # -- signed-out layout ------------------------------------------------
 
@@ -337,4 +366,6 @@ class AccountDialog(QDialog):
             )
 
     def _on_profile(self, profile: dict) -> None:
-        self._apply_plan((profile or {}).get("plan", self._account.plan))
+        # Use the controller's effective plan (it folds in plan_expires_at) rather
+        # than the raw string on the row, so a lapsed Pro shows the FREE badge.
+        self._apply_plan(self._account.plan)

@@ -122,6 +122,9 @@ class AccountController(QObject):
         self._store = supabase_auth.SessionStore()
         self._session = None
         self._plan = "free"
+        #: Raw ``profiles.plan_expires_at`` (ISO string) or None = never expires.
+        #: Folded into the :attr:`plan` property so a lapsed Pro reads as Free.
+        self._plan_expires_at: Optional[str] = None
         self._busy = False
         self._cancel_signin = False
         self._workers: set[_Worker] = set()
@@ -179,7 +182,26 @@ class AccountController(QObject):
 
     @property
     def plan(self) -> str:
+        """The plan the account is *entitled to right now*.
+
+        A Pro plan whose ``plan_expires_at`` has passed reads back as ``"free"``,
+        so every entitlement call site (which just reads this) downgrades without
+        needing to know about expiry. Use :attr:`raw_plan` for the stored value.
+        """
+        plan = self._plan or "free"
+        if not entitlements.plan_active(plan, self._plan_expires_at):
+            return "free"
+        return plan
+
+    @property
+    def raw_plan(self) -> str:
+        """The plan string as stored on the profile row, ignoring expiry."""
         return self._plan or "free"
+
+    @property
+    def plan_expires_at(self) -> Optional[str]:
+        """Raw ``plan_expires_at`` from the profile row (ISO string) or None."""
+        return self._plan_expires_at
 
     def needs_login(self) -> bool:
         """True when the login window must be shown before the panel opens.
@@ -265,6 +287,9 @@ class AccountController(QObject):
                 plan = profile.get("plan")
                 if isinstance(plan, str) and plan:
                     self._plan = plan
+                if "plan_expires_at" in profile:
+                    exp = profile.get("plan_expires_at")
+                    self._plan_expires_at = exp if isinstance(exp, str) and exp else None
                 self.profile_ready.emit(profile)
 
         self._run(_do, _done, on_fail=self._on_rest_failed)
@@ -300,10 +325,13 @@ class AccountController(QObject):
                     plan = profile.get("plan")
                     if isinstance(plan, str) and plan:
                         self._plan = plan
+                    if "plan_expires_at" in profile:
+                        exp = profile.get("plan_expires_at")
+                        self._plan_expires_at = exp if isinstance(exp, str) and exp else None
 
                 if not self._config.get("account_cloud_sync", True):
                     return
-                if not entitlements.cloud_sync_enabled(self._plan):
+                if not entitlements.cloud_sync_enabled(self.plan):
                     return
 
                 rows = self._rest_with_reauth(
@@ -333,7 +361,7 @@ class AccountController(QObject):
         if (
             not self._config.get("account_cloud_sync", True)
             or self._session is None
-            or not entitlements.cloud_sync_enabled(self._plan)
+            or not entitlements.cloud_sync_enabled(self.plan)
         ):
             return
         payload = _filter_cloud(data)
@@ -432,6 +460,7 @@ class AccountController(QObject):
     def _on_signed_in(self, session) -> None:
         self._session = session
         self._plan = "free"
+        self._plan_expires_at = None
         self._save_session(session)
         self._sync_email(session.email)
         self.signed_in.emit(session.user or {})
@@ -453,6 +482,7 @@ class AccountController(QObject):
     def _finish_sign_out(self) -> None:
         self._session = None
         self._plan = "free"
+        self._plan_expires_at = None
         try:
             self._store.clear()
         except Exception:  # noqa: BLE001

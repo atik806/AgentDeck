@@ -72,6 +72,48 @@ supabase db push
 
 **Or** open the Dashboard **SQL editor**, paste the migration file, run it.
 
+Apply `supabase/migrations/20260831150000_plan_expiry.sql` the same way — it adds
+plan-expiry (see **Plan expiry** below) and needs the **pg_cron** extension
+enabled once: Dashboard → **Database → Extensions → `pg_cron`** (toggle on).
+
+## Plan expiry
+
+A Pro grant has an **end date** and downgrades to Free on its own — no manual
+clean-up.
+
+| Column (`public.profiles`) | Meaning |
+|---|---|
+| `plan` | `free` / `pro` (…`paid`/`team`/`plus`). The stored plan. |
+| `plan_expires_at` | `timestamptz`, or **NULL = never expires** (comp / team / lifetime). When it passes, `plan` reverts to `free`. |
+| `plan_interval` | `month` / `year` / NULL. Only a hint for the admin "renew" button; the client ignores it. |
+
+**Server side.** `public.expire_stale_plans()` sets `plan = 'free'` for every row
+whose `plan_expires_at` is in the past. A **pg_cron** job (`expire-stale-plans`)
+runs it every 15 minutes. Check it with `select jobname, schedule from cron.job;`.
+
+**Client side (defence in depth).** `AccountController.plan` returns the
+*effective* plan: a Pro whose `plan_expires_at` has passed reads back as `free`,
+so the Free/Pro gates apply immediately even in the ≤15-min window before cron
+runs, or in a long-running session. A 30-minute poll and a timer at the exact
+expiry moment re-check without needing a restart. The downgrade is
+non-destructive — panes already open stay; only new workspaces/panes past the
+Free limits are blocked, and voice / cloud-sync / auto-update switch off.
+
+**Granting / renewing** is done in **VibeFlow Admin** (service-role key): set
+`plan` + `plan_expires_at`, or use *Grant Pro · 1 month / 1 year*. The desktop
+client can no longer write to `profiles` at all (the `profiles: update own`
+policy was dropped) — it only reads.
+
+**Manual test:**
+
+```sql
+update public.profiles
+   set plan = 'pro', plan_expires_at = now() - interval '1 minute'
+ where id = '<test-user-id>';
+select public.expire_stale_plans();                       -- returns 1
+select plan from public.profiles where id = '<test-user-id>';  -- 'free'
+```
+
 ## Configuration
 
 | Knob | Where | Effect |

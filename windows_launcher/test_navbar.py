@@ -55,6 +55,7 @@ class FakeAccount(QObject):
         self._in = False
         self._name = "Ada Lovelace"
         self._plan = "free"
+        self._plan_expires_at = None
         self.avatar_calls = 0
         self.sign_in_calls = 0
 
@@ -72,6 +73,10 @@ class FakeAccount(QObject):
 
     @property
     def plan(self):
+        # Mirror AccountController.plan: a lapsed Pro reads back as free.
+        import entitlements
+        if not entitlements.plan_active(self._plan, self._plan_expires_at):
+            return "free"
         return self._plan
 
     def fetch_avatar(self):
@@ -112,6 +117,15 @@ check("free plan badge", chip._plan_text() == "FREE")
 acc._plan = "pro"
 chip.refresh()
 check("pro plan badge", chip._plan_text() == "PRO")
+
+from datetime import datetime, timedelta, timezone as _tz
+acc._plan_expires_at = (datetime.now(_tz.utc) - timedelta(hours=1)).isoformat()
+chip.refresh()
+check("lapsed pro shows FREE badge", chip._plan_text() == "FREE")
+acc._plan_expires_at = (datetime.now(_tz.utc) + timedelta(days=5)).isoformat()
+chip.refresh()
+check("future expiry still shows PRO", chip._plan_text() == "PRO")
+acc._plan_expires_at = None
 
 acc._name = "Grace Hopper"
 chip.refresh()
