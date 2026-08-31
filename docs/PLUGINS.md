@@ -1,0 +1,406 @@
+# AgentDeck plugins
+
+> **Status: P0–P2 working end-to-end (2026-09-01).** Device-flow connect, token
+> vault, user-scope MCP injection into `~/.claude.json`, and the GitHub-review
+> flow are implemented, unit-tested, and **verified live**: a Claude Code pane
+> called `get_me` / `list_pull_requests` through the hosted MCP endpoint
+> (`api.githubcopilot.com/mcp/`) with the GitHub App user token — no auth error.
+> **Not done:** Activity-log viewer, local `github-mcp-server` fallback, agents
+> other than Claude Code, the audit-table migration is not yet applied. See
+> **§11**.
+
+## 1. What a plugin is
+
+A **plugin** connects AgentDeck to an outside service the user already has an
+account with, and turns that connection into **tools the coding agent in a pane
+can call directly** — no copy-pasting tokens, no "run this `gh` command for me".
+
+For GitHub that means the agent can, on its own:
+
+- read a repo, a branch, a PR diff, issues, checks;
+- **review a pull request** — fetch the diff, analyse it, post inline comments
+  and a summary review (the v1 capability);
+- create a repo, open/merge PRs, push commits;
+- **dispatch and inspect GitHub Actions** — trigger a `workflow_dispatch`, watch
+  a run, pull failing-job logs;
+- triage issues (label, comment, close, assign).
+
+The user connects once from the **Plugins** page; every workspace they point at
+one of their GitHub repos then gets those tools wired into its agent.
+
+### How the agent actually gets the tools
+
+Agents in AgentDeck are external CLIs (`claude`, `codex`, …) that we launch in a
+ConPTY pane — we don't control their tool surface at runtime. We already reach
+*into* an agent's config once (`agents.pretrust_folder` writes
+`~/.claude.json`). The plugin system does the same, deliberately:
+
+**AgentDeck writes a GitHub MCP server entry into the agent's project MCP
+config**, authenticated with the user's connected GitHub token, scoped to the
+workspace folder. When the agent starts in that folder it picks up the MCP
+server and its GitHub toolset.
+
+- **Transport (v1): GitHub's hosted remote MCP server**,
+  `https://api.githubcopilot.com/mcp/`, with the user token as a bearer header.
+  No local binary, no Docker, GitHub maintains it. Toolsets (`repos`, `issues`,
+  `pull_requests`, `actions`, `code_security`, …) are switchable per connection.
+- **Fallback:** the official local `github-mcp-server` binary (downloaded and
+  cached like Velopack does its assets) for users who can't reach the remote
+  endpoint or want everything on-box.
+- **Agent coverage (v1): Claude Code only** — it's the default agent. The
+  server goes into the **root `mcpServers` of `~/.claude.json`** (Claude Code's
+  *user* scope), *not* a `<folder>/.mcp.json` and *not* a per-project entry — so
+  a pane has the GitHub tools whatever folder it's `cd`'d to. User-scope servers
+  are trusted automatically (no `/mcp` prompt), the token never lands in a repo,
+  and there's no clash with `pretrust_folder`. An older build wrote a project
+  `.mcp.json`; `github_mcp.cleanup_legacy_mcp_json` deletes any it left and
+  `remove()` sweeps stale per-project entries. The injector (`github_mcp.py`) is
+  pluggable so Codex (`~/.codex/config.toml`), Gemini (`.gemini/settings.json`),
+  Copilot CLI, etc. can be added one at a time. Non-supported agents still get
+  the connection + the "post a review"
+  button; they just don't get in-agent tools yet.
+
+## 2. The Plugins page
+
+Routing already exists: the sidebar's **Plugins** nav item →
+`terminal_panel._show_plugins` → `PluginsPanel`. We replace the empty state with
+a real two-level view. (Visual spec follows the mockup the user provided; the
+structure below is what the code needs to support.)
+
+### 2a. Catalog view
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Plugins                                     [ search…  ]    │
+│  Connect AgentDeck to the tools your agents work in.         │
+│                                                             │
+│  [ All ]  [ Version control ]  [ Project mgmt ]  [ CI/CD ]   │
+│                                                             │
+│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐       │
+│  │  GitHub       │ │  GitLab       │ │  Linear       │       │
+│  │  Version ctrl │ │  Version ctrl │ │  Project mgmt │       │
+│  │  Review PRs,  │ │               │ │               │       │
+│  │  run actions… │ │  Coming soon  │ │  Coming soon  │       │
+│  │ ●  Connected  │ │               │ │               │       │
+│  │  [ Manage ]   │ │  [   —   ]    │ │  [   —   ]    │       │
+│  └───────────────┘ └───────────────┘ └───────────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Each **card**: icon, name, category tag, one-line description, a status pill
+(`Not connected` / `Connected as @login` / `Needs attention`), and one primary
+button (`Connect` → `Manage`). v1 ships exactly one live card — **GitHub** — with
+the rest rendered disabled as `Coming soon` (GitLab, Bitbucket, Linear, Jira,
+Sentry, Vercel, Netlify).
+
+### 2b. Detail / manage view (click a card)
+
+- **Connection** — connect / disconnect, which GitHub account, when connected,
+  token expiry, "Reconnect" if the token is stale.
+- **Repositories** — the repos the AgentDeck GitHub App is installed on
+  (`Add repositories` deep-links to the GitHub install-settings page).
+- **Capabilities** — a checklist the user opts into, each mapping to an MCP
+  toolset + token scope tier (see §5):
+  - ☑ Read code & PRs *(always on when connected)*
+  - ☑ Review pull requests — post comments & reviews
+  - ☐ Manage issues — label, comment, close
+  - ☐ Write code — create branches, commit, open PRs
+  - ☐ Run GitHub Actions — dispatch workflows, read logs
+  - ☐ Admin — create / delete repos
+- **Automation mode** — per capability: `Ask first` (default) vs `Autonomous`.
+- **Activity** — the audit log for this plugin (§4), newest first.
+
+### 2c. Gating
+
+Plugins is a **Pro** feature, consistent with cloud sync / per-workspace config
+(`entitlements.py`). Free users see the catalog and the GitHub detail page as an
+upsell; **Connect** is disabled with the standard `upgrade_hint`. Add
+`entitlements.plugins_enabled(plan)` and `entitlements.github_automation_enabled(plan)`.
+
+## 3. Connecting GitHub
+
+Use a dedicated **AgentDeck GitHub App** (not a plain OAuth App) with the
+**OAuth device flow**:
+
+- A GitHub App gives **per-repository** permissions the user chooses at install
+  time, fine-grained permission scopes, and a 15k/h rate limit.
+- **Device flow** needs no client secret in the shipped binary and no loopback
+  server — simpler than the Google flow we already run. User sees a code, opens
+  `https://github.com/login/device`, we poll `/login/oauth/access_token` until
+  authorised.
+- User-to-server tokens expire (~8 h) with a refresh token; `github_auth.py`
+  refreshes them the way `supabase_auth.refresh` does.
+
+### Token storage
+
+- **Local only**, `%APPDATA%\multi-terminal\github.bin`, DPAPI-encrypted — reuse
+  `supabase_auth.SessionStore`'s exact pattern (magic bytes, atomic replace,
+  refuse-to-write-plaintext-on-Windows).
+- **Never synced to the cloud.** Re-auth per machine.
+- What *does* go to Supabase is **connection metadata** (see §4) so the account
+  knows "GitHub is connected as @x with capabilities y" across machines, and the
+  profile chip / other clients can reflect it.
+
+### The flow
+
+1. Plugins → GitHub card → **Connect** (Pro only).
+2. `github_controller` starts the device flow on a worker thread (mirror
+   `account.AccountController` — signals up top, `_Worker` QThread, busy state).
+3. Dialog shows the user code + a button that opens the browser; we poll.
+4. On success: store the token locally, write the connection row to Supabase,
+   emit `connected(login)`, refresh the card.
+5. First connect also walks the user through **installing the GitHub App** on
+   the repos they want (GitHub hosts that screen).
+
+### Dashboard prerequisites (one-time)
+
+Documented like ACCOUNTS.md §"Dashboard prerequisites":
+
+1. Register the **AgentDeck** GitHub App (github.com/settings/apps) — enable
+   *Device flow*, set the permission list (§5), no callback URL needed for
+   device flow, note the **App ID** and **Client ID** (public, ship in the
+   binary; there is no secret with device flow).
+2. Publish the App (public) so any user can install it.
+3. Create the Supabase tables (§4) — migration
+   `supabase/migrations/2026090XXXXXXX_plugins.sql`.
+
+## 4. Data model
+
+### Local
+
+`%APPDATA%\multi-terminal\plugins.json` — non-secret per-machine state:
+
+```json
+{
+  "github": {
+    "login": "atik806",
+    "connected_at": "2026-09-01T10:00:00Z",
+    "capabilities": ["read", "review"],
+    "automation": { "review": "ask" },
+    "transport": "remote"
+  }
+}
+```
+
+Token lives separately in `github.bin` (DPAPI). `plugins.json` is safe to read
+without decryption for rendering the catalog.
+
+### Supabase
+
+```sql
+-- plugin_connections: one row per (user, provider). Metadata only — NO TOKENS.
+create table public.plugin_connections (
+  user_id       uuid references auth.users(id) on delete cascade,
+  provider      text not null,               -- 'github'
+  external_login text,
+  capabilities  text[]  not null default '{}',
+  automation    jsonb   not null default '{}',
+  connected_at  timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  primary key (user_id, provider)
+);
+
+-- plugin_runs: append-only audit of every automated action an agent took.
+create table public.plugin_runs (
+  id          bigint generated always as identity primary key,
+  user_id     uuid references auth.users(id) on delete cascade,
+  provider    text not null,
+  action      text not null,        -- 'review.posted', 'repo.created', 'workflow.dispatched'
+  target      text,                 -- 'atik806/AgentDeck#123'
+  summary     text,
+  app_version text,
+  created_at  timestamptz not null default now()
+);
+```
+
+RLS: `user_id = auth.uid()` for select/insert on both; no update/delete for
+clients on `plugin_runs`. Same style as `20260830120000_app_errors.sql`.
+
+## 5. Capability → scope / toolset map
+
+| Capability | GitHub App permissions | MCP toolset(s) | Default |
+|---|---|---|---|
+| Read code & PRs | `contents:read`, `pull_requests:read`, `metadata:read` | `repos`, `pull_requests` (read) | on |
+| Review pull requests | `pull_requests:write` | `pull_requests` | **on (v1)** |
+| Manage issues | `issues:write` | `issues` | off |
+| Write code | `contents:write` | `repos` (write) | off |
+| Run GitHub Actions | `actions:write` | `actions` | off |
+| Admin (create/delete repos) | `administration:write` | `repos` (admin) | off |
+
+The injected MCP config only enables toolsets for capabilities the user ticked,
+so an agent physically cannot call `run_workflow` unless "Run GitHub Actions" is
+on.
+
+## 6. GitHub review — the first capability
+
+The headline v1 feature. Two ways in, one engine.
+
+### Engine
+
+`github_mcp.build_review_brief(repo, pr, options)` + `review_startup_command()`
+produce the review pane's task. `github_mcp.inject(folder, token, connection)`
+writes the scoped `github` server into the **root `mcpServers`** of
+`~/.claude.json` (`folder` is used only for legacy `.mcp.json` cleanup) — removed
+by `remove()` on disconnect; idempotent; declines a `github` server the user
+configured themselves. `github_controller.ensure_wired()` is called on connect,
+on startup-if-connected, and after a capability change.
+
+### Entry point A — "Review a pull request" action
+
+A command (palette + a button on the GitHub detail page):
+
+1. `github_review_dialog` — pick repo (from the installed list), pick PR (open
+   PRs listed via the API), or paste a PR URL. Options: *post to GitHub* vs
+   *just tell me here*; *comment / request changes / approve* (default
+   **comment**); focus areas (bugs / security / style / tests).
+2. AgentDeck spawns a **new pane** in the current workspace (or a dedicated
+   "Reviews" workspace), agent = the review agent (default Claude Code),
+   `cwd` = a shallow clone or the existing local checkout if the folder already
+   is that repo.
+3. It injects the GitHub MCP server (toolset `pull_requests`, review capability)
+   and sends the review prompt as the startup command:
+
+   > Review pull request #123 in `atik806/AgentDeck`. Use the GitHub tools to
+   > fetch the PR, its diff and its checks. Assess correctness, security, and
+   > and test coverage. Post a single review with inline comments on the
+   > specific lines, then a short summary. Do **not** approve or request
+   > changes — leave it as a comment. Stop and show me the review before
+   > posting if anything looks destructive.
+
+4. Output streams in the pane. If *post to GitHub* was on, the agent posts via
+   MCP; AgentDeck writes a `plugin_runs` row (`review.posted`,
+   `atik806/AgentDeck#123`).
+
+### Entry point B — the agent asks on its own
+
+Once a workspace folder is a connected repo and "Review pull requests" is on,
+any agent in that workspace already has the tools. A user typing "review the
+open PRs" in the pane just works — no AgentDeck dialog involved.
+
+### Guardrails
+
+- Default review event is **COMMENT**; `approve` / `request_changes` require the
+  user to have picked it in the dialog *and* confirm.
+- `Ask first` automation mode: the agent is told to print the review and wait;
+  AgentDeck surfaces a **Post to GitHub** button in the pane header.
+- Every write action → a `plugin_runs` row and a toast.
+- A hard cap on repos (the App installation list) means an agent can't touch
+  anything the user didn't explicitly add.
+
+## 7. New modules & files
+
+Qt-free core (unit-tested headless, same rule as `supabase_auth.py` /
+`agents.py` / `entitlements.py`):
+
+| File | Role |
+|---|---|
+| `windows_launcher/github_auth.py` | Device-flow OAuth, token refresh, `GitHubTokenStore` (DPAPI). |
+| `windows_launcher/github_api.py` | Thin `requests` wrapper — list installations/repos, list PRs, whoami. |
+| `windows_launcher/github_mcp.py` | Build/inject/remove the MCP server entry per agent; build review prompts. Pluggable per-agent writers. |
+| `windows_launcher/plugin_store.py` | `plugins.json` read/write + Supabase `plugin_connections` / `plugin_runs` sync. |
+
+Qt layer:
+
+| File | Role |
+|---|---|
+| `windows_launcher/github_controller.py` | `QObject` bridge — mirrors `account.AccountController` (signals, `_Worker`, busy). |
+| `windows_launcher/plugins_panel.py` | Rebuilt: catalog + detail views. Keep `plugin_icon`. |
+| `windows_launcher/plugin_card.py` | The catalog card widget. |
+| `windows_launcher/github_review_dialog.py` | Repo/PR picker + review options. |
+
+Migrations:
+
+| File | Role |
+|---|---|
+| `supabase/migrations/2026090XXXXXXX_plugins.sql` | `plugin_connections`, `plugin_runs`, RLS. |
+
+Tests: extend `test_plugins_panel.py` (catalog render, card states, Pro gate);
+new `test_github_auth.py` (device-flow state machine w/ mocked HTTP, token vault
+round-trip), `test_github_mcp.py` (injector writes/removes/merges `.mcp.json`,
+idempotent, prompt builder), `test_plugin_store.py`.
+
+## 8. Integration points in existing code
+
+- **`terminal_panel.py`** — construct `GitHubController` alongside
+  `AccountController`; pass it to `PluginsPanel`; add the "Review a pull
+  request" command; when a workspace/pane spawns in a folder that is a connected
+  repo, call `github_mcp.inject(...)` before the startup command fires (next to
+  the existing `pretrust_folder` call near line 623).
+- **`account.py`** — nothing goes in `CLOUD_KEYS` (token is local). Optionally
+  read `github_login` off the profile row for the chip.
+- **`entitlements.py`** — add `plugins_enabled` / `github_automation_enabled`;
+  extend the Free/Pro table + `docs`/pricing.
+- **`workspace_sidebar.py`** — the Plugins nav item can grow a small green dot
+  when a plugin is mid-action, reusing the activity-dot the workspace rows have.
+- **`config.py`** — no schema change; `plugins.json` is a sibling file.
+
+## 9. Rollout phases
+
+| Phase | Ships | Depends on |
+|---|---|---|
+| **P0 — Catalog shell** | Rebuilt `plugins_panel.py`: catalog + detail views, GitHub card, Pro gate, "Coming soon" others. No connection yet. | — |
+| **P1 — Connect GitHub** | GitHub App + device flow, `github_auth.py`, token vault, `plugin_store.py`, `plugin_connections` migration, connect/disconnect UI, repo list. | GitHub App registered, migration applied |
+| **P2 — GitHub review MVP** | `github_mcp.py` (Claude Code), `github_review_dialog.py`, spawn review pane, remote GitHub MCP, results in pane, manual "Post to GitHub" + confirm, `plugin_runs` audit. | P1 |
+| **P3 — Capabilities & audit** | Capability checklist → scoped toolsets, `Ask first` / `Autonomous` modes, Activity log viewer, local `github-mcp-server` fallback. | P2 |
+| **P4 — More automations & agents** | Create repo, open/merge PRs, dispatch & inspect Actions, issue triage. Codex + Gemini MCP writers. | P3 |
+| **P5 — More providers** | GitLab / Linear / … using the same `plugin_store` + capability model. | P4 |
+
+## 10. Open questions
+
+1. **Clone vs. reuse local checkout** for a review pane — if the workspace
+   folder already is the repo, review in place on a scratch worktree; otherwise
+   shallow-clone to a temp dir and clean up after.
+2. **Headless review** (`claude -p "<prompt>"`) as an option so a review can run
+   without a visible pane and just drop its summary into the Activity log.
+3. **Remote MCP reachability** — confirm `api.githubcopilot.com/mcp/` works for
+   users without a Copilot subscription (docs suggest yes for the App-token
+   path); if not, local binary becomes P2 not P3.
+4. **Token-scope UX** — GitHub App permissions are fixed at registration; the
+   "capabilities" checklist then only *narrows* what MCP exposes, it can't grant
+   more than the App has. Decide the App's full permission set up front (lean
+   superset of §5) and gate purely client-side.
+
+## 11. Implementation status
+
+### Built & tested (`windows_launcher/`)
+
+| Module | What it does | Tests |
+|---|---|---|
+| `secret_store.py` | `EncryptedJsonStore` — DPAPI-encrypted JSON at rest, Windows-bound, refuses plaintext on Windows. | `test_github_auth.py` §5–6 |
+| `github_auth.py` | OAuth **device flow** (`DeviceFlow.start`/`poll_once`/`run`), token refresh, `GitHubTokenStore` (`github.bin`, never cloud-synced). | `test_github_auth.py` |
+| `plugin_store.py` | `plugins.json` metadata, the capability model (`CAPABILITIES`, `normalise_capabilities`, `toolsets_for`), `PluginConnection`. | `test_plugin_store.py` |
+| `github_mcp.py` | Injects/removes the `github` server in `~/.claude.json` `projects[…].mcpServers` (idempotent, path-form-aware, refuses hand-rolled servers), `remove_all`, `cleanup_legacy_mcp_json`, `_git_exclude`, review-brief + startup-command builders. | `test_github_mcp.py` |
+| `github_api.py` | `whoami`, `list_repos` (App installations), `list_open_prs`, `parse_pr_url`. | (via controller test) |
+| `github_controller.py` | Qt bridge — connect/disconnect lifecycle, capability edits, `ensure_wired`/`unwire_all`, `_valid_token_blocking`, best-effort Supabase mirror + `log_run`. | `test_github_controller.py` |
+| `plugins_panel.py` | Rebuilt: catalog grid + GitHub detail (connect, device-code box, capability checklist + automation combos, repo list, "Review a pull request"). | `test_plugins_panel.py` §4 |
+| `github_review_dialog.py` | Repo/PR picker + focus/post options → `review_ready` payload. | (smoke) |
+| `entitlements.py` | `plugins_enabled` / `github_automation_enabled` (Pro-gated). | `test_entitlements.py` §3 |
+| `terminal_panel.py` | Builds `GitHubController`; wires the panel; `_wire_github_for` injects the server before a workspace's panes start **and** on `github.connected` (with a "restart the agent (↻)" status nudge); `_start_github_review` spawns a review workspace; teardown unwires + `remove_all` + shuts down. | `test_panel*.py` (unchanged, still green) |
+| `supabase/migrations/20260901120000_plugins.sql` | `plugin_connections` + `plugin_runs` with RLS. | — |
+
+### To finish P1–P2 in production
+
+1. **GitHub App registered** — client id `Iv23liY7p5rRtAOm6mtc` is baked into
+   `github_auth._DEFAULT_CLIENT_ID` (override with `AGENTDECK_GITHUB_CLIENT_ID`).
+   Device flow verified against the live endpoint.
+2. **Apply the migration** to the hosted project (`supabase db push`).
+3. Confirm the App's permission set matches §5 and set the repos-install UX copy.
+4. ~~Verify the hosted MCP endpoint serves the GitHub App user token~~ —
+   **done 2026-09-01**, works (a local fallback is now a nice-to-have, not a
+   blocker).
+
+### Known: agent must be (re)started after connecting
+
+`.claude.json` is read by `claude` at launch. Connecting GitHub while a `claude`
+pane is already running does nothing for that pane — the user restarts the agent
+(pane header `↻`) or opens a new workspace. `_on_github_connected` re-injects the
+working folder and shows a status-bar nudge saying so.
+
+### Not started
+
+Activity-log viewer (P3), `Ask first` vs `Autonomous` enforcement for ad-hoc
+actions (the combo persists but only the review flow's "post" checkbox honours
+it), local `github-mcp-server` fallback (P3), Codex/Gemini writers (P4), other
+providers (P5). Also: the token written into `.claude.json` is static, so a
+multi-hour agent session can outlive it (~8 h) — a new workspace re-injects a
+fresh one, a long-running pane does not.

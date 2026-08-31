@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 import entitlements
 import theme
 from account import AccountController
+from github_controller import GitHubController
 from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -112,6 +113,9 @@ class TerminalPanel(QMainWindow):
         self.account = account if account is not None else AccountController(
             self.config, self
         )
+        # The GitHub plugin surface (connect state, token vault, MCP wiring for
+        # the agent in a pane). Inert until the user connects on the Plugins page.
+        self.github = GitHubController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -531,7 +535,10 @@ class TerminalPanel(QMainWindow):
         # workspace-only stack means its .count() still equals the workspace
         # count (older callers + the test suite rely on that).
         self._ws_stack = QStackedWidget(central)
-        self._plugins_panel = PluginsPanel(central)
+        self._plugins_panel = PluginsPanel(
+            central, github=self.github, account=self.account, config=self.config
+        )
+        self._plugins_panel.review_ready.connect(self._start_github_review)
         self._main_stack = QStackedWidget(central)
         self._main_stack.addWidget(self._ws_stack)
         self._main_stack.addWidget(self._plugins_panel)
@@ -637,6 +644,10 @@ class TerminalPanel(QMainWindow):
         startup_command: Optional[str] = None,
     ) -> Workspace:
         accent = _WS_ACCENTS[len(self._workspaces) % len(_WS_ACCENTS)]
+        # If GitHub is connected and this workspace's folder is a repo, wire the
+        # GitHub MCP server into the agent's config *before* its panes fire the
+        # startup command, so the agent comes up with the GitHub tools ready.
+        self._wire_github_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -670,6 +681,54 @@ class TerminalPanel(QMainWindow):
         self._ws_stack.addWidget(workspace)
         self._select_workspace(workspace)
         return workspace
+
+    def _wire_github_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the GitHub MCP server to the agent's config for ``folder``.
+
+        A no-op unless GitHub is connected, the folder exists, and the agent is
+        one AgentDeck knows how to configure (v1: Claude Code). Returns True if
+        the config was actually changed.
+        """
+        gh = getattr(self, "github", None)
+        if gh is None:
+            return False
+        try:
+            return bool(gh.is_connected and gh.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
+    def _start_github_review(self, payload: dict) -> None:
+        """Open a workspace that runs a GitHub PR review (Plugins → Review a PR)."""
+        import github_mcp
+
+        repo = str(payload.get("repo") or "").strip()
+        try:
+            pr_number = int(payload.get("pr_number") or 0)
+        except (TypeError, ValueError):
+            pr_number = 0
+        if not repo or pr_number <= 0:
+            return
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+
+        folder = self._working_folder or str(Path.home())
+        agent = "claude"
+        try:
+            brief = github_mcp.write_review_brief(folder, repo, pr_number, options)
+            command = github_mcp.review_startup_command(agent, repo, pr_number, brief)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Couldn't start the review: {exc}", 5000)
+            return
+
+        self._leave_plugins()
+        self._add_workspace(
+            name=f"Review {repo.split('/')[-1]}#{pr_number}",
+            pane_count=1,
+            startup_command=command,
+        )
+        try:
+            self.github.log_run("review.started", f"{repo}#{pr_number}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _show_plugins(self) -> None:
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""
@@ -1222,6 +1281,26 @@ class TerminalPanel(QMainWindow):
         self._auto_update_checked = False
         self._apply_entitlements()
 
+        # When GitHub is (dis)connected on the Plugins page, (un)wire the agent
+        # config for the folder the workspaces are running in, so a *restarted*
+        # agent picks up (or loses) the GitHub tools without reopening AgentDeck.
+        gh = getattr(self, "github", None)
+        if gh is not None:
+            gh.connected.connect(lambda _i: self._on_github_connected())
+            gh.disconnected.connect(self._on_github_disconnected)
+
+    def _on_github_connected(self) -> None:
+        if self._wire_github_for(self._working_folder, self._startup_command):
+            self.statusBar().showMessage(
+                "GitHub connected — restart the agent (↻) in a pane to load the GitHub tools",
+                8000,
+            )
+
+    def _on_github_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "GitHub disconnected — restart the agent (↻) to drop the GitHub tools", 6000
+        )
+
     def _recheck_plan(self) -> None:
         """Re-pull the profile (if signed in) and re-apply the Free/Pro gates."""
         acc = self.account
@@ -1548,6 +1627,9 @@ class TerminalPanel(QMainWindow):
         self._set_update_glow(False)
         self._voice_engine.shutdown()
         self.account.shutdown()
+        if getattr(self, "github", None) is not None:
+            self.github.unwire_all()
+            self.github.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 

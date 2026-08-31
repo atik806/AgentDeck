@@ -47,6 +47,16 @@ hiddenimports += [
     "requests", "certifi", "urllib3", "charset_normalizer", "idna",
 ]
 
+# The plugins subsystem (windows_launcher/*.py). Most are reached through
+# top-level imports from terminal_panel, but a few are imported lazily inside
+# methods (github_review_dialog from plugins_panel; github_api / supabase_auth
+# from github_controller) -- name them so a frozen build always carries them.
+hiddenimports += [
+    "secret_store", "plugin_store",
+    "github_auth", "github_api", "github_mcp",
+    "github_controller", "github_review_dialog",
+]
+
 # The voice pipeline lives in the sibling `voice_capture` package. It must be
 # `pip install`ed into the build venv for this to find anything.
 hiddenimports += collect_submodules("voice_capture")

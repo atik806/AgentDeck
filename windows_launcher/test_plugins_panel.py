@@ -111,6 +111,118 @@ dot_rows[0]._dot.grab()  # must not raise
 check("lit dot paints", True)
 
 
+# ---------------------------------------------------------------------------
+print("[4] plugins catalog + GitHub detail")
+
+from PySide6.QtCore import QObject, Signal
+from plugins_panel import PluginsPanel
+from plugin_store import PluginConnection, GITHUB
+
+
+class FakeGitHub(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+    device_code_ready = Signal(dict)
+    repos_ready = Signal(list)
+    state_changed = Signal()
+
+    def __init__(self, connected=False):
+        super().__init__()
+        self._connected = connected
+        self.is_busy = False
+        self.login = "atik806" if connected else ""
+        self._caps = ["read", "review"]
+        self.started = False
+        self.repos_fetched = False
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def connection(self):
+        if not self._connected:
+            return None
+        return PluginConnection(GITHUB, login=self.login, capabilities=self._caps)
+
+    def start_connect(self):
+        self.started = True
+
+    def cancel_connect(self):
+        pass
+
+    def disconnect(self):
+        self._connected = False
+        self.disconnected.emit()
+
+    def set_capabilities(self, caps):
+        self._caps = list(caps)
+        self.state_changed.emit()
+
+    def set_automation(self, cap, mode):
+        pass
+
+    def fetch_repos(self):
+        self.repos_fetched = True
+        self.repos_ready.emit([{"full_name": "atik806/AgentDeck", "private": False}])
+
+
+# -- catalog, not connected
+gh0 = FakeGitHub(connected=False)
+panel = PluginsPanel(github=gh0, account=None, config={})
+panel.resize(900, 640)
+panel.grab()
+check("starts on the catalog", panel._stack.currentIndex() == 0)
+gh_card = [c for c in panel._cards if c.key == "github"][0]
+check("github card is interactive", gh_card.property("interactive") == "true")
+check("github card shows NOT CONNECTED", "NOT CONNECTED" in gh_card._pill.text())
+
+panel._open_detail("github")
+check("clicking github opens detail", panel._stack.currentIndex() == 1)
+check("detail shows Connect", not panel._gh_detail._primary.isHidden())
+panel._gh_detail._on_primary()
+check("Connect calls the controller", gh0.started)
+
+# -- search filter
+panel.show_catalog()
+panel._filter_cards("hub")
+check("search 'hub' keeps GitHub", not gh_card.isHidden())
+panel._filter_cards("zzz")
+check("search 'zzz' hides GitHub", gh_card.isHidden())
+panel._filter_cards("")
+
+# -- connected
+gh1 = FakeGitHub(connected=True)
+panel1 = PluginsPanel(github=gh1, account=None, config={})
+card1 = [c for c in panel1._cards if c.key == "github"][0]
+check("connected card shows CONNECTED", "CONNECTED" in card1._pill.text())
+panel1._open_detail("github")
+d = panel1._gh_detail
+check("detail hides Connect when connected", d._primary.isHidden())
+check("capability rows visible", not d._caps_wrap.isHidden())
+check("read capability forced on + disabled",
+      d._cap_boxes["read"].isChecked() and not d._cap_boxes["read"].isEnabled())
+check("review capability reflects connection", d._cap_boxes["review"].isChecked())
+check("repos were fetched on show", gh1.repos_fetched)
+check("repo listed", d._repos.count() == 1)
+
+d._cap_boxes["actions"].setChecked(True)
+check("ticking a capability pushes it to the controller", "actions" in gh1._caps)
+
+review_payloads = []
+panel1.review_ready.connect(review_payloads.append)
+d.review_ready.emit({"repo": "a/b", "pr_number": 5, "options": {}})
+check("review_ready bubbles up from the panel", review_payloads == [{"repo": "a/b", "pr_number": 5, "options": {}}])
+
+d._on_disconnect()
+check("disconnect flips the card back", "NOT CONNECTED" in card1._pill.text())
+
+panel1.apply_theme()  # must not raise
+check("apply_theme survives", True)
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

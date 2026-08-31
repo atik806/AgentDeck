@@ -41,6 +41,8 @@ __all__ = [
     "cloud_sync_enabled",
     "auto_update_enabled",
     "per_workspace_config_enabled",
+    "plugins_enabled",
+    "github_automation_enabled",
     "upgrade_hint",
 ]
 
@@ -200,6 +202,24 @@ def auto_update_enabled(plan: str | None) -> bool:
 
 def per_workspace_config_enabled(plan: str | None) -> bool:
     """Per-workspace folders & agents -- Pro only (Free has one workspace)."""
+    return is_pro(plan)
+
+
+def plugins_enabled(plan: str | None) -> bool:
+    """Connecting a plugin (GitHub, …) from the Plugins page -- Pro only.
+
+    Free users still *see* the catalog as an upsell; the Connect button is
+    disabled with the standard ``upgrade_hint``.
+    """
+    return is_pro(plan)
+
+
+def github_automation_enabled(plan: str | None) -> bool:
+    """Letting an agent act on GitHub through a connected plugin -- Pro only.
+
+    Same gate as :func:`plugins_enabled` today; kept separate so a future tier
+    could split "connect" from "let the agent write".
+    """
     return is_pro(plan)
 
 

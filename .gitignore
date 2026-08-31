@@ -19,3 +19,6 @@ voice_capture/build/
 
 # Local editor / assistant state
 .claude/
+
+# supabase CLI local state
+supabase/.temp/
