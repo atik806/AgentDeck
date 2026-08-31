@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import theme
 from pty_backend import DEFAULT_SHELL, PtySession
 from vt_screen import DEFAULT_SCROLLBACK, Palette, TerminalScreen, TerminalStream
 
@@ -906,6 +907,8 @@ class TerminalView(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self.scrollbar)
+        self.scrollbar.hide()  # shown by _sync_scrollbar once there's scrollback
+        self._style_scrollbar()
 
         self.session = PtySession(shell=shell, rows=24, cols=80, cwd=cwd, parent=self)
         self.shell_label = self.session.label
@@ -1039,6 +1042,9 @@ class TerminalView(QWidget):
 
     def _sync_scrollbar(self) -> None:
         maximum = self.canvas.max_scroll_top()
+        # Keep the right edge clean (and the rounded pane corner intact) while
+        # there is nothing to scroll.
+        self.scrollbar.setVisible(maximum > 0)
         self.scrollbar.setRange(0, maximum)
         self.scrollbar.setPageStep(self.canvas.visible_rows())
         self.scrollbar.setSingleStep(1)
@@ -1119,6 +1125,24 @@ class TerminalView(QWidget):
     def apply_theme(self) -> None:
         """Repaint the terminal in the current light/dark theme."""
         self.canvas.apply_theme()
+        self._style_scrollbar()
+
+    def _style_scrollbar(self) -> None:
+        """A thin, quiet scrollbar that doesn't fight the rounded pane edge."""
+        t = theme.color
+        self.scrollbar.setStyleSheet(
+            f"""
+            QScrollBar:vertical {{
+                background: transparent; width: 10px; margin: 2px 2px 6px 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {t('border_hover')}; border-radius: 4px; min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {t('text_faint')}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+            """
+        )
 
     @property
     def font_size(self) -> int:

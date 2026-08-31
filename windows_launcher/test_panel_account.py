@@ -73,6 +73,7 @@ check("help button exposes the two panel signals",
 
 
 print("[2] update glow is installed but dormant")
+check("update button is always in the toolbar", panel._update_btn.isVisibleTo(panel))
 check("glow effect exists", hasattr(panel, "_update_glow"))
 check("glow starts disabled", not panel._update_glow.isEnabled())
 check("glow colour is red", panel._update_glow.color().name() == "#ff3b30")

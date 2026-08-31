@@ -19,8 +19,10 @@ import math
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -107,6 +109,16 @@ class TerminalPane(QFrame):
 
         self.setFrameShape(QFrame.NoFrame)
 
+        # A soft accent halo around whichever pane has focus -- Qt QSS has no
+        # box-shadow, so the "selected" glow is a graphics effect. Dormant
+        # (disabled) until _refresh_style lights it for the active pane.
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setOffset(0, 0)
+        self._glow.setBlurRadius(18)
+        self._glow.setColor(QColor(theme.color("accent")))
+        self._glow.setEnabled(False)
+        self.setGraphicsEffect(self._glow)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -129,10 +141,11 @@ class TerminalPane(QFrame):
         self._title.setObjectName("paneTitle")
         self._title.setTextInteractionFlags(Qt.NoTextInteraction)
 
-        self._restart_btn = QPushButton("Restart", self._header)
+        self._restart_btn = QPushButton("↻", self._header)
         self._restart_btn.setObjectName("paneRestart")
         self._restart_btn.setCursor(Qt.PointingHandCursor)
-        self._restart_btn.setVisible(False)
+        self._restart_btn.setFixedWidth(22)
+        self._restart_btn.setToolTip("Restart this shell")
         self._restart_btn.clicked.connect(self.restart)
 
         self._expand_btn = QPushButton(_EXPAND_GLYPH, self._header)
@@ -151,8 +164,8 @@ class TerminalPane(QFrame):
 
         header_layout.addWidget(self._badge)
         header_layout.addWidget(self._title, 1)
-        header_layout.addWidget(self._restart_btn)
         header_layout.addWidget(self._expand_btn)
+        header_layout.addWidget(self._restart_btn)
         header_layout.addWidget(close_btn)
         outer.addWidget(self._header)
 
@@ -165,7 +178,6 @@ class TerminalPane(QFrame):
 
         if self.view.error:
             self._set_title(f"failed to start: {self.view.error}")
-            self._restart_btn.setVisible(True)
 
     # -- terminal wiring ---------------------------------------------------
 
@@ -196,7 +208,6 @@ class TerminalPane(QFrame):
 
     def _on_exited(self, code: int) -> None:
         self._was_alive = False
-        self._restart_btn.setVisible(True)
         self._set_title(f"{self.view.shell_label} — exited ({code})")
         self._refresh_style()
 
@@ -212,8 +223,6 @@ class TerminalPane(QFrame):
         if alive == self._was_alive:
             return
         self._was_alive = alive
-        if not alive:
-            self._restart_btn.setVisible(True)
         self._refresh_style()
 
     def restart(self) -> None:
@@ -226,7 +235,6 @@ class TerminalPane(QFrame):
         old.deleteLater()
 
         self._was_alive = self.view.is_alive()
-        self._restart_btn.setVisible(bool(self.view.error))
         self._refresh_style()
         self.focus_terminal()
 
@@ -293,14 +301,26 @@ class TerminalPane(QFrame):
         header_bg = t("pane_header_bg_active") if self._active else t("pane_header_bg")
         accent = t("accent")
         on_accent = t("on_accent")
+
+        # Light the focus halo on the active (live) pane; keep it off for idle
+        # and dead panes so the eye lands on the one taking keystrokes.
+        glow = getattr(self, "_glow", None)
+        if glow is not None:
+            glow.setColor(QColor(t("pane_border_dead") if dead else accent))
+            glow.setEnabled(self._active)
         title = t("pane_title_dead") if dead else t("pane_title")
         self.setStyleSheet(
             f"""
             TerminalPane {{
                 border: 1px solid {border};
+                border-radius: 10px;
                 background: {theme.color('term_bg')};
             }}
-            QWidget#paneHeaderHost {{ background: {header_bg}; }}
+            QWidget#paneHeaderHost {{
+                background: {header_bg};
+                border-top-left-radius: 9px;
+                border-top-right-radius: 9px;
+            }}
             QLabel#paneBadge {{
                 color: {badge_fg};
                 background: {border};
@@ -401,7 +421,9 @@ class Workspace(QWidget):
         self._root: Optional[QWidget] = None
 
         self._body = QVBoxLayout(self)
-        self._body.setContentsMargins(0, 0, 0, 0)
+        # A small inset so the rounded panes float off the window edge and the
+        # sidebar, rather than sitting flush against them.
+        self._body.setContentsMargins(6, 6, 6, 6)
         self._body.setSpacing(0)
 
     # -- lifecycle -------------------------------------------------------------
@@ -701,7 +723,7 @@ class Workspace(QWidget):
 
         outer = QSplitter(Qt.Vertical, self)
         outer.setChildrenCollapsible(False)
-        outer.setHandleWidth(4)
+        outer.setHandleWidth(8)
         for row in rows:
             outer.addWidget(
                 row[0] if len(row) == 1 else self._splitter(Qt.Horizontal, row)
@@ -715,7 +737,7 @@ class Workspace(QWidget):
     ) -> QSplitter:
         splitter = QSplitter(orientation, self)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(4)
+        splitter.setHandleWidth(8)
         for pane in panes:
             splitter.addWidget(pane)
         # Equal weights; QSplitter divides proportionally, so any large equal

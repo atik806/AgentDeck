@@ -547,11 +547,30 @@ def _():
 def _():
     pane = panel._active or panel._panes[0]
     body = text(pane)
-    check("spoken text reached the prompt", "echo VOICE_TYPED" in body, True)
+    # A narrow pane hard-wraps the prompt line, so match against the screen with
+    # its line breaks removed -- what matters is the text landed at the prompt,
+    # not which column the terminal happened to wrap it at.
+    flat = body.replace("\n", "")
+    check("spoken text reached the prompt", "echo VOICE_TYPED" in flat, True)
     check("it was not run (no command output line)",
-          body.count("VOICE_TYPED"), 1)
+          flat.count("VOICE_TYPED"), 1)
     check("overlay flashed the same text",
           "VOICE_TYPED" in panel._voice_overlay.caption_text(), True)
+
+
+@step
+def _():
+    print("== 26b. only the active pane carries the focus glow ==")
+    panes = panel._panes
+    if len(panes) < 2:
+        panel._active_ws.add_pane()
+        panes = panel._panes
+    panel._set_active(panes[0])
+    check("active pane glows", panes[0]._glow.isEnabled(), True)
+    check("the others do not", any(p._glow.isEnabled() for p in panes[1:]), False)
+    panel._set_active(panes[1])
+    check("the glow follows the active pane",
+          (panes[0]._glow.isEnabled(), panes[1]._glow.isEnabled()), (False, True))
 
 
 @step

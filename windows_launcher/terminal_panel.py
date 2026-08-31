@@ -340,8 +340,12 @@ class TerminalPanel(QMainWindow):
         self._update_btn.setObjectName("toolbarUpdate")
         self._update_btn.setToolTip("Check for a newer version of AgentDeck")
         self._update_btn.clicked.connect(lambda: self.updater.check(silent=False))
-        # Only an installed (Velopack) build can update itself.
-        self._update_btn.setVisible(self.updater.enabled)
+        # Always shown (it's part of the toolbar's look); a build that can't
+        # update itself just reports why on click via updater.check().
+        if not self.updater.enabled:
+            self._update_btn.setToolTip(
+                self.updater.unavailable_reason or self._update_btn.toolTip()
+            )
         bar.addWidget(self._update_btn)
 
         bar.addSeparator()

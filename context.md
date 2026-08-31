@@ -352,9 +352,41 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       grey surface button.
     Not touched (out of scope this pass): the status bar still shows the
     workspace/pane/running counts + shortcut hints rather than the mockup's
-    `N panes · shell · agent` / `workspace · branch`; pane header restart still
-    only appears on failure. Tests: `test_plugins_panel.py`, `test_theme.py`,
-    `test_navbar.py` green; panel suite unchanged (same pre-existing fails).
+    `N panes · shell · agent` / `workspace · branch`. Tests: `test_plugins_panel.py`,
+    `test_theme.py`, `test_navbar.py` green; panel suite unchanged.
+
+17. **Rounded terminal panes + focus glow + always-on Update button
+    (2026-08-31, v0.7.3)** — matched the pane chrome to the mockup:
+    - `workspace.py` `_refresh_style`: `TerminalPane` gets `border-radius: 10px`;
+      `#paneHeaderHost` gets `border-top-left/right-radius: 9px` so the header bg
+      doesn't square off the top corners. Bottom corners stay clean because the
+      frame bg and the canvas fill are both `term_bg` — the canvas's square
+      corner is invisible against the frame's rounded `term_bg` fill.
+    - `Workspace._body` margins 0 → 6px and splitter `setHandleWidth` 4 → 8, so
+      the rounded panes float off the window/sidebar edge and each other.
+    - Pane header: the **restart** control is now an always-visible `↻` icon
+      button (was a "Restart" text button shown only on failure/exit); header
+      order is now expand · restart · close (`⤢ ↻ ✕`), matching the mockup. All
+      the `_restart_btn.setVisible(...)` toggles removed.
+    - `terminal_view.py`: the pane scrollbar is **hidden while there's nothing
+      to scroll** (`_sync_scrollbar` → `setVisible(maximum > 0)`) and restyled
+      thin/quiet (`_style_scrollbar`, called from `__init__` + `apply_theme`;
+      added `import theme`) with a 6px bottom margin so it clears the rounded
+      corner. Verified live (dev build screenshot) in dark mode.
+    - `test_panel.py` step 26: the "spoken text reached the prompt" check now
+      matches against the screen with line breaks stripped — a 40-col pane
+      hard-wraps the prompt line, which is not a regression.
+    - **Active-pane focus glow**: `TerminalPane` now carries a
+      `QGraphicsDropShadowEffect` (`self._glow`, offset 0, blur 18, colour
+      `accent` / `pane_border_dead` when dead). `_refresh_style` enables it only
+      for the active pane. QSS has no box-shadow, so a graphics effect is the
+      only way — same trick as the Update-button glow.
+    - **Update button always visible**: `terminal_panel._build_toolbar` no
+      longer hides `_update_btn` when `updater.enabled` is False (source /
+      non-Velopack builds). It stays in the toolbar; a build that can't update
+      itself just shows `updater.unavailable_reason` as the tooltip and reports
+      it on click (`updater.check` already emits `error` → status bar when
+      `_mgr is None`).
 
 ## Running / testing
 
