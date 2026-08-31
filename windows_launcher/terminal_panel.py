@@ -84,7 +84,8 @@ __all__ = ["TerminalPanel", "TerminalPane", "Workspace"]
 _ASSET_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
 
 #: Cycled as workspaces are created so each gets a distinct swatch colour.
-_WS_ACCENTS = ["#3b78ff", "#2ea043", "#a371f7", "#e3b341", "#f778ba", "#39c5cf"]
+#: Catppuccin accents -- blue, green, mauve, peach, pink, teal.
+_WS_ACCENTS = ["#89b4fa", "#a6e3a1", "#cba6f7", "#fab387", "#f5c2e7", "#94e2d5"]
 
 #: Gap kept between the voice overlay and the terminal-area edges when it is
 #: auto-placed or clamped back into view.
@@ -430,7 +431,7 @@ class TerminalPanel(QMainWindow):
         name = theme.color("text")
         self._wordmark.setText(f"Agent<span style='color:{deck}'>Deck</span>")
         self._wordmark.setStyleSheet(
-            f"QLabel#brandName {{ color: {name}; font-size: 12px; font-weight: 800;"
+            f"QLabel#brandName {{ color: {name}; font-size: 13px; font-weight: 800;"
             " padding: 0 8px 0 3px; background: transparent; }"
         )
         self._ver_label.setStyleSheet(

@@ -314,6 +314,24 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     `test_account_dialog.py` [2c], `test_navbar.py` (TRIAL badge). Same 2–3
     pre-existing offscreen panel-suite fails.
 
+15. **Catppuccin reskin (2026-08-31, v0.7.1)** — the chrome was flat near-black
+    + a generic blue while the splash and logo already used Catppuccin. Unified
+    on it: `theme.py` `_DARK` = **Mocha**, `_LIGHT` = **Latte**, `_ANSI` = the
+    Mocha/Latte ramps (Latte brights nudged darker for a light ground). New
+    `accent_2` token (blue→teal) drives the account-chip avatar disc gradient
+    (`navbar.circular_avatar`). `on_accent` is now dark (`#1e1e2e`) so text on
+    the pastel accent reads — `workspace.py` gained a per-state `badge_fg`
+    (idle pane badge uses `text_muted`, not `on_accent`, or it clashes with its
+    own border bg; this also fixes a latent light-mode invisibility). `_WS_ACCENTS`
+    → Catppuccin hues; sidebar swatch text → `on_accent`; active pane title →
+    bold; wordmark 12→13px; `vt_screen` static-fallback palette refreshed.
+    **Deliberately not changed:** setup wizard / login / trial gate / `agents_ui`
+    stay amber (front-door vs in-app split); `voice_overlay.py` keeps its own
+    dark HUD palette (most visible against Latte — top follow-up candidate).
+    Qt QSS has no box-shadow/transition, so the pitch's glows/motion were
+    dropped — this is palette + typography only. Tests: `test_theme.py` green;
+    same pre-existing panel-suite fails.
+
 ## Running / testing
 
 ```cmd

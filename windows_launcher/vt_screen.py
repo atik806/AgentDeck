@@ -51,10 +51,10 @@ class Palette:
     stay as the dark defaults for any caller that reads them statically.
     """
 
-    BACKGROUND = QColor("#0c0c0c")
-    FOREGROUND = QColor("#cccccc")
-    CURSOR = QColor("#cccccc")
-    SELECTION = QColor(58, 110, 165, 130)
+    BACKGROUND = QColor("#181825")
+    FOREGROUND = QColor("#cdd6f4")
+    CURSOR = QColor("#f5e0dc")
+    SELECTION = QColor(137, 180, 250, 130)
 
     #: Base names; ``_ANSI`` fills in per mode. pyte calls SGR 33 "brown", and
     #: 0.8.2 ships a typo "bfightmagenta" for SGR 105 -- both are aliased below.
@@ -72,13 +72,13 @@ class Palette:
         except Exception:  # noqa: BLE001 - theme import must never break a pane
             self.mode = "dark"
             slots = {
-                "black": "#0c0c0c", "red": "#c50f1f", "green": "#13a10e",
-                "yellow": "#c19c00", "blue": "#0037da", "magenta": "#881798",
-                "cyan": "#3a96dd", "white": "#cccccc", "brightblack": "#767676",
-                "brightred": "#e74856", "brightgreen": "#16c60c",
-                "brightyellow": "#f9f1a5", "brightblue": "#3b78ff",
-                "brightmagenta": "#b4009e", "brightcyan": "#61d6d6",
-                "brightwhite": "#f2f2f2",
+                "black": "#45475a", "red": "#f38ba8", "green": "#a6e3a1",
+                "yellow": "#f9e2af", "blue": "#89b4fa", "magenta": "#cba6f7",
+                "cyan": "#94e2d5", "white": "#bac2de", "brightblack": "#585b70",
+                "brightred": "#f5a0b5", "brightgreen": "#bce0b8",
+                "brightyellow": "#fbe9c4", "brightblue": "#a8c7ff",
+                "brightmagenta": "#dcc1fb", "brightcyan": "#b2ebe1",
+                "brightwhite": "#cdd6f4",
             }
 
         table = dict(slots)

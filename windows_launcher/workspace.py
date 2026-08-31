@@ -280,10 +280,15 @@ class TerminalPane(QFrame):
         t = theme.color
         if dead:
             border = t("pane_border_dead")
+            badge_fg = t("on_accent")
         elif self._active:
             border = t("pane_border_active")
+            badge_fg = t("on_accent")
         else:
             border = t("pane_border")
+            # the badge sits on the (muted) border colour when the pane is
+            # idle -- a light-on-light / dark-on-dark clash if it used on_accent
+            badge_fg = t("text_muted")
 
         header_bg = t("pane_header_bg_active") if self._active else t("pane_header_bg")
         accent = t("accent")
@@ -297,7 +302,7 @@ class TerminalPane(QFrame):
             }}
             QWidget#paneHeaderHost {{ background: {header_bg}; }}
             QLabel#paneBadge {{
-                color: {on_accent};
+                color: {badge_fg};
                 background: {border};
                 border-radius: 7px;
                 padding: 0 6px;
@@ -307,6 +312,7 @@ class TerminalPane(QFrame):
             QLabel#paneTitle {{
                 color: {title};
                 font-size: 11px;
+                font-weight: {"bold" if self._active else "normal"};
             }}
             QPushButton#paneClose, QPushButton#paneRestart,
             QPushButton#paneExpand {{

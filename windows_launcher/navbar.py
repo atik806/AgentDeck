@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QFontMetrics,
     QIcon,
     QImage,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -109,8 +110,13 @@ def circular_avatar(
     if image is not None:
         p.drawImage(0, 0, image)
     else:
-        p.fillPath(clip, QColor(accent))
-        p.setPen(QColor("#ffffff"))
+        # A blue -> teal disc, echoing the logo's prompt sweep, with the
+        # initial in the palette's on-accent colour so it reads on the pastel.
+        grad = QLinearGradient(0.0, 0.0, float(size), float(size))
+        grad.setColorAt(0.0, QColor(accent))
+        grad.setColorAt(1.0, QColor(theme.color("accent_2")))
+        p.fillPath(clip, grad)
+        p.setPen(QColor(theme.color("on_accent")))
         f = QFont()
         f.setPixelSize(max(6, int(size * 0.46)))
         f.setBold(True)

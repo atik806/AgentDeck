@@ -187,7 +187,7 @@ class _WorkspaceRow(QFrame):
         self._swatch.setAlignment(Qt.AlignCenter)
         self._swatch.setFixedSize(18, 18)
         self._swatch.setStyleSheet(
-            f"background: {workspace.accent}; color: #ffffff;"
+            f"background: {workspace.accent}; color: {theme.color('on_accent')};"
             " border-radius: 5px; font-size: 9px; font-weight: bold;"
         )
 
