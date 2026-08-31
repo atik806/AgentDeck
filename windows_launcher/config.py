@@ -115,6 +115,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # (table public.app_errors). Off = nothing leaves the machine; crashes still
     # go to %APPDATA%\multi-terminal\last-error.log either way.
     "error_reporting": True,
+    # Epoch-day (int(time()/86400)) the free-trial countdown banner was last
+    # dismissed, so it comes back once per day. Machine-local, not cloud-synced.
+    "trial_banner_dismissed_on": 0,
 
     # --- Updates (see updater.py; only active in a Velopack-installed build) ---
     # Check GitHub for a newer AgentDeck shortly after launch.
@@ -161,6 +164,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "account_cloud_sync": bool,
     "account_email": str,
     "error_reporting": bool,
+    "trial_banner_dismissed_on": int,
     "auto_check_updates": bool,
     "update_channel": str,
     "update_prerelease": bool,

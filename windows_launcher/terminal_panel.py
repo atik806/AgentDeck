@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QToolBar,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -473,6 +474,8 @@ class TerminalPanel(QMainWindow):
 
         self._sidebar.apply_theme()
         self._plugins_panel.apply_theme()
+        if getattr(self, "_trial_banner", None) is not None:
+            self._trial_banner.apply_theme()
         for workspace in self._workspaces:
             workspace.apply_theme()
         self._refresh_sidebar()
@@ -494,7 +497,22 @@ class TerminalPanel(QMainWindow):
 
     def _build_body(self) -> None:
         central = QWidget(self)
-        row = QHBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # A "trial ends in N days — Upgrade" strip; hidden unless the last 3
+        # days of a free trial. Refreshed by _refresh_trial_banner().
+        from trial_banner import TrialBanner
+
+        self._trial_banner = TrialBanner(central)
+        self._trial_banner.upgrade_requested.connect(self._open_upgrade_url)
+        self._trial_banner.dismissed.connect(self._on_trial_banner_dismissed)
+        self._trial_banner.setVisible(False)
+        outer.addWidget(self._trial_banner)
+
+        body = QWidget(central)
+        row = QHBoxLayout(body)
         row.setContentsMargins(4, 4, 4, 4)
         row.setSpacing(4)
 
@@ -517,6 +535,7 @@ class TerminalPanel(QMainWindow):
 
         row.addWidget(self._sidebar)
         row.addWidget(self._main_stack, 1)
+        outer.addWidget(body, 1)
         self.setCentralWidget(central)
 
         status = self.statusBar()
@@ -1166,6 +1185,13 @@ class TerminalPanel(QMainWindow):
         self._plan_expiry_timer.setSingleShot(True)
         self._plan_expiry_timer.timeout.connect(self._recheck_plan)
 
+        # The Free tier is a 7-day trial. This one-shot fires the instant it
+        # ends so the "upgrade or quit" gate comes up without waiting for the
+        # 30-min poll. main.py already handled "trial over at launch".
+        self._trial_timer = QTimer(self)
+        self._trial_timer.setSingleShot(True)
+        self._trial_timer.timeout.connect(self._recheck_trial)
+
         # Sync the initial UI state to whatever plan we already know (Free until
         # the first profile_ready).
         self._auto_update_checked = False
@@ -1180,6 +1206,114 @@ class TerminalPanel(QMainWindow):
             except Exception:  # noqa: BLE001 - a failed refresh must not crash the loop
                 pass
         self._apply_entitlements()
+
+    def _recheck_trial(self) -> None:
+        """Re-pull the profile and re-run the trial gate (timer / 30-min poll)."""
+        acc = self.account
+        if acc is None or not getattr(acc, "is_signed_in", False):
+            return
+        try:
+            acc.fetch_profile()  # profile_ready -> _apply_entitlements -> gate
+        except Exception:  # noqa: BLE001
+            pass
+        self._apply_entitlements()
+
+    def _open_upgrade_url(self) -> None:
+        QDesktopServices.openUrl(QUrl(entitlements.UPGRADE_URL))
+
+    def _on_trial_banner_dismissed(self) -> None:
+        import time
+
+        self.config["trial_banner_dismissed_on"] = int(time.time() // 86400)
+        try:
+            save_config(self.config)
+        except Exception:  # noqa: BLE001 - a read-only config dir is not fatal
+            pass
+        if getattr(self, "_trial_banner", None) is not None:
+            self._trial_banner.setVisible(False)
+
+    def _arm_trial_timer(self) -> None:
+        """(Re)schedule the one-shot gate for the current trial_ends_at."""
+        timer = getattr(self, "_trial_timer", None)
+        if timer is None or self.account is None:
+            return
+        exp = entitlements.trial_deadline(getattr(self.account, "trial_ends_at", None))
+        if exp is None:
+            timer.stop()
+            return
+        delta = (exp - datetime.now(timezone.utc)).total_seconds()
+        if delta <= 0:
+            timer.stop()
+            return
+        timer.start(max(1000, min(int(delta * 1000) + 2000, 6 * 60 * 60 * 1000)))
+
+    def _enforce_trial_block(self) -> None:
+        """Trial over, no active plan: show the upgrade-or-quit gate."""
+        if getattr(self, "_trial_block_active", False):
+            return
+        self._trial_block_active = True
+        try:
+            from trial_gate import TrialGateDialog
+
+            gate = TrialGateDialog(self.account, self.config, icon=self.windowIcon())
+            ok = gate.exec() == QDialog.Accepted and self.account.access_allowed
+            gate.deleteLater()
+            if ok:
+                self._apply_entitlements()
+                return
+            self._force_quit = True
+            self.close()
+        finally:
+            self._trial_block_active = False
+
+    def _refresh_trial_banner(self) -> None:
+        banner = getattr(self, "_trial_banner", None)
+        if banner is None:
+            return
+        acc = self.account
+        show = False
+        if acc is not None and getattr(acc, "is_signed_in", False):
+            left = acc.trial_days_left
+            if (
+                acc.access_allowed
+                and not entitlements.is_pro(acc.raw_plan)
+                and left is not None
+                and 0 <= left <= 3
+            ):
+                import time
+
+                today = int(time.time() // 86400)
+                if self.config.get("trial_banner_dismissed_on", 0) != today:
+                    banner.set_days_left(left)
+                    show = True
+        banner.setVisible(show)
+
+    def _maybe_trial_last_day_modal(self) -> None:
+        if getattr(self, "_trial_modal_shown", False) or not self.isVisible():
+            return
+        acc = self.account
+        if acc is None or not getattr(acc, "is_signed_in", False):
+            return
+        if not acc.access_allowed or entitlements.is_pro(acc.raw_plan):
+            return
+        left = acc.trial_days_left
+        if left is None or left > 1:
+            return
+        self._trial_modal_shown = True
+        when = "today" if left <= 0 else "tomorrow"
+        box = QMessageBox(self)
+        box.setWindowTitle("Free trial ending")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"<b>Your AgentDeck free trial ends {when}.</b>")
+        box.setInformativeText(
+            "Upgrade to Pro to keep using AgentDeck — your workspaces and "
+            "settings stay exactly as they are."
+        )
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Help)
+        box.button(QMessageBox.Ok).setText("Continue")
+        box.button(QMessageBox.Help).setText("Upgrade")
+        if box.exec() == QMessageBox.Help:
+            self._open_upgrade_url()
 
     def _arm_plan_expiry_timer(self) -> None:
         """(Re)schedule the one-shot timer for the current plan_expires_at."""
@@ -1202,6 +1336,19 @@ class TerminalPanel(QMainWindow):
 
     def _apply_entitlements(self) -> None:
         """Fold the current plan's limits into the live UI. Idempotent."""
+        # Hard gate: the free trial is over and there's no active plan. Only
+        # once the window is up (main.py runs this check at launch); guarded so
+        # it never re-enters.
+        if (
+            self.isVisible()
+            and self.account is not None
+            and getattr(self.account, "is_signed_in", False)
+            and not self.account.access_allowed
+            and not getattr(self, "_trial_block_active", False)
+        ):
+            self._enforce_trial_block()
+            return
+
         plan = self._plan()
         pro = entitlements.is_pro(plan)
 
@@ -1238,6 +1385,10 @@ class TerminalPanel(QMainWindow):
 
         # Re-arm the "expire at plan_expires_at" timer for whatever we now know.
         self._arm_plan_expiry_timer()
+        # ... and the trial gate + its warning surfaces.
+        self._arm_trial_timer()
+        self._refresh_trial_banner()
+        self._maybe_trial_last_day_modal()
 
     def _auto_check_updates(self) -> None:
         """One quiet check for a newer release — Pro only, once per run."""
@@ -1367,6 +1518,8 @@ class TerminalPanel(QMainWindow):
             self._plan_watch.stop()
         if getattr(self, "_plan_expiry_timer", None) is not None:
             self._plan_expiry_timer.stop()
+        if getattr(self, "_trial_timer", None) is not None:
+            self._trial_timer.stop()
         self._set_update_glow(False)
         self._voice_engine.shutdown()
         self.account.shutdown()

@@ -27,9 +27,14 @@ __all__ = [
     "FREE_MAX_WORKSPACES",
     "FREE_MAX_PANES",
     "PRO_MAX_PANES",
+    "TRIAL_DAYS",
     "is_pro",
     "plan_active",
     "plan_expiry",
+    "trial_deadline",
+    "trial_days_left",
+    "trial_active",
+    "access_allowed",
     "max_workspaces",
     "max_panes",
     "voice_enabled",
@@ -40,6 +45,10 @@ __all__ = [
 ]
 
 UPGRADE_URL = "https://vibeflow.tech/agentdeck"
+
+#: The Free tier is a trial: this many days of Free-tier use from signup, then an
+#: active Pro plan is required for the app to open. See :func:`access_allowed`.
+TRIAL_DAYS = 7
 
 FREE_MAX_WORKSPACES = 1
 FREE_MAX_PANES = 4
@@ -86,6 +95,13 @@ def plan_expiry(expires_at: object) -> "datetime | None":
     return dt.astimezone(timezone.utc)
 
 
+def _utcnow(now: "datetime | None") -> datetime:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now
+
+
 def plan_active(
     plan: str | None,
     expires_at: object = None,
@@ -102,10 +118,52 @@ def plan_active(
     exp = plan_expiry(expires_at)
     if exp is None:
         return True
-    now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    return now < exp
+    return _utcnow(now) < exp
+
+
+#: ``trial_ends_at`` from the profile row parses exactly like ``plan_expires_at``.
+trial_deadline = plan_expiry
+
+
+def trial_days_left(trial_ends_at: object, *, now: "datetime | None" = None) -> "int | None":
+    """Whole 24 h periods until the trial ends (floor).
+
+    ``None`` when there is no deadline; ``0`` on the final day; negative once the
+    trial has passed. Display only -- use :func:`trial_active` for the gate.
+    """
+    exp = trial_deadline(trial_ends_at)
+    if exp is None:
+        return None
+    return math.floor((exp - _utcnow(now)).total_seconds() / 86400)
+
+
+def trial_active(trial_ends_at: object, *, now: "datetime | None" = None) -> bool:
+    """True while the account is still inside its free trial.
+
+    **Fail-open:** a missing / unparseable ``trial_ends_at`` returns ``True`` --
+    an old client, or a profile that never loaded, must never lock a user out.
+    """
+    exp = trial_deadline(trial_ends_at)
+    if exp is None:
+        return True
+    return _utcnow(now) < exp
+
+
+def access_allowed(
+    plan: str | None,
+    trial_ends_at: object,
+    plan_expires_at: object = None,
+    *,
+    now: "datetime | None" = None,
+) -> bool:
+    """The master gate: may this account use AgentDeck at all right now?
+
+    ``True`` when the account is on an active Pro plan (:func:`plan_active`) or
+    still inside its trial (:func:`trial_active`).
+    """
+    return plan_active(plan, plan_expires_at, now=now) or trial_active(
+        trial_ends_at, now=now
+    )
 
 
 def max_workspaces(plan: str | None) -> float:

@@ -134,6 +134,7 @@ def rest_select(table, access_token, *, params=None, url=None, key=None):
         plan = getattr(rest_select, "profile_plan", "pro")
         row = {"id": "u-123", "plan": plan, "display_name": "Sam Tester"}
         row["plan_expires_at"] = getattr(rest_select, "profile_expires_at", None)
+        row["trial_ends_at"] = getattr(rest_select, "profile_trial", None)
         return [row]
     if table == "user_settings":
         return [{"data": {"font_size": 14, "layout": "columns", "not_a_synced_key": 99}}]
@@ -307,6 +308,52 @@ c5d.sign_in_with_google()
 pump(lambda: ev5d)
 check("a future expiry keeps Pro", c5d.plan == "pro")
 rest_select.profile_expires_at = None  # restore for later cases
+
+print("[5e] the free-trial fields flow through and gate access")
+rest_select.profile_plan = "free"
+rest_select.profile_trial = (datetime.now(_tz.utc) + timedelta(days=2, hours=1)).isoformat()
+c5e = fresh()
+GoogleSignIn.next_result = Session()
+ev5e = []
+c5e.profile_ready.connect(ev5e.append)
+c5e.sign_in_with_google()
+pump(lambda: ev5e)
+check("trial_ends_at exposed", bool(c5e.trial_ends_at))
+check("trial_days_left is 2", c5e.trial_days_left == 2)
+check("access_allowed while in trial", c5e.access_allowed is True)
+
+rest_select.profile_trial = (datetime.now(_tz.utc) - timedelta(minutes=1)).isoformat()
+c5f = fresh()
+GoogleSignIn.next_result = Session()
+ev5f = []
+c5f.profile_ready.connect(ev5f.append)
+c5f.sign_in_with_google()
+pump(lambda: ev5f)
+check("access denied once the trial ended", c5f.access_allowed is False)
+check("trial_days_left is negative once past", c5f.trial_days_left < 0)
+
+rest_select.profile_plan = "pro"
+c5g = fresh()
+GoogleSignIn.next_result = Session()
+ev5g = []
+c5g.profile_ready.connect(ev5g.append)
+c5g.sign_in_with_google()
+pump(lambda: ev5g)
+check("an active Pro plan overrides an ended trial", c5g.access_allowed is True)
+
+print("[5h] load_profile_blocking populates plan + trial synchronously")
+rest_select.profile_plan = "free"
+rest_select.profile_trial = (datetime.now(_tz.utc) + timedelta(days=5)).isoformat()
+_STORE.clear()
+_STORE["session"] = Session().to_dict()
+c5h = AccountController({})
+c5h.load_profile_blocking(timeout=3.0)
+check("plan learned synchronously", c5h.raw_plan == "free")
+check("trial learned synchronously", bool(c5h.trial_ends_at))
+check("access_allowed resolved synchronously", c5h.access_allowed is True)
+
+rest_select.profile_plan = "pro"
+rest_select.profile_trial = None  # restore for later cases
 
 print("[6] sign out clears the session and re-arms login")
 c4.sign_out()

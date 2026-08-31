@@ -297,6 +297,14 @@ class AccountDialog(QDialog):
                 text = f"Pro renews {when}"
             elif entitlements.is_pro(raw):
                 text = f"Pro expired {when} — renew to restore Pro features"
+
+        if not text and not pro:
+            left = getattr(acc, "trial_days_left", None)
+            if isinstance(left, int):
+                if left >= 0:
+                    text = f"Free trial — {max(0, left)} day(s) left"
+                else:
+                    text = "Trial ended — upgrade to keep using AgentDeck"
         note.setText(text)
         note.setVisible(bool(text))
 

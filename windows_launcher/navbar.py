@@ -294,16 +294,27 @@ class AccountChip(QToolButton):
         plan = getattr(self._account, "plan", "free")
         try:
             import entitlements
-            return "PRO" if entitlements.is_pro(plan) else "FREE"
+            if entitlements.is_pro(plan):
+                return "PRO"
         except Exception:  # noqa: BLE001
             p = str(plan or "free").strip().lower()
-            return "PRO" if p in ("pro", "paid", "team", "plus") else "FREE"
+            if p in ("pro", "paid", "team", "plus"):
+                return "PRO"
+        left = getattr(self._account, "trial_days_left", None)
+        if isinstance(left, int) and left >= 0:
+            return "TRIAL"
+        return "FREE"
 
     def _tooltip(self) -> str:
         if not self._signed_in():
             return "Sign in to AgentDeck"
         email = str(getattr(self._account, "email", "") or "").strip()
-        return f"{self._display_label()}\n{email}" if email else self._display_label()
+        base = f"{self._display_label()}\n{email}" if email else self._display_label()
+        if self._plan_text() == "TRIAL":
+            left = getattr(self._account, "trial_days_left", None)
+            if isinstance(left, int):
+                base += f"\nFree trial: {max(0, left)} day(s) left"
+        return base
 
     # -- geometry ------------------------------------------------------------
 

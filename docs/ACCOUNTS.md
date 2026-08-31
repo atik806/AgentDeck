@@ -114,6 +114,37 @@ select public.expire_stale_plans();                       -- returns 1
 select plan from public.profiles where id = '<test-user-id>';  -- 'free'
 ```
 
+## Free trial
+
+The Free tier is a **7-day trial**. After it ends the account must be on an
+active Pro plan or AgentDeck refuses to open.
+
+- **`profiles.trial_ends_at`** (`timestamptz`, `NOT NULL`) — added by
+  `20260831160000_free_trial.sql`. New signups get *signup + 7 days* (the column
+  default; the `handle_new_user` trigger doesn't touch it). Existing rows were
+  backfilled to *(migration time) + 7 days* so nobody was locked out on deploy.
+- **Enforcement is client-side.** `entitlements.access_allowed(plan,
+  trial_ends_at, plan_expires_at)` is the master gate: true on an active Pro
+  plan (`plan_active`) **or** inside the trial (`trial_active`). `main.py` blocks
+  before the wizard; `terminal_panel` re-checks at the exact deadline, on the
+  30-min poll, and closes the app if it lapses mid-session. A dismissible
+  countdown banner shows in the final 3 days. There is no server-side lockout —
+  same trade-off as the Free/Pro gate.
+- **Fail-open:** a missing / unfetched `trial_ends_at` never locks a user out.
+- **Granting time** is done in **VibeFlow Admin** ("Trial +7d" per free user, or
+  `extend_trial` on the PUT). The client can't write `profiles`, so a user can't
+  extend their own trial.
+
+**Manual test:**
+
+```sql
+update public.profiles set trial_ends_at = now() - interval '1 minute'
+ where email = '<test-user>';                 -- force "trial ended"
+-- launch AgentDeck as that user -> the trial gate appears instead of the app
+update public.profiles set trial_ends_at = now() + interval '365 days'
+ where email = '<test-user>';                 -- restore
+```
+
 ## Configuration
 
 | Knob | Where | Effect |
@@ -122,6 +153,7 @@ select plan from public.profiles where id = '<test-user-id>';  -- 'free'
 | `account_cloud_sync` | `config.json` / account dialog checkbox | Mirror settings to the account. |
 | `account_email` | `config.json` | Last signed-in email; shown on the chip before the session loads. Set by the app. |
 | `error_reporting` | `config.json` | Send crash + non-fatal error reports to your account (`public.app_errors`). Default on. Off = nothing leaves the machine; crashes still write `%APPDATA%\multi-terminal\last-error.log`. |
+| `trial_banner_dismissed_on` | `config.json` | Epoch-day the free-trial countdown banner was last dismissed (so it returns once a day). Set by the app. |
 | `AGENTDECK_SUPABASE_URL` | env var | Point the app at a different Supabase project. |
 | `AGENTDECK_SUPABASE_KEY` | env var | Publishable key for that project. |
 

@@ -286,6 +286,34 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     `test_entitlements.py` [6], `test_account.py` [5c], `test_panel_entitlements.py`
     [5b], `test_account_dialog.py` [2b], `test_navbar.py` (lapsed-badge checks).
 
+14. **Free tier is a 7-day trial (2026-08-31, v0.7.0)** — after signup a Free
+    user has 7 days, then must be on an active Pro plan or the app won't open.
+    New migration `20260831160000_free_trial.sql`: `profiles.trial_ends_at`
+    (`NOT NULL default now()+7d` — backfills existing rows, and the signup
+    trigger gets it free). No cron, no RLS change (client already select-only).
+    Client: `entitlements.access_allowed(plan, trial_ends_at, plan_expires_at)`
+    is the master gate = `plan_active` OR `trial_active` (fail-open on a missing
+    date); `trial_active` / `trial_days_left` / `trial_deadline`(= `plan_expiry`)
+    / `TRIAL_DAYS`. `AccountController`: `_absorb_profile()` now the shared
+    plan/expiry/trial extractor; new `trial_ends_at` / `access_allowed` /
+    `trial_days_left` props + `load_profile_blocking()` (sync fetch for the
+    startup gate). `main.py`: after the login gate, `load_profile_blocking()` +
+    `TrialGateDialog` (new `trial_gate.py`, sibling of `LoginWindow` — Upgrade /
+    re-check / sign-out-&-quit) if `not access_allowed`. `terminal_panel`: new
+    `_trial_timer` (fires at the deadline) + `_recheck_trial`; `_apply_entitlements`
+    front-guards with `_enforce_trial_block()` (shows the gate, `_force_quit` +
+    close on decline — mirrors `_require_login`); a themed `TrialBanner`
+    (`trial_banner.py`) inserted above the sidebar/stack in `_build_body`, shown
+    in the last 3 days via `_refresh_trial_banner`, dismissal remembered in
+    `config["trial_banner_dismissed_on"]` (epoch-day, machine-local); a last-day
+    `QMessageBox`. `navbar` chip shows **TRIAL**; `account_dialog` shows the
+    countdown / "Trial ended" note. Admin: `trial_ends_at` in `USER_COLS`,
+    `extend_trial` on the PUT, "Trial +7d" button, "Trials ending ≤3d" stat.
+    Tests: `test_entitlements.py` [7], `test_account.py` [5e]/[5h],
+    `test_trial_gate.py` (new), `test_panel_entitlements.py` [7],
+    `test_account_dialog.py` [2c], `test_navbar.py` (TRIAL badge). Same 2–3
+    pre-existing offscreen panel-suite fails.
+
 ## Running / testing
 
 ```cmd

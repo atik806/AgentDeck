@@ -125,6 +125,9 @@ class AccountController(QObject):
         #: Raw ``profiles.plan_expires_at`` (ISO string) or None = never expires.
         #: Folded into the :attr:`plan` property so a lapsed Pro reads as Free.
         self._plan_expires_at: Optional[str] = None
+        #: Raw ``profiles.trial_ends_at`` (ISO string). The Free tier is a trial;
+        #: past this the app requires an active Pro plan. See :attr:`access_allowed`.
+        self._trial_ends_at: Optional[str] = None
         self._busy = False
         self._cancel_signin = False
         self._workers: set[_Worker] = set()
@@ -202,6 +205,41 @@ class AccountController(QObject):
     def plan_expires_at(self) -> Optional[str]:
         """Raw ``plan_expires_at`` from the profile row (ISO string) or None."""
         return self._plan_expires_at
+
+    @property
+    def trial_ends_at(self) -> Optional[str]:
+        """Raw ``trial_ends_at`` from the profile row (ISO string) or None."""
+        return self._trial_ends_at
+
+    @property
+    def access_allowed(self) -> bool:
+        """False once the free trial has ended and there is no active Pro plan.
+
+        The whole app is gated on this: a False here means AgentDeck must not
+        open (or must close). Fail-open while the profile is still unknown.
+        """
+        return entitlements.access_allowed(
+            self._plan, self._trial_ends_at, self._plan_expires_at
+        )
+
+    @property
+    def trial_days_left(self) -> Optional[int]:
+        """Whole days left in the trial (floor); None if unknown, negative if past."""
+        return entitlements.trial_days_left(self._trial_ends_at)
+
+    def _absorb_profile(self, profile: dict) -> None:
+        """Copy the plan / expiry / trial fields off a ``public.profiles`` row."""
+        if not isinstance(profile, dict) or not profile:
+            return
+        plan = profile.get("plan")
+        if isinstance(plan, str) and plan:
+            self._plan = plan
+        if "plan_expires_at" in profile:
+            exp = profile.get("plan_expires_at")
+            self._plan_expires_at = exp if isinstance(exp, str) and exp else None
+        if "trial_ends_at" in profile:
+            t = profile.get("trial_ends_at")
+            self._trial_ends_at = t if isinstance(t, str) and t else None
 
     def needs_login(self) -> bool:
         """True when the login window must be shown before the panel opens.
@@ -284,15 +322,45 @@ class AccountController(QObject):
 
         def _done(profile):
             if isinstance(profile, dict) and profile:
-                plan = profile.get("plan")
-                if isinstance(plan, str) and plan:
-                    self._plan = plan
-                if "plan_expires_at" in profile:
-                    exp = profile.get("plan_expires_at")
-                    self._plan_expires_at = exp if isinstance(exp, str) and exp else None
+                self._absorb_profile(profile)
                 self.profile_ready.emit(profile)
 
         self._run(_do, _done, on_fail=self._on_rest_failed)
+
+    def load_profile_blocking(self, timeout: float = 6.0) -> None:
+        """Fetch the profile row synchronously (bounded). For the startup gate.
+
+        ``AccountController.__init__`` only kicks an async ``fetch_profile()``,
+        so on a restored session ``main.py`` has no plan / trial state to gate
+        on yet. This blocks briefly for it, absorbs the row, and emits
+        ``profile_ready`` on the GUI thread. Never raises.
+        """
+        if self._session is None:
+            return
+        uid = self._session.user_id
+        box: dict = {}
+
+        def _work():
+            try:
+                rows = self._rest_with_reauth(
+                    lambda tok: supabase_auth.rest_select(
+                        "profiles", tok,
+                        params={"id": f"eq.{uid}", "select": "*"},
+                    )
+                )
+                if rows and isinstance(rows[0], dict):
+                    box["profile"] = rows[0]
+                    self._absorb_profile(rows[0])
+            except Exception:  # noqa: BLE001 - a failed fetch just leaves state unknown
+                pass
+
+        thread = threading.Thread(target=_work, name="account-profile", daemon=True)
+        thread.start()
+        thread.join(max(0.5, timeout))
+
+        profile = box.get("profile")
+        if isinstance(profile, dict) and profile:
+            QTimer.singleShot(0, lambda: self.profile_ready.emit(profile))
 
     def pull_cloud_settings(self) -> Optional[dict]:
         """Read this account's saved settings. Blocks briefly (<=8s), then gives up.
@@ -322,12 +390,7 @@ class AccountController(QObject):
                 profile = rows[0] if rows and isinstance(rows[0], dict) else {}
                 if profile:
                     box["profile"] = profile
-                    plan = profile.get("plan")
-                    if isinstance(plan, str) and plan:
-                        self._plan = plan
-                    if "plan_expires_at" in profile:
-                        exp = profile.get("plan_expires_at")
-                        self._plan_expires_at = exp if isinstance(exp, str) and exp else None
+                    self._absorb_profile(profile)
 
                 if not self._config.get("account_cloud_sync", True):
                     return
@@ -461,6 +524,7 @@ class AccountController(QObject):
         self._session = session
         self._plan = "free"
         self._plan_expires_at = None
+        self._trial_ends_at = None
         self._save_session(session)
         self._sync_email(session.email)
         self.signed_in.emit(session.user or {})
@@ -483,6 +547,7 @@ class AccountController(QObject):
         self._session = None
         self._plan = "free"
         self._plan_expires_at = None
+        self._trial_ends_at = None
         try:
             self._store.clear()
         except Exception:  # noqa: BLE001

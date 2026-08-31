@@ -56,6 +56,7 @@ class FakeAccount(QObject):
         self._name = "Ada Lovelace"
         self._plan = "free"
         self._plan_expires_at = None
+        self.trial_days_left = None
         self.avatar_calls = 0
         self.sign_in_calls = 0
 
@@ -126,6 +127,16 @@ acc._plan_expires_at = (datetime.now(_tz.utc) + timedelta(days=5)).isoformat()
 chip.refresh()
 check("future expiry still shows PRO", chip._plan_text() == "PRO")
 acc._plan_expires_at = None
+
+acc._plan = "free"
+acc.trial_days_left = 3
+chip.refresh()
+check("free + trial shows the TRIAL badge", chip._plan_text() == "TRIAL")
+check("tooltip carries the trial countdown", "3 day" in chip._tooltip())
+acc.trial_days_left = -1
+chip.refresh()
+check("ended trial falls back to FREE", chip._plan_text() == "FREE")
+acc.trial_days_left = None
 
 acc._name = "Grace Hopper"
 chip.refresh()

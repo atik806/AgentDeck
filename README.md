@@ -47,9 +47,12 @@ full-screen TUI all behave exactly as they do in Windows Terminal.
 - **Claude Code folder-trust** is pre-accepted for your working folder, so panes
   open straight into the session.
 
-## Free vs Pro
+## Trial &amp; Pro
 
-| | Free | Pro |
+AgentDeck is a **7-day free trial**, then Pro. During the trial you get the
+Free-tier limits below; after it you need a Pro plan to keep using the app.
+
+| | Free trial (7 days) | Pro |
 |---|---|---|
 | Terminal panes | up to 4 | up to 16 |
 | Workspaces | 1 | unlimited |
@@ -61,8 +64,8 @@ full-screen TUI all behave exactly as they do in Windows Terminal.
 | Per-workspace folders & agents | — | ✓ |
 | Support | community | priority email |
 
-Pro is sold monthly or yearly; a plan **automatically reverts to Free when its
-term ends**. See [`vibeflow.tech/agentdeck`](https://vibeflow.tech/agentdeck).
+Pro is sold monthly or yearly and **automatically reverts to Free when its term
+ends**. See [`vibeflow.tech/agentdeck`](https://vibeflow.tech/agentdeck).
 
 ## Install
 

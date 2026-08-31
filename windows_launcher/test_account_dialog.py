@@ -38,7 +38,8 @@ class FakeAccount(QObject):
     avatar_ready = Signal(bytes)
     profile_ready = Signal(dict)
 
-    def __init__(self, *, signed_in=True, plan="free", plan_expires_at=None):
+    def __init__(self, *, signed_in=True, plan="free", plan_expires_at=None,
+                 trial_days_left=None):
         super().__init__()
         self.is_signed_in = signed_in
         self.display_name = "Ada Lovelace"
@@ -47,6 +48,7 @@ class FakeAccount(QObject):
         self.plan = plan
         self.raw_plan = plan
         self.plan_expires_at = plan_expires_at
+        self.trial_days_left = trial_days_left
         self.calls = []
 
     def fetch_avatar(self):
@@ -109,6 +111,19 @@ acc = FakeAccount(plan="pro", plan_expires_at=_future)
 d = AccountDialog(acc, {})
 check("active Pro shows a renews note",
       any("renews" in t.lower() for t in _labels(d)))
+
+
+# ---------------------------------------------------------------------------
+print("[2c] the free-trial countdown / ended note")
+acc = FakeAccount(plan="free", trial_days_left=3)
+d = AccountDialog(acc, {})
+check("in-trial shows a countdown note",
+      any("trial" in t.lower() and "day" in t.lower() for t in _labels(d)))
+
+acc = FakeAccount(plan="free", trial_days_left=-1)
+d = AccountDialog(acc, {})
+check("ended trial shows an upgrade note",
+      any("trial ended" in t.lower() for t in _labels(d)))
 
 
 # ---------------------------------------------------------------------------

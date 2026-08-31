@@ -74,6 +74,30 @@ check("plan_expiry('') is None", e.plan_expiry("") is None)
 check("plan_expiry returns an aware datetime",
       e.plan_expiry(_future) is not None and e.plan_expiry(_future).tzinfo is not None)
 
+print("[7] the free trial gate")
+_t_past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+_t_future = (datetime.now(timezone.utc) + timedelta(days=3, hours=2)).isoformat()
+check("trial_active(None) -> True (fail-open)", e.trial_active(None) is True)
+check("trial_active(garbage) -> True (fail-open)", e.trial_active("nope") is True)
+check("trial_active(future) -> True", e.trial_active(_t_future) is True)
+check("trial_active(past) -> False", e.trial_active(_t_past) is False)
+check("trial_days_left(None) is None", e.trial_days_left(None) is None)
+check("trial_days_left(future ~3d) == 3",
+      e.trial_days_left(_t_future) == 3)
+check("trial_days_left(past) is negative",
+      e.trial_days_left(_t_past) < 0)
+check("TRIAL_DAYS is 7", e.TRIAL_DAYS == 7)
+check("access_allowed(free, future trial) -> True",
+      e.access_allowed("free", _t_future) is True)
+check("access_allowed(free, ended trial) -> False",
+      e.access_allowed("free", _t_past) is False)
+check("access_allowed(pro, ended trial) -> True (active Pro overrides)",
+      e.access_allowed("pro", _t_past) is True)
+check("access_allowed(pro + lapsed plan, ended trial) -> False",
+      e.access_allowed("pro", _t_past, _past) is False)
+check("access_allowed(pro + live plan, ended trial) -> True",
+      e.access_allowed("pro", _t_past, _future) is True)
+
 print("[5] PRO_MAX_PANES stays in step with workspace.MAX_PANES")
 try:
     from workspace import MAX_PANES

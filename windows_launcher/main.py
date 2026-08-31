@@ -283,6 +283,20 @@ def main() -> int:
             return 0
         _apply_cloud_settings(config, account)
 
+    # The Free tier is a 7-day trial. Once it's over the account must be on an
+    # active Pro plan or AgentDeck does not open -- the same "upgrade or quit"
+    # shape as the sign-in gate above. Skipped under --smoke. The profile (which
+    # carries trial_ends_at) is only fetched async by AccountController.__init__,
+    # so block briefly for it before deciding.
+    if account.is_signed_in and not _skip_login:
+        account.load_profile_blocking()
+        if not account.access_allowed:
+            from trial_gate import TrialGateDialog
+
+            gate = TrialGateDialog(account, config, icon=_load_icon())
+            if gate.exec() != QDialog.Accepted or not account.access_allowed:
+                return 0
+
     # The setup wizard is the next front door. --no-wizard (or config.skip_wizard)
     # opens straight from saved settings, for run.bat / scripted use.
     startup = None
