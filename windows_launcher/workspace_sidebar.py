@@ -41,7 +41,7 @@ QToolButton#navBtn:checked {{ background: {t('sidebar_active')}; color: {t('text
 QFrame#navRule {{ background: {t('separator')}; max-height: 1px; border: none; }}
 QWidget#wsHeader {{ background: {t('sidebar_bg')}; }}
 QLabel#wsTitle {{
-    color: {t('sidebar_heading')}; font-size: 10px; font-weight: bold; letter-spacing: 1px;
+    color: {t('sidebar_heading')}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;
 }}
 QLabel#wsCount {{
     color: {t('sidebar_heading')}; background: {t('sidebar_badge_bg')}; border-radius: 7px;
@@ -172,7 +172,7 @@ class _WorkspaceRow(QFrame):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(6, 0, 6, 0)
-        row.setSpacing(8)
+        row.setSpacing(6)
 
         # Accent bar down the left edge, only drawn for the active row.
         self._accent = QFrame(self)
@@ -309,7 +309,7 @@ class WorkspaceSidebar(QWidget):
     #: A row was renamed inline. Carries the workspace and the new name.
     renamed = Signal(object, str)
 
-    WIDTH = 214
+    WIDTH = 232
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -321,7 +321,8 @@ class WorkspaceSidebar(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # -- nav strip: sits above the WORKSPACES list, one row per destination.
+        # -- nav strip: pinned to the bottom, under the Workspaces list; one
+        #    row per destination (currently just "Plugins").
         nav = QWidget(self)
         nav.setObjectName("wsNav")
         nav.setAttribute(Qt.WA_StyledBackground, True)
@@ -339,12 +340,12 @@ class WorkspaceSidebar(QWidget):
         self._plugins_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._plugins_btn.clicked.connect(lambda: self.plugins_selected.emit())
         nav_box.addWidget(self._plugins_btn)
-        root.addWidget(nav)
 
+        # The nav strip (currently just "Plugins") is pinned to the bottom of
+        # the sidebar, under the workspace list -- see the addWidget order below.
         rule = QFrame(self)
         rule.setObjectName("navRule")
         rule.setFixedHeight(1)
-        root.addWidget(rule)
 
         header = QWidget(self)
         header.setObjectName("wsHeader")
@@ -353,7 +354,7 @@ class WorkspaceSidebar(QWidget):
         head.setContentsMargins(12, 10, 8, 8)
         head.setSpacing(6)
 
-        title = QLabel("WORKSPACES", header)
+        title = QLabel("Workspaces", header)
         title.setObjectName("wsTitle")
         self._count = QLabel("0", header)
         self._count.setObjectName("wsCount")
@@ -384,6 +385,10 @@ class WorkspaceSidebar(QWidget):
         self._list.addStretch(1)
         self._scroll.setWidget(inner)
         root.addWidget(self._scroll, 1)
+
+        # Bottom-pinned nav strip: a hairline rule, then the Plugins button.
+        root.addWidget(rule)
+        root.addWidget(nav)
 
         self.setStyleSheet(_sidebar_qss())
 

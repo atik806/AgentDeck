@@ -238,7 +238,7 @@ class TerminalPanel(QMainWindow):
             background: {t('separator')}; width: 1px; margin: 4px 4px;
         }}
         QToolBar QLabel {{
-            color: {t('text_faint')}; font-size: 10px; font-weight: 700;
+            color: {t('text_faint')}; font-size: 10px; font-weight: 600;
             padding: 0 3px 0 5px;
         }}
         QToolBar QPushButton, QToolBar QToolButton {{
@@ -255,6 +255,16 @@ class TerminalPanel(QMainWindow):
         }}
         QToolBar QToolButton:checked {{
             background: {t('accent_soft_bg')}; border-color: {t('accent')}; color: {t('accent_text')};
+        }}
+        QToolBar QPushButton#toolbarUpdate {{
+            background: {t('accent')}; color: {t('on_accent')};
+            border: 1px solid {t('accent')}; font-weight: 700;
+        }}
+        QToolBar QPushButton#toolbarUpdate:hover {{
+            background: {t('accent_hover')}; border-color: {t('accent_hover')};
+        }}
+        QToolBar QPushButton#toolbarUpdate:pressed {{
+            background: {t('accent_hover')};
         }}
         QToolBar QPushButton:focus, QToolBar QToolButton:focus,
         QToolBar QComboBox:focus {{ outline: none; }}
@@ -327,6 +337,7 @@ class TerminalPanel(QMainWindow):
         bar.addWidget(self._voice_btn)
 
         self._update_btn = QPushButton("Update", bar)
+        self._update_btn.setObjectName("toolbarUpdate")
         self._update_btn.setToolTip("Check for a newer version of AgentDeck")
         self._update_btn.clicked.connect(lambda: self.updater.check(silent=False))
         # Only an installed (Velopack) build can update itself.
@@ -335,7 +346,7 @@ class TerminalPanel(QMainWindow):
 
         bar.addSeparator()
 
-        bar.addWidget(QLabel("SHELL"))
+        bar.addWidget(QLabel("Shell"))
         self._shell_combo = QComboBox(bar)
         self._shell_combo.setMinimumWidth(122)
         self._shell_combo.addItem("Auto-detect", DEFAULT_SHELL)
@@ -362,7 +373,7 @@ class TerminalPanel(QMainWindow):
 
         bar.addSeparator()
 
-        bar.addWidget(QLabel("LAYOUT"))
+        bar.addWidget(QLabel("Layout"))
         self._layout_combo = QComboBox(bar)
         self._layout_combo.setMinimumWidth(96)
         self._layout_combo.addItem("Grid", LAYOUT_GRID)
@@ -376,7 +387,7 @@ class TerminalPanel(QMainWindow):
 
         bar.addSeparator()
 
-        bar.addWidget(QLabel("FONT"))
+        bar.addWidget(QLabel("Font"))
         smaller = QPushButton("−", bar)
         smaller.setFixedSize(29, 27)
         smaller.setToolTip("Smaller font (Ctrl+-)")

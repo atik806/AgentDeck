@@ -332,6 +332,30 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     dropped — this is palette + typography only. Tests: `test_theme.py` green;
     same pre-existing panel-suite fails.
 
+16. **UI regression fixes vs. the design mockup (2026-08-31, v0.7.2)** — three
+    chrome details had drifted from the reference mockup:
+    - `workspace_sidebar.py`: the **Plugins** nav strip (`#wsNav` + its
+      `#navRule`) is now **pinned to the bottom** of the sidebar, under the
+      workspace list, instead of sitting above the header. Only the
+      `root.addWidget` order changed — the widgets are still built top-down and
+      `plugins_selected` / `set_plugins_active` are untouched.
+    - Workspace-row **name truncation** ("Workspace 1" clipped to "Workspa"):
+      sidebar `WIDTH` 214 → 232 and `_WorkspaceRow` spacing 8 → 6, so a default
+      name fits even on the active row (which also shows the edit + close
+      buttons). Long custom names can still clip — pre-existing, left alone.
+    - Sidebar heading "WORKSPACES" → "Workspaces" (letter-spacing 1 → 0.5px,
+      10 → 11px).
+    - `terminal_panel.py`: toolbar section labels "SHELL/LAYOUT/FONT" →
+      "Shell/Layout/Font" (QSS has no text-transform; the caps were literal),
+      label weight 700 → 600. The **Update** button is now a filled accent
+      button (`objectName="toolbarUpdate"` + a `_toolbar_qss` rule) instead of a
+      grey surface button.
+    Not touched (out of scope this pass): the status bar still shows the
+    workspace/pane/running counts + shortcut hints rather than the mockup's
+    `N panes · shell · agent` / `workspace · branch`; pane header restart still
+    only appears on failure. Tests: `test_plugins_panel.py`, `test_theme.py`,
+    `test_navbar.py` green; panel suite unchanged (same pre-existing fails).
+
 ## Running / testing
 
 ```cmd
