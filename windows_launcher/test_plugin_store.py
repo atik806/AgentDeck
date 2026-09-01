@@ -9,6 +9,8 @@ from pathlib import Path
 
 from plugin_store import (
     GITHUB,
+    VERCEL,
+    JIRA,
     PluginConnection,
     PluginStore,
     normalise_capabilities,
@@ -89,6 +91,41 @@ with tempfile.TemporaryDirectory() as d:
     check("corrupt file -> not connected", not store.is_connected(GITHUB))
     check("can still write over it", store.put(PluginConnection(GITHUB, login="z")))
     check("and read back", store.get(GITHUB).login == "z")
+
+
+# ---------------------------------------------------------------------------
+print("[6] the store is provider-generic (Vercel -- thin, no capability model)")
+check("VERCEL constant", VERCEL == "vercel")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    check("vercel not connected initially", not store.is_connected(VERCEL))
+    store.put(PluginConnection(VERCEL))
+    check("connected after put", store.is_connected(VERCEL))
+    check("round-trips", PluginConnection.from_dict(VERCEL, store.get(VERCEL).to_dict()).provider == VERCEL)
+    check("github + vercel coexist in one file",
+          store.put(PluginConnection(GITHUB, login="atik806"))
+          and store.is_connected(GITHUB) and store.is_connected(VERCEL))
+    store.remove(VERCEL)
+    check("vercel removed, github untouched",
+          not store.is_connected(VERCEL) and store.is_connected(GITHUB))
+
+
+# ---------------------------------------------------------------------------
+print("[7] the store is provider-generic (Jira -- thin, same as Vercel)")
+check("JIRA constant", JIRA == "jira")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    check("jira not connected initially", not store.is_connected(JIRA))
+    store.put(PluginConnection(JIRA))
+    check("connected after put", store.is_connected(JIRA))
+    check("round-trips", PluginConnection.from_dict(JIRA, store.get(JIRA).to_dict()).provider == JIRA)
+    check("github + vercel + jira coexist in one file",
+          store.put(PluginConnection(GITHUB, login="atik806"))
+          and store.put(PluginConnection(VERCEL))
+          and store.is_connected(GITHUB) and store.is_connected(VERCEL) and store.is_connected(JIRA))
+    store.remove(JIRA)
+    check("jira removed, github + vercel untouched",
+          not store.is_connected(JIRA) and store.is_connected(GITHUB) and store.is_connected(VERCEL))
 
 
 print()

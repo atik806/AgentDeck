@@ -55,6 +55,8 @@ hiddenimports += [
     "secret_store", "plugin_store",
     "github_auth", "github_api", "github_mcp",
     "github_controller", "github_review_dialog",
+    "vercel_mcp", "vercel_controller",
+    "jira_mcp", "jira_controller",
 ]
 
 # The voice pipeline lives in the sibling `voice_capture` package. It must be

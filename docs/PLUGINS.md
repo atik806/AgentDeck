@@ -89,9 +89,9 @@ structure below is what the code needs to support.)
 
 Each **card**: icon, name, category tag, one-line description, a status pill
 (`Not connected` / `Connected as @login` / `Needs attention`), and one primary
-button (`Connect` → `Manage`). v1 ships exactly one live card — **GitHub** — with
-the rest rendered disabled as `Coming soon` (GitLab, Bitbucket, Linear, Jira,
-Sentry, Vercel, Netlify).
+button (`Connect` → `Manage`). Three live cards — **GitHub**, **Vercel** and
+**Jira** (the last two thin — see §12 / §13) — with the rest rendered disabled as
+`Coming soon` (GitLab, Bitbucket, Linear, Sentry, Netlify).
 
 ### 2b. Detail / manage view (click a card)
 
@@ -404,3 +404,108 @@ it), local `github-mcp-server` fallback (P3), Codex/Gemini writers (P4), other
 providers (P5). Also: the token written into `.claude.json` is static, so a
 multi-hour agent session can outlive it (~8 h) — a new workspace re-injects a
 fresh one, a long-running pane does not.
+
+## 12. Vercel plugin (thin) — shipped v0.9.0 (2026-09-01)
+
+The second live card. **Deliberately much thinner than GitHub** because Vercel's
+official MCP server works differently.
+
+### Why it's thin
+
+Vercel's MCP server is **hosted and OAuth-only** — `https://mcp.vercel.com`,
+implementing the MCP Authorization spec (PKCE + Dynamic Client Registration).
+It does **not** accept an API bearer token, and there is no official local
+binary. Claude Code is an approved client and does the OAuth itself: the user
+runs `/mcp` in a pane once and **Claude Code stores and owns those credentials**.
+
+So AgentDeck never touches a Vercel token. "Connecting" the plugin means: record
+it in `plugins.json`, drop a **tokenless** server entry into `~/.claude.json`,
+and mirror the metadata row. Authorising happens in the pane. Status is
+*"Enabled"*, not *"Connected as @user"* — there's no identity to show and no way
+to verify the OAuth completed (Claude Code's credential store is undocumented and
+version-specific, so we don't probe it).
+
+### The injected block (root `mcpServers.vercel` of `~/.claude.json`)
+
+```json
+{ "type": "http", "url": "https://mcp.vercel.com", "x-agentdeck-managed": true }
+```
+
+No `headers`, no capability/toolset filtering (Vercel's OAuth consent screen is
+where scope is chosen). `x-agentdeck-managed` gates removal exactly as for GitHub.
+
+### Modules
+
+| Module | What it does | Tests |
+|---|---|---|
+| `vercel_mcp.py` | `inject()` / `remove()` / `mcp_server_config()` — copies github_mcp.py's `_claude_config_path` / `_load_json` / `_atomic_write_json` / `_strip_managed` verbatim (not a shared module — protects shipped v0.8.0). No `token`/`folder`/`connection` params. | `test_vercel_mcp.py` |
+| `vercel_controller.py` | `VercelController(QObject)` — `start_connect` (put + `ensure_wired` + `_mirror_up` + emit), `disconnect`, `ensure_wired` (Claude-Code-only), `_mirror_delete`. No device flow, no token vault, no capability model, no `log_run`. Startup `ensure_wired` staggered `singleShot(250)` behind GitHub's `singleShot(0)`. | `test_vercel_controller.py` |
+| `plugin_store.py` | Added `VERCEL = "vercel"`. `PluginConnection` unchanged — the vercel row's `capabilities`/`automation` are unused noise. | `test_plugin_store.py` §6 |
+| `plugins_panel.py` | `_VercelDetail` (inline, mirrors `_GitHubDetail` minus device-code/caps/repos), `_vercel_icon` (drawn triangle), `_PluginCard.set_toggle_status` ("ENABLED" / "NOT ENABLED"), 3rd stack page, `_open_detail`/`_sync_cards` branches. | `test_plugins_panel.py` §5 |
+| `terminal_panel.py` | Builds `VercelController`, passes `vercel=` to the panel, `_wire_vercel_for`, `_on_vercel_connected/_disconnected` status nudges, teardown. | `test_panel*.py` (unchanged) |
+
+### Data model
+
+Reuses `public.plugin_connections` with `provider='vercel'` — the table is
+provider-generic (PK `(user_id, provider)`, RLS `auth.uid() = user_id`).
+**No migration.** `plugin_runs` is unused by Vercel in v1.
+
+### Entitlements
+
+Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged. Free users see
+the live card; Connect is disabled and labelled "(Pro)".
+
+### Known: same "(re)start the agent" caveat as GitHub
+
+`claude` reads `.claude.json` at launch. After enabling Vercel the user restarts
+the agent (`↻`) **and then runs `/mcp`** to authorise. `_on_vercel_connected`
+re-injects and shows a status-bar nudge saying so.
+
+## 13. Jira plugin (thin) — shipped v0.9.0 (2026-09-01)
+
+The third live card. **A near-exact clone of the Vercel plugin** (§12) — the
+`_mcp` / `_controller` modules are byte-identical bar the constants and copy.
+
+### Why it's thin
+
+The plugin talks to Atlassian's official **Rovo Remote MCP Server** (GA Feb
+2026) — hosted, **Cloud-only**, **OAuth 2.1** at
+`https://mcp.atlassian.com/v1/mcp/authv2`, transport `type: "http"`. One
+connection covers Jira, Confluence, Jira Service Management, Bitbucket and
+Compass. No bearer token in v1 (an API-token path exists but needs an org admin
+to enable it and exposes fewer tools); no local binary. Claude Code does the
+OAuth via `/mcp` and owns the credentials. So AgentDeck never touches an
+Atlassian token — status is *"Enabled"*, not *"Connected as @user"*.
+
+### The injected block (root `mcpServers.atlassian` of `~/.claude.json`)
+
+```json
+{ "type": "http", "url": "https://mcp.atlassian.com/v1/mcp/authv2", "x-agentdeck-managed": true }
+```
+
+The MCP server is named **`atlassian`** (Atlassian's own convention; what `/mcp`
+shows). The AgentDeck-side **provider key stays `jira`** (`_CATALOG` key,
+`plugin_store.JIRA`, the Supabase `plugin_connections.provider` value). The URL is
+the single constant `jira_mcp.REMOTE_MCP_URL` — Atlassian docs also reference
+`https://mcp.atlassian.com/v2/mcp`; switch the constant if `/mcp` rejects it.
+(`.../v1/sse` is deprecated since 2026-06-30.)
+
+### Modules
+
+| Module | Notes |
+|---|---|
+| `jira_mcp.py` | Copy of `vercel_mcp.py`; `_SERVER_NAME = "atlassian"`, the Atlassian URL. `inject`/`remove`/`_strip_managed` are transport-agnostic — they only key on the name + `x-agentdeck-managed`. |
+| `jira_controller.py` | Copy of `vercel_controller.py` → `JiraController`; `provider="jira"` in the Supabase mirror. Startup `ensure_wired` staggered `singleShot(400)` (behind GitHub's `0` and Vercel's `250`). |
+| `plugin_store.py` | Added `JIRA = "jira"`. |
+| `plugins_panel.py` | `_JiraDetail` inline (copy of `_VercelDetail`), `_jira_icon` (drawn double-chevron), catalog tuple → live, 4th stack page (index 3), `_open_detail` / `_sync_cards` branches. |
+| `terminal_panel.py` | Builds `JiraController`, `jira=` kwarg, `_wire_jira_for`, `_on_jira_connected/_disconnected` nudges, teardown. |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='jira'`. **No migration.**
+Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### Tests
+
+`test_jira_mcp.py`, `test_jira_controller.py` (copies of the Vercel ones);
+`test_plugin_store.py` §7, `test_plugins_panel.py` §6 (with a `FakeJira` stub).

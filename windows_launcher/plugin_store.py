@@ -23,6 +23,8 @@ from typing import Dict, List, Optional
 
 __all__ = [
     "GITHUB",
+    "VERCEL",
+    "JIRA",
     "CAPABILITIES",
     "CAPABILITY_LABELS",
     "DEFAULT_CAPABILITIES",
@@ -34,6 +36,16 @@ __all__ = [
 ]
 
 GITHUB = "github"
+
+#: The Vercel plugin is "thin" -- no capability model. It reuses this store only
+#: for its presence flag (connected / not) and the ``plugins.json`` row that lets
+#: the catalog render status at startup. See ``vercel_controller`` / ``vercel_mcp``.
+VERCEL = "vercel"
+
+#: The Jira plugin is thin too (Atlassian Rovo MCP -- hosted, OAuth-only). The
+#: MCP server it writes into ``~/.claude.json`` is named ``atlassian``; this
+#: provider key stays ``jira``. See ``jira_controller`` / ``jira_mcp``.
+JIRA = "jira"
 
 #: Ordered capability keys. Each maps to one or more GitHub MCP toolsets and a
 #: tier of GitHub App permissions -- see docs/PLUGINS.md §5.

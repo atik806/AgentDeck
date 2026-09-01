@@ -54,6 +54,8 @@ import entitlements
 import theme
 from account import AccountController
 from github_controller import GitHubController
+from vercel_controller import VercelController
+from jira_controller import JiraController
 from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -116,6 +118,11 @@ class TerminalPanel(QMainWindow):
         # The GitHub plugin surface (connect state, token vault, MCP wiring for
         # the agent in a pane). Inert until the user connects on the Plugins page.
         self.github = GitHubController(self.account, self.config, self)
+        # The Vercel plugin surface -- thin: it just drops a tokenless MCP server
+        # entry into Claude Code's config; the user authorises with /mcp in a pane.
+        self.vercel = VercelController(self.account, self.config, self)
+        # The Jira plugin surface -- thin, same shape (Atlassian Rovo MCP).
+        self.jira = JiraController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -527,7 +534,8 @@ class TerminalPanel(QMainWindow):
         # count (older callers + the test suite rely on that).
         self._ws_stack = QStackedWidget(central)
         self._plugins_panel = PluginsPanel(
-            central, github=self.github, account=self.account, config=self.config
+            central, github=self.github, vercel=self.vercel, jira=self.jira,
+            account=self.account, config=self.config
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
         self._main_stack = QStackedWidget(central)
@@ -639,6 +647,8 @@ class TerminalPanel(QMainWindow):
         # GitHub MCP server into the agent's config *before* its panes fire the
         # startup command, so the agent comes up with the GitHub tools ready.
         self._wire_github_for(self._working_folder, startup_command)
+        self._wire_vercel_for(self._working_folder, startup_command)
+        self._wire_jira_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -686,6 +696,35 @@ class TerminalPanel(QMainWindow):
             return False
         try:
             return bool(gh.is_connected and gh.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
+    def _wire_vercel_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the Vercel MCP server to the agent's config.
+
+        A no-op unless Vercel is enabled and the agent is Claude Code. The folder
+        is irrelevant (the server is user-scope) but kept for call-site symmetry
+        with :meth:`_wire_github_for`. Returns True if the config changed.
+        """
+        v = getattr(self, "vercel", None)
+        if v is None:
+            return False
+        try:
+            return bool(v.is_connected and v.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
+    def _wire_jira_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the Atlassian (Jira) MCP server to the agent's config.
+
+        A no-op unless Jira is enabled and the agent is Claude Code. Mirrors
+        :meth:`_wire_vercel_for`. Returns True if the config changed.
+        """
+        j = getattr(self, "jira", None)
+        if j is None:
+            return False
+        try:
+            return bool(j.is_connected and j.ensure_wired(folder or None, agent_command))
         except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
             return False
 
@@ -1287,6 +1326,14 @@ class TerminalPanel(QMainWindow):
         if gh is not None:
             gh.connected.connect(lambda _i: self._on_github_connected())
             gh.disconnected.connect(self._on_github_disconnected)
+        v = getattr(self, "vercel", None)
+        if v is not None:
+            v.connected.connect(lambda _i: self._on_vercel_connected())
+            v.disconnected.connect(self._on_vercel_disconnected)
+        j = getattr(self, "jira", None)
+        if j is not None:
+            j.connected.connect(lambda _i: self._on_jira_connected())
+            j.disconnected.connect(self._on_jira_disconnected)
 
     def _on_github_connected(self) -> None:
         if self._wire_github_for(self._working_folder, self._startup_command):
@@ -1298,6 +1345,30 @@ class TerminalPanel(QMainWindow):
     def _on_github_disconnected(self) -> None:
         self.statusBar().showMessage(
             "GitHub disconnected — restart the agent (↻) to drop the GitHub tools", 6000
+        )
+
+    def _on_vercel_connected(self) -> None:
+        self._wire_vercel_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            "Vercel enabled — restart the agent (↻) in a pane, then run /mcp to authorise",
+            8000,
+        )
+
+    def _on_vercel_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "Vercel disabled — restart the agent (↻) to drop the Vercel tools", 6000
+        )
+
+    def _on_jira_connected(self) -> None:
+        self._wire_jira_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            "Jira enabled — restart the agent (↻) in a pane, then run /mcp to authorise Atlassian",
+            8000,
+        )
+
+    def _on_jira_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "Jira disabled — restart the agent (↻) to drop the Jira tools", 6000
         )
 
     def _recheck_plan(self) -> None:
@@ -1629,6 +1700,12 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "github", None) is not None:
             self.github.unwire_all()
             self.github.shutdown()
+        if getattr(self, "vercel", None) is not None:
+            self.vercel.unwire_all()
+            self.vercel.shutdown()
+        if getattr(self, "jira", None) is not None:
+            self.jira.unwire_all()
+            self.jira.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 
