@@ -155,6 +155,21 @@ check("never left listening", eng3.is_listening is False)
 
 
 # ---------------------------------------------------------------------------
+print("[4b] stop_listening ends a live session and is a no-op when idle")
+install_stubs()
+StubCapture.instances.clear()
+eng3b = VoiceEngine({})
+eng3b.stop_listening()  # nothing running -> must not start a teardown
+check("no-op while idle", eng3b.current_state in ("idle",) and not eng3b._busy)
+eng3b.start()
+check("listening before the submit", pump(lambda: eng3b.current_state == "listening"))
+eng3b.stop_listening()
+check("stop_listening reaches idle", pump(lambda: eng3b.current_state == "idle"))
+check("mic released", StubCapture.instances[-1].stopped is True)
+check("not listening", eng3b.is_listening is False)
+
+
+# ---------------------------------------------------------------------------
 print("[5] unavailable when the audio deps are missing")
 voice_engine._IMPORT_OK = False
 eng4 = VoiceEngine({})

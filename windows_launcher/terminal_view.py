@@ -248,6 +248,9 @@ class TerminalCanvas(QWidget):
     #: Emitted when this canvas gains keyboard focus.
     focus_gained = Signal()
 
+    #: Emitted when a bare Return/Enter is sent -- the user submitted a line.
+    submitted = Signal()
+
     def __init__(
         self,
         screen: TerminalScreen,
@@ -825,6 +828,13 @@ class TerminalCanvas(QWidget):
         self.scroll_to_bottom()
         self.clear_selection()
         self.input_requested.emit(sequence)
+        # A bare Enter runs the current line -- voice input listens for the next
+        # command, so a submit is its natural stopping point.
+        if (
+            event.key() in (Qt.Key_Return, Qt.Key_Enter)
+            and not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier))
+        ):
+            self.submitted.emit()
         self.content_changed.emit()
         event.accept()
 
@@ -872,6 +882,9 @@ class TerminalView(QWidget):
 
     #: This pane took keyboard focus.
     focus_gained = Signal()
+
+    #: A bare Return/Enter was sent to the shell -- the user ran a line.
+    submitted = Signal()
 
     def __init__(
         self,
@@ -937,6 +950,7 @@ class TerminalView(QWidget):
         self.canvas.content_changed.connect(self._sync_scrollbar)
         # focus lands on the canvas, not on this wrapper, so relay from there.
         self.canvas.focus_gained.connect(self.focus_gained)
+        self.canvas.submitted.connect(self.submitted)
         self.scrollbar.valueChanged.connect(self.canvas.set_scroll_top)
 
         if self.session.error:

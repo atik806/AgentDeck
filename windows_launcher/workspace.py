@@ -86,6 +86,9 @@ class TerminalPane(QFrame):
     #: This pane's terminal took focus.
     activated = Signal(object)
 
+    #: The user ran a line in this pane (bare Enter). Carries the pane.
+    submitted = Signal(object)
+
     def __init__(
         self,
         index: int,
@@ -193,6 +196,7 @@ class TerminalPane(QFrame):
         view.title_changed.connect(self._on_title)
         view.exited.connect(self._on_exited)
         view.focus_gained.connect(lambda: self.activated.emit(self))
+        view.submitted.connect(lambda: self.submitted.emit(self))
         self._set_title(view.shell_label)
         return view
 
@@ -382,6 +386,9 @@ class Workspace(QWidget):
     #: A transient message for the window's status bar.
     notice = Signal(str)
 
+    #: The user ran a line in one of this workspace's panes. Carries the pane.
+    pane_submitted = Signal(object)
+
     def __init__(
         self,
         name: str,
@@ -471,6 +478,7 @@ class Workspace(QWidget):
         pane.close_requested.connect(self.close_pane)
         pane.expand_requested.connect(self.toggle_zoom)
         pane.activated.connect(self.set_active)
+        pane.submitted.connect(self.pane_submitted)
         self._panes.append(pane)
         return pane
 

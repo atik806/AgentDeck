@@ -676,6 +676,7 @@ class TerminalPanel(QMainWindow):
         workspace.notice.connect(
             lambda message: self.statusBar().showMessage(message, 3000)
         )
+        workspace.pane_submitted.connect(self._on_pane_submitted)
 
         self._workspaces.append(workspace)
         self._ws_stack.addWidget(workspace)
@@ -943,6 +944,13 @@ class TerminalPanel(QMainWindow):
 
     def _on_voice_error(self, message: str) -> None:
         self.statusBar().showMessage(f"Voice: {message}", 6000)
+
+    def _on_pane_submitted(self, _pane=None) -> None:
+        """Running a command ends a dictation session -- stop listening."""
+        engine = getattr(self, "_voice_engine", None)
+        if engine is not None and engine.is_listening:
+            engine.stop_listening()
+            self.statusBar().showMessage("Voice: stopped", 2000)
 
     def _on_voice_moved(self, pos: QPoint) -> None:
         # Store where it sits *inside the terminal area*, not in the window.

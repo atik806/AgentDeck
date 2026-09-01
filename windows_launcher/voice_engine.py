@@ -135,6 +135,16 @@ class VoiceEngine(QObject):
         self._busy = True
         threading.Thread(target=self._stop_pipeline, name="voice-stop", daemon=True).start()
 
+    def stop_listening(self) -> None:
+        """Stop a listen already in progress; a no-op when idle.
+
+        Used when the user submits a command (presses Enter) -- the dictation
+        session has served its purpose and should not keep the mic open. Covers
+        the mid-load case too (``_listening`` is set before the model finishes).
+        """
+        if self._listening:
+            self.stop()
+
     def shutdown(self) -> None:
         """Best-effort synchronous teardown for the window's closeEvent."""
         self._listening = False

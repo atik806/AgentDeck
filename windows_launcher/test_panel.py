@@ -606,6 +606,17 @@ def _():
     check("still inside the terminal area after a resize", overlay_in_bounds(), True)
 
 
+@step
+def _():
+    print("== 28b. running a line (bare Enter) stops a live voice session ==")
+    eng = panel._voice_engine
+    eng._listening = True  # stand in for an open dictation session
+    pane = panel._active or panel._panes[0]
+    pane.view.submitted.emit()  # what a bare Return/Enter emits
+    check("voice session was stopped", eng.is_listening, False)
+    eng._listening = False
+
+
 # -- 7. wizard startup: working folder + agent command --------------------
 #
 # A second panel built the way main.py builds it after the setup wizard:
