@@ -375,20 +375,8 @@ class TerminalPanel(QMainWindow):
         self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
         bar.addWidget(self._layout_combo)
 
-        bar.addSeparator()
-
-        bar.addWidget(QLabel("Font"))
-        smaller = QPushButton("−", bar)
-        smaller.setFixedSize(29, 27)
-        smaller.setToolTip("Smaller font (Ctrl+-)")
-        smaller.clicked.connect(lambda: self._bump_font(-1))
-        bar.addWidget(smaller)
-
-        bigger = QPushButton("+", bar)
-        bigger.setFixedSize(29, 27)
-        bigger.setToolTip("Larger font (Ctrl++)")
-        bigger.clicked.connect(lambda: self._bump_font(1))
-        bar.addWidget(bigger)
+        # Font size lives in Settings now (gear button) plus the Ctrl+± / Ctrl+0
+        # shortcuts wired in _build_shortcuts.
 
         # -- right cluster: theme · settings · help · account -----------------
         spacer = QWidget(bar)
@@ -500,6 +488,9 @@ class TerminalPanel(QMainWindow):
         new_theme = str(self.config.get("theme", "system"))
         if new_theme != before.get("theme"):
             theme.set_mode(theme.init(self.config))
+        new_size = int(self.config.get("font_size", self._font_size) or self._font_size)
+        if new_size != self._font_size:
+            self._set_font(new_size)
         self._save_settings()
 
     def _build_body(self) -> None:

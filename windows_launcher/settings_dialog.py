@@ -1,9 +1,10 @@
 """The Settings dialog -- opened from the toolbar's gear button.
 
 A single place for the app-wide preferences that otherwise only live in
-``config.json``: appearance (light / dark / system), startup behaviour, updates,
-and the Claude Code folder-trust shortcut. Toolbar-adjacent settings that
-already have their own control (shell, layout, font size) are left there.
+``config.json``: appearance (light / dark / system, terminal font size),
+startup behaviour, updates, and the Claude Code folder-trust shortcut. The
+remaining toolbar-adjacent settings (shell, layout) keep their own control
+there.
 
 Each change is written straight into the ``config`` dict passed in and
 persisted with :func:`config.save_config`; the panel re-reads what it needs
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 import theme
-from config import save_config
+from config import CONFIG_RANGES, save_config
 
 __all__ = ["SettingsDialog"]
 
@@ -83,6 +84,40 @@ class SettingsDialog(QDialog):
         theme_row.addStretch(1)
         outer.addLayout(theme_row)
         self._theme_group.buttonToggled.connect(self._on_theme_pick)
+        outer.addSpacing(10)
+
+        # -- Terminal font size --------------------------------------------
+        outer.addWidget(QLabel("Terminal font size"))
+        self._font_lo, self._font_hi = CONFIG_RANGES.get("font_size", (6, 48))
+        self._font_size = max(
+            self._font_lo,
+            min(self._font_hi, int(self._config.get("font_size", 11) or 11)),
+        )
+        font_row = QHBoxLayout()
+        font_row.setSpacing(8)
+        self._font_minus = QPushButton("−")
+        self._font_minus.setObjectName("stepper")
+        self._font_minus.setFixedSize(30, 28)
+        self._font_minus.setToolTip("Smaller")
+        self._font_minus.clicked.connect(lambda: self._bump_font(-1))
+        self._font_value = QLabel()
+        self._font_value.setObjectName("fontValue")
+        self._font_value.setAlignment(Qt.AlignCenter)
+        self._font_value.setMinimumWidth(52)
+        self._font_plus = QPushButton("+")
+        self._font_plus.setObjectName("stepper")
+        self._font_plus.setFixedSize(30, 28)
+        self._font_plus.setToolTip("Larger")
+        self._font_plus.clicked.connect(lambda: self._bump_font(1))
+        font_row.addWidget(self._font_minus)
+        font_row.addWidget(self._font_value)
+        font_row.addWidget(self._font_plus)
+        font_row.addStretch(1)
+        outer.addLayout(font_row)
+        hint = QLabel("Applies to every open workspace and new panes.")
+        hint.setObjectName("hint")
+        outer.addWidget(hint)
+        self._sync_font_label()
         outer.addSpacing(10)
 
         # -- Startup -------------------------------------------------------
@@ -283,6 +318,19 @@ class SettingsDialog(QDialog):
             return
         self._set("theme", button.property("theme_key"))
 
+    def _bump_font(self, delta: int) -> None:
+        size = max(self._font_lo, min(self._font_hi, self._font_size + delta))
+        if size == self._font_size:
+            return
+        self._font_size = size
+        self._sync_font_label()
+        self._set("font_size", size)
+
+    def _sync_font_label(self) -> None:
+        self._font_value.setText(f"{self._font_size} px")
+        self._font_minus.setEnabled(self._font_size > self._font_lo)
+        self._font_plus.setEnabled(self._font_size < self._font_hi)
+
     # -- styling ---------------------------------------------------------
 
     def _apply_style(self) -> None:
@@ -298,6 +346,9 @@ class SettingsDialog(QDialog):
                 letter-spacing: 1px; padding-top: 2px;
             }}
             QLabel#hint {{ color: {t('text_muted')}; font-size: 11px; }}
+            QLabel#fontValue {{ color: {t('dialog_text')}; font-size: 12px; font-weight: 600; }}
+            QPushButton#stepper {{ padding: 0; font-size: 15px; font-weight: 700; }}
+            QPushButton#stepper:disabled {{ color: {t('text_muted')}; border-color: {t('card_border')}; }}
             QCheckBox, QRadioButton {{ color: {t('dialog_text')}; font-size: 12px; spacing: 8px; }}
             QCheckBox::indicator, QRadioButton::indicator {{ width: 15px; height: 15px; }}
             QComboBox {{

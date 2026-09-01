@@ -135,6 +135,32 @@ check("restart hint shown", "estart" in d._upd_status.text())
 d.close()
 
 
+# ---------------------------------------------------------------------------
+print("[6] terminal font size stepper writes config + clamps at the bounds")
+c = new_cfg()
+c["font_size"] = 11
+d = SettingsDialog(c, current_version="1.2.3")
+check("label shows current size", d._font_value.text() == "11 px")
+
+d._bump_font(1)
+check("plus bumps config", c["font_size"] == 12)
+check("label follows", d._font_value.text() == "12 px")
+
+d._bump_font(-1)
+check("minus bumps config", c["font_size"] == 11)
+
+for _ in range(80):
+    d._bump_font(-1)
+check("clamps at lower bound", c["font_size"] == d._font_lo)
+check("minus disabled at floor", not d._font_minus.isEnabled())
+
+for _ in range(80):
+    d._bump_font(1)
+check("clamps at upper bound", c["font_size"] == d._font_hi)
+check("plus disabled at ceiling", not d._font_plus.isEnabled())
+d.close()
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
