@@ -709,6 +709,7 @@ class TerminalPanel(QMainWindow):
             lambda message: self.statusBar().showMessage(message, 3000)
         )
         workspace.pane_submitted.connect(self._on_pane_submitted)
+        workspace.pane_handoff_requested.connect(self._start_handoff)
 
         self._workspaces.append(workspace)
         self._ws_stack.addWidget(workspace)
@@ -804,6 +805,145 @@ class TerminalPanel(QMainWindow):
             self.github.log_run("review.started", f"{repo}#{pr_number}")
         except Exception:  # noqa: BLE001
             pass
+
+    # -- conversation handoff -------------------------------------------------
+
+    def _start_handoff(self, pane) -> None:
+        """Pane ⤳ button: pick a target agent, then hand the conversation over."""
+        if not entitlements.handoff_enabled(self._plan()):
+            self._prompt_upgrade(
+                "Conversation handoff",
+                "Move a running agent's conversation into a fresh pane — resume "
+                "the same agent, or hand the whole transcript to a different "
+                "one — on AgentDeck Pro.",
+            )
+            return
+        if pane is None or self._active_ws is None or pane not in self._active_ws.panes:
+            return
+
+        from handoff_dialog import HandoffDialog
+
+        dlg = HandoffDialog(
+            source_key=pane.detect_agent_key(),
+            source_dir=pane.source_dir or self._working_folder or "",
+            fork_default=bool(self.config.get("handoff_fork_session", True)),
+            thinking_default=bool(self.config.get("handoff_include_thinking", False)),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        choice = dlg.result_choice()
+        if choice:
+            self._do_handoff(pane, choice)
+
+    def _do_handoff(self, pane, choice: dict) -> None:
+        """Build the target agent's startup command from ``choice`` and open a
+        new pane in the current workspace running it."""
+        import agents
+        import agent_sessions
+
+        ws = self._active_ws
+        if ws is None:
+            return
+
+        source_key = choice.get("source_key") or ""
+        target_key = choice.get("target_key") or ""
+        base_command = choice.get("target_command") or agents.resolve_agent(target_key)
+        if not base_command:
+            self.statusBar().showMessage(
+                f"{agents.agent_label(target_key)} isn't installed.", 5000
+            )
+            return
+
+        folder = choice.get("source_dir") or self._working_folder or str(Path.home())
+        any_cwd = bool(choice.get("any_cwd"))
+        same_agent = bool(source_key) and source_key == target_key
+
+        session = None
+        if source_key:
+            session = agent_sessions.locate_latest(source_key, folder, any_cwd=any_cwd)
+            if session is None and not any_cwd:
+                session = agent_sessions.locate_latest(source_key, folder, any_cwd=True)
+
+        command = base_command
+        seed_prompt = ""
+
+        if session is not None and same_agent and agent_sessions.supports_resume(source_key):
+            resumed = agent_sessions.resume_command(
+                source_key, base_command, session, fork=bool(choice.get("fork", True))
+            )
+            command = resumed or base_command
+        elif session is not None:
+            md = agent_sessions.transcript_markdown(
+                source_key,
+                session,
+                include_thinking=bool(choice.get("include_thinking")),
+                max_chars=int(self.config.get("handoff_max_transcript_chars", 200_000)),
+            )
+            if md is None:
+                self.statusBar().showMessage(
+                    f"Couldn't read {agents.agent_label(source_key)}'s conversation "
+                    f"— starting {agents.agent_label(target_key)} fresh.", 6000
+                )
+            else:
+                try:
+                    import github_mcp
+
+                    doc = github_mcp.write_handoff_doc(folder, md)
+                    rel = f"{github_mcp.AGENTDECK_DIR}/{doc.name}"
+                except OSError as exc:
+                    self.statusBar().showMessage(f"Couldn't write the handoff: {exc}", 6000)
+                    rel = ""
+                if rel:
+                    seed_prompt = (
+                        f"Read {rel} — it is a handoff of an earlier session with "
+                        f"another coding agent. Continue that work from where it "
+                        f"left off."
+                    )
+                    command = (
+                        agent_sessions.initial_prompt_command(
+                            target_key, base_command, seed_prompt
+                        )
+                        or base_command
+                    )
+        else:
+            self.statusBar().showMessage(
+                f"No {agents.agent_label(source_key) or 'source'} conversation found "
+                f"— starting {agents.agent_label(target_key)} fresh.", 6000
+            )
+
+        # Pre-trust + plugin-wire the target the same way _add_workspace does.
+        if self.config.get("pretrust_agent_folder", False):
+            try:
+                agents.pretrust_folder(base_command, folder)
+            except Exception:  # noqa: BLE001
+                pass
+        self._wire_github_for(folder, base_command)
+        self._wire_vercel_for(folder, base_command)
+        self._wire_jira_for(folder, base_command)
+
+        new_pane = ws.add_pane_with_command(command)
+        if new_pane is None:
+            if ws.max_panes < 16:
+                self._prompt_upgrade(
+                    "More panes",
+                    "The handoff needs a new pane, but this workspace is at the "
+                    "Free-plan limit.",
+                )
+            return
+
+        # When the target can't take the instruction as a CLI arg, type it in
+        # after it's up — without Enter, so the user reviews it first.
+        if seed_prompt and command == base_command:
+            QTimer.singleShot(
+                2500,
+                lambda p=new_pane, t=seed_prompt: p.view.insert_text(t + " ")
+                if p in ws.panes else None,
+            )
+            self.statusBar().showMessage(
+                "Seeded the handoff prompt in the new pane — review it and press Enter.",
+                8000,
+            )
 
     def _show_plugins(self) -> None:
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""

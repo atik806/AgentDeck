@@ -745,6 +745,83 @@ def _():
           "AGENT_OK" not in flat(added), True)
     check("but it still opens in the working folder",
           state["startup_folder"] in flat(added), True)
+
+
+# -- 30. conversation handoff -------------------------------------------------
+
+@step
+def _():
+    print("== 30. handoff: Pro gate + resume / transcript pane spawn ==")
+    import tempfile
+    import agent_sessions
+
+    p2 = state["panel2"]
+    tmp = tempfile.mkdtemp(prefix="adk-handoff-test-")
+    state["handoff_tmp"] = tmp
+    fake = agent_sessions.AgentSession(
+        agent_key="claude", session_id="deadbeef-0000", path=None, cwd=tmp,
+        title="prior work",
+    )
+    state["_real_locate"] = agent_sessions.locate_latest
+    state["_real_md"] = agent_sessions.transcript_markdown
+    agent_sessions.locate_latest = lambda *a, **k: fake
+    agent_sessions.transcript_markdown = lambda *a, **k: "# handoff\n\n## User\n\nhi\n"
+
+    # Free plan: the button is gated before any pane is spawned.
+    hits = []
+    state["_real_upsell"] = p2._prompt_upgrade
+    p2._prompt_upgrade = lambda *a, **k: hits.append(a)
+    p2.account._plan = "free"
+    before = p2._active_ws.pane_count
+    p2._start_handoff(p2._active_ws.panes[0])
+    check("Free plan shows the upsell", bool(hits), True)
+    check("Free plan spawned no pane", p2._active_ws.pane_count, before)
+    p2.account._plan = "pro"
+    p2._prompt_upgrade = state["_real_upsell"]
+
+
+@step
+def _():
+    p2 = state["panel2"]
+    tmp = state["handoff_tmp"]
+    before = p2._active_ws.pane_count
+    # Same-agent -> native resume command.
+    p2._do_handoff(p2._active_ws.panes[0], {
+        "source_key": "claude", "source_dir": tmp,
+        "target_key": "claude", "target_command": "claude",
+        "fork": True, "include_thinking": False, "any_cwd": False,
+    })
+    check("same-agent handoff added a pane", p2._active_ws.pane_count, before + 1)
+    check("new pane runs the fork/resume command",
+          p2._active_ws.panes[-1].startup_command,
+          "claude --fork-session --resume deadbeef-0000")
+
+
+@step
+def _():
+    p2 = state["panel2"]
+    tmp = state["handoff_tmp"]
+    before = p2._active_ws.pane_count
+    # Cross-agent -> transcript file + initial-prompt-arg command.
+    p2._do_handoff(p2._active_ws.panes[0], {
+        "source_key": "claude", "source_dir": tmp,
+        "target_key": "codex", "target_command": "codex",
+        "fork": False, "include_thinking": False, "any_cwd": False,
+    })
+    check("cross-agent handoff added a pane", p2._active_ws.pane_count, before + 1)
+    check("new pane starts codex on the handoff file",
+          p2._active_ws.panes[-1].startup_command.startswith('codex "Read .agentdeck/handoff-'),
+          True)
+    check("handoff doc was written",
+          os.path.exists(os.path.join(tmp, ".agentdeck", "handoff-1.md")), True)
+
+
+@step
+def _():
+    import agent_sessions
+    p2 = state["panel2"]
+    agent_sessions.locate_latest = state["_real_locate"]
+    agent_sessions.transcript_markdown = state["_real_md"]
     p2._voice_engine.shutdown()
     for ws in p2._workspaces:
         ws.shutdown()

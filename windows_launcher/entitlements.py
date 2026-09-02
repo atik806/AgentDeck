@@ -43,6 +43,7 @@ __all__ = [
     "per_workspace_config_enabled",
     "plugins_enabled",
     "github_automation_enabled",
+    "handoff_enabled",
     "upgrade_hint",
 ]
 
@@ -219,6 +220,16 @@ def github_automation_enabled(plan: str | None) -> bool:
 
     Same gate as :func:`plugins_enabled` today; kept separate so a future tier
     could split "connect" from "let the agent write".
+    """
+    return is_pro(plan)
+
+
+def handoff_enabled(plan: str | None) -> bool:
+    """Handing a running agent's conversation to a new pane / another agent.
+
+    Pro only -- mirrors :func:`plugins_enabled` / :func:`github_automation_enabled`.
+    The pane's handoff button stays visible for Free (discoverability); the click
+    is gated with the standard :func:`upgrade_hint`.
     """
     return is_pro(plan)
 

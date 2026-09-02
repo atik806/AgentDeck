@@ -498,6 +498,56 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     Manual verify still pending: launch opencode, confirm 3 MCPs + a live Vercel
     OAuth handshake in the pane.
 
+23. **Conversation handoff (2026-09-02)** — a pane's header now carries a `⤳`
+    button (before `⤢`): hand this pane's agent conversation to a new pane in the
+    same workspace, running whichever agent you pick.
+    - `agent_sessions.py` (new, Qt-free) — one `SessionAdapter` per agent in a
+      registry; `adapter_for()` never returns `None` (unknown → `_GenericAdapter`,
+      all-`None`). Full impls: **claude** (`~/.claude/projects/<slug>/<uuid>.jsonl`,
+      slug = `re.sub(r"[^a-zA-Z0-9]","-",path)` — verified), **codex**
+      (`~/.codex/sessions/**/rollout-*.jsonl`), **opencode** (SQLite
+      `opencode.db` — reads the **legacy `message`+`part` tables** this machine
+      uses, then `session_message`, then `opencode export` subprocess). Best-effort:
+      aider (history file is already Markdown), goose. Resume-only stubs:
+      gemini/qwen/cursor-agent. `ADK_AGENT_HOME_DIR` env override redirects every
+      agent's state dir for tests (mirrors `ADK_MCP_CONFIG_DIR`).
+      API: `locate_latest` / `resume_command(…, fork=)` / `transcript_markdown(…,
+      include_thinking=, max_chars=)` (head+tail truncation w/ omission marker) /
+      `initial_prompt_command` / `supports_resume`.
+    - **Same-agent** → native resume command in the new pane
+      (`claude --fork-session --resume <id>`, `opencode --session <id> --fork`,
+      `codex resume <id>`, `goose session --resume --name <n>`). **Cross-agent** →
+      `agent_sessions.transcript_markdown` → `github_mcp.write_handoff_doc(folder,
+      md)` writes `.agentdeck/handoff-<n>.md` (reuses `AGENTDECK_DIR` +
+      `_git_exclude`), target launched with the prompt as a CLI arg
+      (claude/codex/gemini/qwen) or — for agents with no prompt arg — bare + the
+      instruction `insert_text`'d in **without Enter** 2.5 s later.
+    - `handoff_dialog.py` (new) — `HandoffDialog` (blue accent, model on
+      `new_workspace_dialog`): source-agent combo (+ Plain shell), editable source
+      folder, target-agent combo + `InstallHint`, live mode note (Resumes… ↔
+      Exports…), Fork / Include-thinking / any-cwd checkboxes.
+    - `workspace.py`: `TerminalPane.handoff_requested` signal + `_handoff_btn`
+      (`#paneHandoff`, shares the `_refresh_style` button QSS), `startup_command` /
+      `source_dir` / `detect_agent_key()` props; `Workspace.pane_handoff_requested`
+      + `add_pane_with_command(cmd)` (new — `add_pane` stays plain-shell for
+      Ctrl+Shift+T; respects `max_panes`).
+    - `terminal_panel.py`: `_start_handoff` (Pro gate → dialog) / `_do_handoff`
+      (locate → build command → `add_pane_with_command`; pre-trust + plugin
+      re-wire first, like `_add_workspace`). `entitlements.handoff_enabled` (Pro,
+      mirrors `plugins_enabled`). `config.py`: `handoff_fork_session` (True),
+      `handoff_include_thinking` (False), `handoff_max_transcript_chars` (200k,
+      range 10k–5M).
+    - **cwd limitation:** no OSC-7 tracking, so `source_dir` stays the folder the
+      pane opened in even after `cd`; the dialog's editable folder field + the
+      any-cwd checkbox are the workarounds.
+    - Tests: `test_agent_sessions.py` (new, 53), `test_handoff_dialog.py` (new,
+      17), `test_entitlements.py` [+1], `test_github_mcp.py` [+4],
+      `test_panel.py` §30 (Pro gate + resume/transcript pane spawn). Same lone
+      pre-existing offscreen "drop focus" flake in `test_panel.py`.
+      Manual smoke still pending (needs sign-in): claude→claude fork,
+      claude→codex transcript, opencode→opencode fork, plain-shell source,
+      Free-plan upsell.
+
 ## Running / testing
 
 ```cmd
@@ -517,6 +567,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
 .venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
 .venv\Scripts\python.exe test_settings_dialog.py       # Settings dialog + Updates section; offline
+.venv\Scripts\python.exe test_agent_sessions.py        # conversation-handoff session readers; offline
+.venv\Scripts\python.exe test_handoff_dialog.py        # handoff target/mode dialog; offline
 ```
 
 - `test_panel.py` is a **scripted integration test** (no pytest): steps are

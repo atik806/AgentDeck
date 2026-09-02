@@ -89,6 +89,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # False to scope wiring to the active workspace's agent only.
     "plugins_wire_all_agents": True,
 
+    # --- Conversation handoff (Pro; the handoff button on a pane header) ---
+    # Pass `--fork-session` / `--fork` on a same-agent resume so the source
+    # pane's session is left untouched. The handoff dialog can override per use.
+    "handoff_fork_session": True,
+    # Include the agent's own thinking/reasoning blocks in a cross-agent
+    # transcript. Off by default -- it bloats the handoff and is rarely useful
+    # to the receiving agent.
+    "handoff_include_thinking": False,
+    # Character budget for a cross-agent transcript before it is trimmed to a
+    # head + the most-recent tail.
+    "handoff_max_transcript_chars": 200_000,
+
     # --- Appearance ---
     "theme": "system",
     "window_width": 1400,
@@ -160,6 +172,9 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "show_splash": bool,
     "pretrust_agent_folder": bool,
     "plugins_wire_all_agents": bool,
+    "handoff_fork_session": bool,
+    "handoff_include_thinking": bool,
+    "handoff_max_transcript_chars": int,
     "theme": str,
     "window_width": int,
     "window_height": int,
@@ -187,6 +202,7 @@ CONFIG_RANGES: Dict[str, tuple] = {
     "default_count": (1, 16),
     "font_size": (6, 48),
     "scrollback": (0, 200_000),
+    "handoff_max_transcript_chars": (10_000, 5_000_000),
     "window_width": (480, 20_000),
     "window_height": (320, 20_000),
 }

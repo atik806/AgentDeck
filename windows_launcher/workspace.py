@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import agents
 import theme
 from terminal_view import TerminalView
 
@@ -68,6 +69,8 @@ def grid_dims(count: int) -> tuple[int, int]:
 #: Segoe UI, the Windows UI font, so neither falls back to a tofu box.
 _EXPAND_GLYPH = "⤢"
 _RESTORE_GLYPH = "⤡"
+#: Pane header "hand this conversation to another agent" button.
+_HANDOFF_GLYPH = "⤳"
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +91,10 @@ class TerminalPane(QFrame):
 
     #: The user ran a line in this pane (bare Enter). Carries the pane.
     submitted = Signal(object)
+
+    #: The user asked to hand this pane's agent conversation to another agent.
+    #: Carries the pane.
+    handoff_requested = Signal(object)
 
     def __init__(
         self,
@@ -144,6 +151,17 @@ class TerminalPane(QFrame):
         self._title.setObjectName("paneTitle")
         self._title.setTextInteractionFlags(Qt.NoTextInteraction)
 
+        self._handoff_btn = QPushButton(_HANDOFF_GLYPH, self._header)
+        self._handoff_btn.setObjectName("paneHandoff")
+        self._handoff_btn.setCursor(Qt.PointingHandCursor)
+        self._handoff_btn.setFixedSize(26, 22)
+        self._handoff_btn.setToolTip(
+            "Hand this agent's conversation to another agent"
+        )
+        self._handoff_btn.clicked.connect(
+            lambda: self.handoff_requested.emit(self)
+        )
+
         self._restart_btn = QPushButton("↻", self._header)
         self._restart_btn.setObjectName("paneRestart")
         self._restart_btn.setCursor(Qt.PointingHandCursor)
@@ -167,6 +185,7 @@ class TerminalPane(QFrame):
 
         header_layout.addWidget(self._badge)
         header_layout.addWidget(self._title, 1)
+        header_layout.addWidget(self._handoff_btn)
         header_layout.addWidget(self._expand_btn)
         header_layout.addWidget(self._restart_btn)
         header_layout.addWidget(close_btn)
@@ -278,6 +297,32 @@ class TerminalPane(QFrame):
     def is_alive(self) -> bool:
         return self.view.is_alive()
 
+    @property
+    def startup_command(self) -> str:
+        """The agent command this pane was launched with ("" for a plain shell)."""
+        return self._startup_command or ""
+
+    @property
+    def source_dir(self) -> Optional[str]:
+        """The folder this pane's shell started in.
+
+        Note: there is no live cwd tracking (no OSC 7), so this stays the folder
+        the pane opened in even if the user has ``cd``'d elsewhere.
+        """
+        return self._cwd
+
+    def detect_agent_key(self) -> str:
+        """Best guess at which coding agent is running here.
+
+        The startup command is the reliable signal; failing that, the shell
+        title (shells set it to the running program). ``""`` when it looks like
+        a plain shell.
+        """
+        key = agents.agent_key_for_command(self._startup_command or "")
+        if key:
+            return key
+        return agents.agent_key_for_command(self._title.text() or "")
+
     def is_busy(self) -> bool:
         """True while this pane's shell is actively producing output."""
         return self.view.is_busy()
@@ -339,7 +384,7 @@ class TerminalPane(QFrame):
                 font-weight: {"bold" if self._active else "normal"};
             }}
             QPushButton#paneClose, QPushButton#paneRestart,
-            QPushButton#paneExpand {{
+            QPushButton#paneExpand, QPushButton#paneHandoff {{
                 color: {t('text')};
                 background: {t('surface')};
                 border: 1px solid {t('border')};
@@ -355,6 +400,7 @@ class TerminalPane(QFrame):
             QPushButton#paneClose:hover {{ color: {on_accent}; background: {t('danger_hover')}; }}
             QPushButton#paneRestart:hover {{ color: {on_accent}; background: {accent}; }}
             QPushButton#paneExpand:hover {{ color: {on_accent}; background: {accent}; }}
+            QPushButton#paneHandoff:hover {{ color: {on_accent}; background: {accent}; }}
             """
         )
 
@@ -390,6 +436,9 @@ class Workspace(QWidget):
 
     #: The user ran a line in one of this workspace's panes. Carries the pane.
     pane_submitted = Signal(object)
+
+    #: The user asked to hand a pane's agent conversation off. Carries the pane.
+    pane_handoff_requested = Signal(object)
 
     def __init__(
         self,
@@ -468,19 +517,24 @@ class Workspace(QWidget):
     def is_zoomed(self) -> bool:
         return self._zoomed is not None
 
-    def _spawn_pane(self, *, with_startup: bool = False) -> TerminalPane:
+    def _spawn_pane(
+        self, *, with_startup: bool = False, startup_command: Optional[str] = None
+    ) -> TerminalPane:
+        if startup_command is None and with_startup:
+            startup_command = self._startup_command
         pane = TerminalPane(
             index=len(self._panes),
             shell=self._shell,
             font_size=self._font_size,
             scrollback=self._scrollback,
             cwd=self._cwd,
-            startup_command=self._startup_command if with_startup else None,
+            startup_command=startup_command,
         )
         pane.close_requested.connect(self.close_pane)
         pane.expand_requested.connect(self.toggle_zoom)
         pane.activated.connect(self.set_active)
         pane.submitted.connect(self.pane_submitted)
+        pane.handoff_requested.connect(self.pane_handoff_requested)
         self._panes.append(pane)
         return pane
 
@@ -498,6 +552,32 @@ class Workspace(QWidget):
         pane = self._spawn_pane()
         # A new pane the user cannot see is not much use, so adding one leaves
         # the expanded view.
+        self._zoomed = None
+        self._relayout()
+        if focus:
+            pane.focus_terminal()
+        return pane
+
+    def add_pane_with_command(
+        self, startup_command: str, *, focus: bool = True
+    ) -> Optional[TerminalPane]:
+        """Add a pane that auto-runs ``startup_command`` once its shell is up.
+
+        Used by the conversation handoff: the new pane runs the target agent's
+        resume command (or the target agent pointed at a transcript file).
+        Respects the plan's pane cap exactly like :meth:`add_pane`.
+        """
+        if len(self._panes) >= self._max_panes:
+            if self._max_panes < MAX_PANES:
+                self.notice.emit(
+                    f"Free plan: {self._max_panes} panes per workspace — "
+                    f"upgrade to Pro for up to {MAX_PANES}"
+                )
+            else:
+                self.notice.emit(f"Pane limit reached ({MAX_PANES})")
+            return None
+
+        pane = self._spawn_pane(startup_command=startup_command)
         self._zoomed = None
         self._relayout()
         if focus:

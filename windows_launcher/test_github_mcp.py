@@ -184,6 +184,23 @@ with tempfile.TemporaryDirectory() as d:
     check("points at the brief path", ".agentdeck/review-7.md" in cmd)
 
 
+# ---------------------------------------------------------------------------
+print("[7b] write_handoff_doc")
+with tempfile.TemporaryDirectory() as d:
+    p1 = github_mcp.write_handoff_doc(d, "# hi\n")
+    check("first doc is handoff-1.md under .agentdeck/",
+          p1.name == "handoff-1.md" and p1.parent.name == ".agentdeck")
+    check("content written", p1.read_text(encoding="utf-8") == "# hi\n")
+    p2 = github_mcp.write_handoff_doc(d, "# again\n")
+    check("second doc bumps to handoff-2.md", p2.name == "handoff-2.md")
+
+    repo = Path(d) / "repo"
+    (repo / ".git" / "info").mkdir(parents=True)
+    github_mcp.write_handoff_doc(repo, "# x\n")
+    excl = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    check("git-excluded the scratch dir", ".agentdeck/" in excl.split())
+
+
 
 # ---------------------------------------------------------------------------
 print("[8] multi-agent fan-out -- one connection, every installed agent's format")
