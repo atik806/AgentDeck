@@ -475,6 +475,29 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     active + inactive panes. `test_theme.py` (25) / `test_plugins_panel.py` (68)
     green; no test asserted the old width.
 
+22. **Vercel / Jira MCPs on opencode — plugin OAuth allowlist Phase 3
+    (2026-09-02)** — symptom: opencode's `/mcp` panel showed only `github`
+    ("1 MCP") even with Vercel + Jira connected, because those two tokenless
+    OAuth plugins were gated to `mcp_targets.OAUTH_ALLOWLIST = {"claude"}`
+    (`docs/PLUGINS.md §14` Phase 2). Fix is one data change:
+    `OAUTH_ALLOWLIST = {"claude", "opencode"}`. opencode's native remote-MCP
+    support does auto-DCR/PKCE OAuth and opens the browser on first tool use, so
+    `vercel_mcp.inject` / `jira_mcp.inject` now write
+    `~/.config/opencode/opencode.json` (`mcp` map, `{"type":"remote","url":…,
+    "enabled":true,"x-agentdeck-managed":true}`, no token). `caps()` /
+    `supports_agent` / the Plugins detail "Enabled for:" line and per-agent OAuth
+    hints all key off the allowlist, so they update for free. Already-connected
+    plugins re-wire on the controller's next `__init__` (app relaunch) via
+    `ensure_wired` (`plugins_wire_all_agents` default True → every installed
+    agent); also a new **Re-sync to agents** button on each of `_VercelDetail` /
+    `_JiraDetail` calls `controller.ensure_wired()` live. Still Claude-only for
+    `codex` / `gemini` / `qwen` / … until each in-pane OAuth command is verified.
+    Tests: `test_mcp_targets.py` [1]/[3], `test_vercel_mcp.py` [1]/[7],
+    `test_jira_mcp.py` [1]/[7], `test_vercel_controller.py` [4],
+    `test_jira_controller.py` [4], `test_plugins_panel.py` [5]/[6] extended.
+    Manual verify still pending: launch opencode, confirm 3 MCPs + a live Vercel
+    OAuth handshake in the pane.
+
 ## Running / testing
 
 ```cmd

@@ -133,6 +133,14 @@ with tempfile.TemporaryDirectory() as tmp:
     jc._config = {"agent": "claude", "plugins_wire_all_agents": False}
     check("ensure_wired writes for claude", jc.ensure_wired() and _atlassian_srv() is not None)
 
+    # phase 3: opencode runs the MCP OAuth handshake itself -> it is a target now
+    _reset_sandbox()
+    jc._config = {"agent": "opencode", "plugins_wire_all_agents": False}
+    check("ensure_wired writes for opencode", jc.ensure_wired())
+    _oc = Path(_SANDBOX) / "opencode.json"
+    check("opencode config got the tokenless 'atlassian' server",
+          _oc.exists() and (json.loads(_oc.read_text()).get("mcp") or {}).get("atlassian") is not None)
+
 
 print()
 print(f"{_passed} passed, {_failed} failed")

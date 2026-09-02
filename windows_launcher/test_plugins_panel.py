@@ -255,6 +255,10 @@ class FakeVercel(QObject):
         self._connected = True
         self.connected.emit({})
 
+    def ensure_wired(self, *a, **k):
+        self.rewired = True
+        return True
+
     def disconnect(self):
         self._connected = False
         self.disconnected.emit()
@@ -286,6 +290,9 @@ vd.refresh()
 check("detail hides Connect when connected", vd._primary.isHidden())
 check("info box (/mcp instructions) shown when connected", not vd._info.isHidden())
 check("disconnect button shown", not vd._disconnect_btn.isHidden())
+check("re-sync button shown when connected", not vd._resync_btn.isHidden())
+vd._on_resync()
+check("re-sync button calls ensure_wired on the controller", getattr(fv, "rewired", False))
 
 # -- agent-aware authorise copy (per-agent, not hard-coded to Claude)
 import mcp_targets as _mt
@@ -360,6 +367,10 @@ class FakeJira(QObject):
         self._connected = True
         self.connected.emit({})
 
+    def ensure_wired(self, *a, **k):
+        self.rewired = True
+        return True
+
     def disconnect(self):
         self._connected = False
         self.disconnected.emit()
@@ -391,6 +402,9 @@ jd.refresh()
 check("detail hides Connect when connected", jd._primary.isHidden())
 check("info box (/mcp instructions) shown when connected", not jd._info.isHidden())
 check("disconnect button shown", not jd._disconnect_btn.isHidden())
+check("re-sync button shown when connected", not jd._resync_btn.isHidden())
+jd._on_resync()
+check("re-sync button calls ensure_wired on the controller", getattr(fj, "rewired", False))
 
 # -- search filter
 jp.show_catalog()

@@ -45,6 +45,7 @@ def _root_vercel(cfg):
 print("[1] supports_agent -- tokenless OAuth server: only OAUTH_ALLOWLIST agents")
 check("claude supported", vercel_mcp.supports_agent("claude"))
 check("claude with args supported", vercel_mcp.supports_agent("claude --dangerously-skip-permissions"))
+check("opencode supported (phase 3)", vercel_mcp.supports_agent("opencode"))
 check("codex not yet supported (phased OAuth rollout)", not vercel_mcp.supports_agent("codex"))
 check("gemini not yet supported", not vercel_mcp.supports_agent("gemini"))
 check("aider not supported", not vercel_mcp.supports_agent("aider"))
@@ -141,6 +142,23 @@ with tempfile.TemporaryDirectory() as d:
     check("root vercel removed", "vercel" not in cfg["mcpServers"])
     check("stale project-scope vercel also removed",
           "vercel" not in (cfg["projects"]["E:\\old"].get("mcpServers") or {}))
+
+
+# ---------------------------------------------------------------------------
+_reset_ledger()
+print("[7] opencode -- tokenless remote server in ~/.config/opencode/opencode.json")
+_oc = Path(_SANDBOX) / "opencode.json"      # ADK_MCP_CONFIG_DIR redirects here
+_oc.unlink(missing_ok=True)
+check("inject writes opencode's config", vercel_mcp.inject(agent_keys=["opencode"]))
+_ocfg = _read(_oc)
+srv = (_ocfg.get("mcp") or {}).get("vercel")
+check("server under the 'mcp' key (opencode's map)", srv is not None)
+check("type remote + enabled + tokenless", srv["type"] == "remote"
+      and srv["enabled"] is True and "headers" not in srv
+      and srv["url"] == "https://mcp.vercel.com")
+check("re-inject is a no-op", not vercel_mcp.inject(agent_keys=["opencode"]))
+check("remove reports a change", vercel_mcp.remove(agent_keys=["opencode"]))
+check("server gone", (_read(_oc).get("mcp") or {}).get("vercel") is None)
 
 
 print()

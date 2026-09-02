@@ -99,9 +99,12 @@ class McpTarget:
 
 
 # Vercel / Jira are tokenless -- the agent runs the OAuth handshake itself. Until
-# each agent's in-pane flow is verified, only Claude gets those two. Phase 3 of
-# docs/PLUGINS.md §14 widens this set one agent at a time.
-OAUTH_ALLOWLIST = {"claude"}
+# each agent's in-pane flow is verified, only these agents get those two. Phase 3
+# of docs/PLUGINS.md §14 widens this set one agent at a time:
+#   * claude   -- `/mcp` in the pane, browser authorise (verified)
+#   * opencode -- native remote-MCP auto-DCR OAuth, opens the browser on first
+#                 tool use (verified 2026-09-02)
+OAUTH_ALLOWLIST = {"claude", "opencode"}
 
 
 _TARGETS: Dict[str, McpTarget] = {

@@ -680,6 +680,15 @@ class _VercelDetail(QWidget):
         root.addWidget(self._info)
 
         drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the Vercel MCP server into every OAuth-capable agent installed "
+            "now (run this after installing a new agent)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
         drow.addStretch(1)
         self._disconnect_btn = QPushButton("Disconnect")
         self._disconnect_btn.setObjectName("danger")
@@ -716,6 +725,7 @@ class _VercelDetail(QWidget):
 
         self._info.setVisible(connected)
         self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
 
         if connected:
             self._step.setText(_oauth_auth_html(self._agents_provider, "vercel"))
@@ -736,6 +746,15 @@ class _VercelDetail(QWidget):
     def _on_disconnect(self) -> None:
         if self._vercel is not None:
             self._vercel.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._vercel is None:
+            return
+        try:
+            self._vercel.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
 
     def _on_error(self, message: str) -> None:
         self._sub.setText(message)
@@ -813,6 +832,15 @@ class _JiraDetail(QWidget):
         root.addWidget(self._info)
 
         drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the Atlassian MCP server into every OAuth-capable agent "
+            "installed now (run this after installing a new agent)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
         drow.addStretch(1)
         self._disconnect_btn = QPushButton("Disconnect")
         self._disconnect_btn.setObjectName("danger")
@@ -849,6 +877,7 @@ class _JiraDetail(QWidget):
 
         self._info.setVisible(connected)
         self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
 
         if connected:
             self._step.setText(_oauth_auth_html(self._agents_provider, "atlassian"))
@@ -869,6 +898,15 @@ class _JiraDetail(QWidget):
     def _on_disconnect(self) -> None:
         if self._jira is not None:
             self._jira.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._jira is None:
+            return
+        try:
+            self._jira.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
 
     def _on_error(self, message: str) -> None:
         self._sub.setText(message)

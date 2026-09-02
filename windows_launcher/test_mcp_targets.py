@@ -43,8 +43,10 @@ check("caps(aider) all-False", mcp_targets.caps("aider") ==
 check("caps(unknown) all-False", not mcp_targets.caps("nope")["mcp"])
 check("every agent can bear a remote token (GitHub)",
       all(mcp_targets.caps(k)["mcp_remote_headers"] for k in keys))
-check("only claude is OAuth-capable right now (phased rollout)",
-      [k for k in keys if mcp_targets.caps(k)["mcp_oauth"]] == ["claude"])
+check("OAuth-capable set is claude + opencode (phased rollout)",
+      [k for k in keys if mcp_targets.caps(k)["mcp_oauth"]] == ["claude", "opencode"])
+check("a non-allowlisted agent stays OAuth-incapable", not mcp_targets.caps("codex")["mcp_oauth"]
+      and not mcp_targets.caps("gemini")["mcp_oauth"])
 check("codex format toml, goose yaml", mcp_targets.caps("codex")["format"] == "toml"
       and mcp_targets.caps("goose")["format"] == "yaml")
 
@@ -92,6 +94,11 @@ check("antigravity: serverUrl", r("antigravity")["serverUrl"] == GH["url"])
 check("qwen: httpUrl (gemini fork)", "httpUrl" in r("qwen"))
 check("opencode: type remote + enabled", r("opencode")["type"] == "remote"
       and r("opencode")["enabled"] is True)
+_oc_oauth = r("opencode", OAUTH)
+check("opencode: tokenless OAuth entry -- url + remote + enabled, no headers/bearer",
+      _oc_oauth["url"] == OAUTH["url"] and _oc_oauth["type"] == "remote"
+      and _oc_oauth["enabled"] is True and "headers" not in _oc_oauth
+      and "bearer_token" not in _oc_oauth and _oc_oauth["x-agentdeck-managed"] is True)
 check("crush: type http", r("crush")["type"] == "http")
 check("copilot: type http + tools ['*']", r("copilot")["tools"] == ["*"])
 codex = r("codex")

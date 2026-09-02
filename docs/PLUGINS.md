@@ -569,7 +569,9 @@ into each agent's own shape:
 * **GitHub** injects a bearer token, so it wires **every** agent with
   `mcp_remote_headers` (all 11 — Codex via `bearer_token`).
 * **Vercel / Jira** are tokenless; the agent runs the MCP OAuth handshake itself.
-  They wire only agents in `mcp_targets.OAUTH_ALLOWLIST` — **`{"claude"}` today**.
+  They wire only agents in `mcp_targets.OAUTH_ALLOWLIST` —
+  **`{"claude", "opencode"}` today** (opencode added 2026-09-02: its remote-MCP
+  support does auto-DCR OAuth and opens the browser on first tool use).
   Phase 3 widens this set one agent at a time as each in-pane OAuth command is
   verified. `oauth_hint(agent, server)` supplies the per-agent instruction
   (`/mcp` for Claude, `codex mcp login <server>` for Codex, `/mcp auth` for
@@ -617,10 +619,18 @@ suites redirect config + ledger via `ADK_MCP_CONFIG_DIR` / `ADK_MCP_STATE`.
 
 ### Phasing
 
-* **Phase 0–2 (this change)** — `mcp_io` + `mcp_targets` + adapter refactor;
-  **GitHub on all 11 agents**; Vercel/Jira stay Claude-only via `OAUTH_ALLOWLIST`.
+* **Phase 0–2 (2026-09-01)** — `mcp_io` + `mcp_targets` + adapter refactor;
+  **GitHub on all 11 agents**; Vercel/Jira stayed Claude-only via `OAUTH_ALLOWLIST`.
 * **Phase 3** — verify each agent's in-pane OAuth command, add it to
   `OAUTH_ALLOWLIST` one at a time.
+  * **opencode (2026-09-02)** — `OAUTH_ALLOWLIST = {"claude", "opencode"}`. Vercel
+    + Jira now wire `~/.config/opencode/opencode.json` (`mcp` map, `type:"remote"`,
+    `enabled:true`, tokenless); opencode runs the DCR/PKCE flow itself on first
+    tool use. Detail pages gained a **Re-sync to agents** button
+    (`_VercelDetail._on_resync` / `_JiraDetail._on_resync` → `controller.ensure_wired()`)
+    so a plugin connected before a new agent was installed can be pushed to it
+    without an app restart. Still Claude-only for `codex` / `gemini` / `qwen` /
+    the rest until their in-pane command is verified.
 * **Phase 4** — optional Settings toggle for `plugins_wire_all_agents`.
 
 ### Known risks

@@ -45,6 +45,7 @@ def _root_atlassian(cfg):
 print("[1] supports_agent -- tokenless OAuth server: only OAUTH_ALLOWLIST agents")
 check("claude supported", jira_mcp.supports_agent("claude"))
 check("claude with args supported", jira_mcp.supports_agent("claude --dangerously-skip-permissions"))
+check("opencode supported (phase 3)", jira_mcp.supports_agent("opencode"))
 check("codex not yet supported (phased OAuth rollout)", not jira_mcp.supports_agent("codex"))
 check("aider not supported", not jira_mcp.supports_agent("aider"))
 check("plain shell not supported", not jira_mcp.supports_agent(""))
@@ -142,6 +143,23 @@ with tempfile.TemporaryDirectory() as d:
     check("root atlassian removed", "atlassian" not in cfg["mcpServers"])
     check("stale project-scope atlassian also removed",
           "atlassian" not in (cfg["projects"]["E:\\old"].get("mcpServers") or {}))
+
+
+# ---------------------------------------------------------------------------
+_reset_ledger()
+print("[7] opencode -- tokenless 'atlassian' server in opencode.json")
+_oc = Path(_SANDBOX) / "opencode.json"      # ADK_MCP_CONFIG_DIR redirects here
+_oc.unlink(missing_ok=True)
+check("inject writes opencode's config", jira_mcp.inject(agent_keys=["opencode"]))
+_ocfg = _read(_oc)
+srv = (_ocfg.get("mcp") or {}).get("atlassian")
+check("server under the 'mcp' key as 'atlassian'", srv is not None)
+check("type remote + enabled + tokenless", srv["type"] == "remote"
+      and srv["enabled"] is True and "headers" not in srv
+      and srv["url"] == "https://mcp.atlassian.com/v1/mcp/authv2")
+check("re-inject is a no-op", not jira_mcp.inject(agent_keys=["opencode"]))
+check("remove reports a change", jira_mcp.remove(agent_keys=["opencode"]))
+check("server gone", (_read(_oc).get("mcp") or {}).get("atlassian") is None)
 
 
 print()

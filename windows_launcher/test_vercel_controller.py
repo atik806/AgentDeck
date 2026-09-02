@@ -133,6 +133,14 @@ with tempfile.TemporaryDirectory() as tmp:
     vc._config = {"agent": "claude", "plugins_wire_all_agents": False}
     check("ensure_wired writes for claude", vc.ensure_wired() and _vercel_srv() is not None)
 
+    # phase 3: opencode runs the MCP OAuth handshake itself -> it is a target now
+    _reset_sandbox()
+    vc._config = {"agent": "opencode", "plugins_wire_all_agents": False}
+    check("ensure_wired writes for opencode", vc.ensure_wired())
+    _oc = Path(_SANDBOX) / "opencode.json"
+    check("opencode config got the tokenless server",
+          _oc.exists() and (json.loads(_oc.read_text()).get("mcp") or {}).get("vercel") is not None)
+
 
 print()
 print(f"{_passed} passed, {_failed} failed")
