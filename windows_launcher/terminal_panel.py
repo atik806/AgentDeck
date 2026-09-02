@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 import entitlements
+import perf
 import theme
 from account import AccountController
 from github_controller import GitHubController
@@ -202,6 +203,10 @@ class TerminalPanel(QMainWindow):
         self._wire_updater()
         self._wire_account()
 
+        # Perf HUD -- off by default, toggled with Ctrl+Shift+P. Parented to
+        # the window so it floats over every pane; near-free while hidden.
+        self._perf_hud = perf.PerfHUD(self)
+
         self._add_workspace(
             pane_count=self._default_count,
             startup_command=self._startup_command or None,
@@ -231,6 +236,20 @@ class TerminalPanel(QMainWindow):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._position_overlay()
+        hud = getattr(self, "_perf_hud", None)
+        if hud is not None and hud.is_active():
+            hud.reposition()
+
+    def _toggle_perf_hud(self) -> None:
+        """Ctrl+Shift+P -- show/hide the performance HUD (frame/parse/backlog)."""
+        hud = getattr(self, "_perf_hud", None)
+        if hud is None:
+            return
+        active = not hud.is_active()
+        hud.set_active(active)
+        self.statusBar().showMessage(
+            "Perf HUD on" if active else "Perf HUD off", 2000
+        )
 
     def event(self, event) -> bool:
         if event.type() == QEvent.WindowActivate and not self._focus_primed:
@@ -582,6 +601,7 @@ class TerminalPanel(QMainWindow):
 
         add("Ctrl+Shift+N", lambda: self._new_workspace_interactive())
         add("Ctrl+Shift+X", self._toggle_voice)
+        add("Ctrl+Shift+P", self._toggle_perf_hud)
         add("Ctrl+B", lambda: self._toggle_sidebar())
         add("Ctrl+Shift+PgDown", lambda: self._cycle_workspace(1))
         add("Ctrl+Shift+PgUp", lambda: self._cycle_workspace(-1))

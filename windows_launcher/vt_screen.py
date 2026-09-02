@@ -386,8 +386,23 @@ class TerminalScreen(pyte.Screen):
         line = self.buffer.get(index - history)
         if line is None:
             return
-        for x in sorted(line.keys()):
-            yield x, line[x]
+        # Snapshot the row before yielding: this is a generator the paint loop
+        # drains lazily, so a mutation of ``line`` between two yields would raise
+        # "dictionary changed size during iteration". Feed and paint are both on
+        # the GUI thread today, but the copy is cheap and removes the footgun.
+        #
+        # ``buffer`` lines are insertion-ordered dicts drawn left to right, so
+        # the snapshot is already column-ordered in the common case -- only a
+        # line a program has back-filled out of order pays for the sort (this
+        # runs per visible row per frame per pane).
+        cells = list(line.items())
+        prev = -1
+        for col, _char in cells:
+            if col < prev:
+                cells.sort(key=lambda kv: kv[0])
+                break
+            prev = col
+        yield from cells
 
     def total_rows(self) -> int:
         return self.history_length + self.lines
@@ -452,14 +467,23 @@ class TerminalStream(pyte.Stream):
         self._carry = ""
 
     def feed(self, data: str) -> None:
-        data = self._carry + data
-        self._carry = ""
+        if self._carry:
+            data = self._carry + data
+            self._carry = ""
 
-        tail = _PRIVATE_CSI_TAIL.search(data)
-        if tail is not None and len(data) - tail.start() <= _MAX_CARRY:
-            self._carry = data[tail.start():]
-            data = data[:tail.start()]
+        # The private-CSI fix-ups only ever fire on data containing an ESC.
+        # ``feed`` is on the hot path for a multi-megabyte file dump, where the
+        # payload is plain text -- skip both regex passes entirely for it. (A
+        # split sequence still resolves: the ESC lands in whichever chunk it
+        # falls in, and ``_carry`` bridges the two.)
+        if "\x1b" in data:
+            tail = _PRIVATE_CSI_TAIL.search(data)
+            if tail is not None and len(data) - tail.start() <= _MAX_CARRY:
+                self._carry = data[tail.start():]
+                data = data[:tail.start()]
 
-        data = _PRIVATE_CSI.sub("", data)
+            if "\x1b[" in data:
+                data = _PRIVATE_CSI.sub("", data)
+
         if data:
             super().feed(data)
