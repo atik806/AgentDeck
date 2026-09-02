@@ -431,6 +431,50 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     [2]-[4] rewritten (glow on `_settings_btn`, no `_update_btn`), `test_updater.py`
     green. `test_panel.py` unchanged (same lone offscreen "drop focus" flake).
 
+20. **Notes panel (2026-09-02)** — a second sidebar nav item, **Notes**, pinned
+    under **Plugins** in `workspace_sidebar.py`'s bottom nav strip (`notes_selected`
+    signal + `set_notes_active()`; the nav button build is now factored into a
+    local `_nav_button()` helper). It opens a full-area local notebook:
+    - `notes_store.py` (Qt-free) — `NotesStore` over one JSON file,
+      `%APPDATA%\multi-terminal\notes.json` (beside `config.json`, **not** in it
+      and **not** cloud-synced). `Note` dataclass; ordered newest-`updated`
+      first; every mutation writes the whole file back atomically (temp +
+      `os.replace`); missing / corrupt / wrong-shape files load as an empty
+      list, never raise. `derive_title()` = explicit title else first non-blank
+      body line (leading `#` stripped) else "Untitled note".
+    - `notes_panel.py` — `NotesPanel(store=, config=)`: a note list (custom
+      `_NoteRow`: title / preview / relative time) ∥ a title `QLineEdit` + body
+      `QPlainTextEdit` + a "Saved 3m ago" footer, plus New note / Delete.
+      Debounced autosave (600 ms `QTimer` → `flush()`); also flushes on row
+      switch, `hideEvent`, and `_shutdown_all`. Empty state when there are no
+      notes. `apply_theme()` re-runs its QSS. `note_icon()` = a drawn ruled page
+      (emoji renders broken here, same as `plugin_icon`).
+    - `terminal_panel.py` — `_notes_panel` added to `_main_stack` at index 2
+      (`_ws_stack` 0, `_plugins_panel` 1); `_notes_active` flag mirrors
+      `_plugins_active`. `_show_notes()` / `_leave_notes()` mirror the plugins
+      pair; the voice-overlay hide/restore is now shared via
+      `_hide_voice_overlay()` / `_restore_voice_overlay()`. `_show_plugins` and
+      `_show_notes` each clear the other; `_select_workspace` leaves both;
+      `_refresh_sidebar` passes `active=None` and sets both nav buttons when
+      either view is up. `_on_theme_changed` calls `_notes_panel.apply_theme()`.
+    Tests: `test_notes_store.py` (new, offline, 26), `test_notes_panel.py` (new,
+    offline, 25 — note: assert with `isHidden()`, not `isVisible()`, on an
+    unshown panel). `test_plugins_panel.py` / `test_theme.py` / `test_navbar.py`
+    still green.
+
+21. **Pane header buttons visibility fix (2026-09-02)** — the `⤢ ↻ ✕`
+    (expand / restart / close) controls in `TerminalPane`'s header strip were
+    near-invisible: bare `pane_title` (muted `#a6adc8`) glyphs on `transparent`,
+    no border, 11px, on the active pane's navy `pane_header_bg_active` header
+    (on a single-pane workspace that header spans the window, so they read like
+    faint title-bar buttons). `workspace.py` `_refresh_style`: the three buttons
+    now use the brighter `text` token on a `surface` fill with a `1px border` +
+    `border-radius: 5px` (accent fill/border when `_expand_btn` is toggled on),
+    glyph 11→13px; button size `setFixedWidth(22)` → `setFixedSize(26, 22)`.
+    Hover rules unchanged. Verified with offscreen screenshots in dark + light,
+    active + inactive panes. `test_theme.py` (25) / `test_plugins_panel.py` (68)
+    green; no test asserted the old width.
+
 ## Running / testing
 
 ```cmd
@@ -445,6 +489,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
 .venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
 .venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
+.venv\Scripts\python.exe test_notes_store.py           # notebook JSON store; offline
+.venv\Scripts\python.exe test_notes_panel.py           # notes panel + sidebar nav; offline
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
 .venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
 .venv\Scripts\python.exe test_settings_dialog.py       # Settings dialog + Updates section; offline
