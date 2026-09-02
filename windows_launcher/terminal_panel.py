@@ -808,6 +808,18 @@ class TerminalPanel(QMainWindow):
 
     # -- conversation handoff -------------------------------------------------
 
+    def _hlog(self, msg: str) -> None:
+        """Append a line to ~/.agentdeck-handoff.log -- a breadcrumb trail for
+        diagnosing a handoff that 'did nothing'."""
+        try:
+            from datetime import datetime as _dt
+
+            line = f"{_dt.now().isoformat(timespec='seconds')}  {msg}\n"
+            (Path.home() / ".agentdeck-handoff.log").open("a", encoding="utf-8").write(line)
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"[handoff] {msg}")
+
     def _start_handoff(self, pane) -> None:
         """Pane ⤳ button: pick a target agent, then hand the conversation over."""
         if not entitlements.handoff_enabled(self._plan()):
@@ -819,6 +831,7 @@ class TerminalPanel(QMainWindow):
             )
             return
         if pane is None or self._active_ws is None or pane not in self._active_ws.panes:
+            self._hlog("start: aborted (no pane / no active workspace)")
             return
 
         try:
@@ -830,6 +843,11 @@ class TerminalPanel(QMainWindow):
             src = pane.detect_agent_key() or agents.agent_key_for_command(
                 self._startup_command or ""
             ) or (self._last_ws_agent if self._last_ws_agent not in ("none", "custom") else "")
+            after = getattr(pane, "agent_started_at", 0.0) or None
+            self._hlog(
+                f"start: detect={pane.detect_agent_key()!r} -> src={src!r} "
+                f"dir={pane.source_dir!r} started_at={after}"
+            )
 
             dlg = HandoffDialog(
                 source_key=src,
@@ -839,12 +857,15 @@ class TerminalPanel(QMainWindow):
                 parent=self,
             )
             if dlg.exec() != QDialog.Accepted:
+                self._hlog("start: dialog cancelled")
                 return
             choice = dlg.result_choice()
             if choice:
-                choice["_after"] = getattr(pane, "agent_started_at", 0.0) or None
+                choice["_after"] = after
+                self._hlog(f"start: choice={choice}")
                 self._do_handoff(pane, choice)
         except Exception as exc:  # noqa: BLE001 - surface, never vanish
+            self._hlog(f"start: EXCEPTION {exc!r}")
             self.statusBar().showMessage(f"Handoff failed: {exc}", 6000)
             import traceback
             traceback.print_exc()
@@ -863,8 +884,11 @@ class TerminalPanel(QMainWindow):
         target_key = choice.get("target_key") or ""
         base_command = choice.get("target_command") or agents.resolve_agent(target_key)
         if not base_command:
-            self.statusBar().showMessage(
-                f"{agents.agent_label(target_key)} isn't installed.", 5000
+            self._hlog(f"do: target {target_key!r} not on PATH -> abort")
+            QMessageBox.information(
+                self, "Handoff",
+                f"{agents.agent_label(target_key)} isn't installed, so there's "
+                f"nothing to hand the conversation to.",
             )
             return
 
@@ -884,6 +908,11 @@ class TerminalPanel(QMainWindow):
                 session = agent_sessions.locate_latest(
                     source_key, folder, any_cwd=True, after=after
                 )
+        self._hlog(
+            f"do: src={source_key!r} tgt={target_key!r} folder={folder!r} "
+            f"any_cwd={any_cwd} after={after} -> session="
+            + (f"{session.session_id!r} path={session.path}" if session else "None")
+        )
 
         command = base_command
         seed_prompt = ""
@@ -898,6 +927,7 @@ class TerminalPanel(QMainWindow):
 
         if resumed:
             command = resumed
+            self._hlog(f"do: resume command = {command!r}")
             self.statusBar().showMessage(f"Resuming {src_label} in a new pane.", 5000)
         elif session is not None:
             md = agent_sessions.transcript_markdown(
@@ -906,18 +936,24 @@ class TerminalPanel(QMainWindow):
                 include_thinking=bool(choice.get("include_thinking")),
                 max_chars=int(self.config.get("handoff_max_transcript_chars", 60_000)),
             )
+            self._hlog(f"do: transcript len = {len(md) if md else 'None'}")
             if md is None:
-                self.statusBar().showMessage(
-                    f"Couldn't read {src_label}'s conversation — starting "
-                    f"{tgt_label} fresh.", 6000
-                )
+                if QMessageBox.question(
+                    self, "Handoff",
+                    f"The {src_label} session I found has no conversation to hand "
+                    f"over yet.\n\nStart {tgt_label} anyway (with a clean session)?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                ) != QMessageBox.Yes:
+                    return
             else:
                 try:
                     doc = agent_sessions.write_handoff_doc(
                         folder, md, source_key=source_key, target_key=target_key
                     )
                     abs_path = str(doc)
+                    self._hlog(f"do: wrote transcript -> {abs_path}")
                 except OSError as exc:
+                    self._hlog(f"do: write_handoff_doc failed: {exc!r}")
                     self.statusBar().showMessage(f"Couldn't write the handoff: {exc}", 6000)
                     abs_path = ""
                 if abs_path:
@@ -932,13 +968,19 @@ class TerminalPanel(QMainWindow):
                         )
                         or base_command
                     )
+                    self._hlog(f"do: transcript command = {command!r}")
                     self.statusBar().showMessage(
                         f"Handed {src_label}'s conversation to {tgt_label}.", 5000
                     )
         else:
-            self.statusBar().showMessage(
-                f"No {src_label} conversation found — starting {tgt_label} fresh.", 6000
-            )
+            self._hlog("do: no session found")
+            if QMessageBox.question(
+                self, "Handoff",
+                f"I couldn't find a {src_label} conversation for\n{folder}\n\n"
+                f"Start {tgt_label} anyway (with a clean session)?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
 
         # Pre-trust + plugin-wire the target the same way _add_workspace does.
         if self.config.get("pretrust_agent_folder", False):
@@ -950,8 +992,10 @@ class TerminalPanel(QMainWindow):
         self._wire_vercel_for(folder, base_command)
         self._wire_jira_for(folder, base_command)
 
+        self._hlog(f"do: add_pane_with_command({command!r})")
         new_pane = ws.add_pane_with_command(command)
         if new_pane is None:
+            self._hlog("do: add_pane_with_command returned None (pane cap)")
             self._prompt_upgrade(
                 "More panes",
                 "The handoff needs a new pane, but this workspace is at its pane "
@@ -962,13 +1006,22 @@ class TerminalPanel(QMainWindow):
             return
 
         # When the target can't take the instruction as a CLI arg, type it in
-        # after it's up — without Enter, so the user reviews it first.
+        # after it's up — without Enter, so the user reviews it first. Some TUIs
+        # take several seconds to grab the terminal, so try twice.
         if seed_prompt and command == base_command:
-            QTimer.singleShot(
-                2800,
-                lambda p=new_pane, t=seed_prompt: p.view.insert_text(t + " ")
-                if p in ws.panes else None,
-            )
+            done = []
+
+            def _seed(p=new_pane, t=seed_prompt):
+                if done or p not in ws.panes:
+                    return
+                # Only once the pane has produced output (the TUI has painted).
+                if getattr(p.view, "_last_output_at", 0.0):
+                    p.view.insert_text(t + " ")
+                    done.append(True)
+
+            QTimer.singleShot(3500, _seed)
+            QTimer.singleShot(7000, _seed)
+            QTimer.singleShot(12000, _seed)
             self.statusBar().showMessage(
                 "Seeded the handoff prompt in the new pane — review it and press Enter.",
                 8000,

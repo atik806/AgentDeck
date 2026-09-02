@@ -723,6 +723,13 @@ class _OpencodeAdapter(SessionAdapter):
         cmd = f"{base} --session {session.session_id}"
         return cmd + " --fork" if fork else cmd
 
+    def initial_prompt_command(self, base_command, prompt):
+        # opencode's TUI takes an opening prompt via --prompt (its positional arg
+        # is the *project path*, not a message). Passing it as a flag is far more
+        # robust than typing into the TUI after it boots.
+        safe = prompt.replace('"', "'")
+        return f'{base_command} --prompt "{safe}"'
+
     def transcript_markdown(self, session, *, include_thinking=False,
                             max_chars=DEFAULT_MAX_CHARS):
         doc = _Doc()

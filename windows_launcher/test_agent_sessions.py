@@ -295,7 +295,9 @@ check("claude takes prompt arg",
       S.initial_prompt_command("claude", "claude", "do X") == 'claude "do X"')
 check("codex takes prompt arg",
       S.initial_prompt_command("codex", "codex", "do X") == 'codex "do X"')
-check("opencode has no prompt arg", S.initial_prompt_command("opencode", "opencode", "x") is None)
+check("opencode uses --prompt",
+      S.initial_prompt_command("opencode", "opencode", "do X") == 'opencode --prompt "do X"')
+check("amp still has no prompt arg", S.initial_prompt_command("amp", "amp", "x") is None)
 check("prompt arg escapes quotes",
       S.initial_prompt_command("claude", "claude", 'say "hi"') == "claude \"say 'hi'\"")
 
