@@ -540,13 +540,37 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     - **cwd limitation:** no OSC-7 tracking, so `source_dir` stays the folder the
       pane opened in even after `cd`; the dialog's editable folder field + the
       any-cwd checkbox are the workarounds.
-    - Tests: `test_agent_sessions.py` (new, 53), `test_handoff_dialog.py` (new,
-      17), `test_entitlements.py` [+1], `test_github_mcp.py` [+4],
-      `test_panel.py` §30 (Pro gate + resume/transcript pane spawn). Same lone
-      pre-existing offscreen "drop focus" flake in `test_panel.py`.
-      Manual smoke still pending (needs sign-in): claude→claude fork,
-      claude→codex transcript, opencode→opencode fork, plain-shell source,
-      Free-plan upsell.
+    - **Fixes 2026-09-02 (same day, after first end-to-end test):**
+      - **Wrong-conversation bug** — `locate_latest` used newest-mtime, so it
+        grabbed whatever claude session was written last (often a *different*
+        Claude Code window). Now: `TerminalView` stamps `_agent_started_at`
+        (epoch) when it types the startup command; `TerminalPane.agent_started_at`
+        → `_do_handoff` passes `after=` → `agent_sessions._pick()` filters
+        candidates to those **created** (`st_ctime`, = creation time on Windows)
+        at/after that moment, falling back to newest. Verified: picks the pane's
+        own session, not a concurrent one.
+      - **`%APPDATA%` redirection** — the cross-agent transcript was briefly
+        written under the config dir; on MS Store Python (the dev `.venv`) that
+        redirects into a per-package LocalCache the *target agent's* plain shell
+        can't read. Reverted to `<working_folder>/.agentdeck/handoff-<stamp>.md`
+        (git-excluded, pruned to 8) — `agent_sessions.write_handoff_doc(folder,
+        md, …)`, removed from `github_mcp`.
+      - **Silent failures** — `_start_handoff` now wraps the dialog/handler in
+        try/except → status-bar message + traceback instead of vanishing; the
+        source-agent default falls back through startup-command → shell title →
+        the workspace's configured agent; a not-installed target says so.
+      - **Empty transcript** — `transcript_markdown` returns `None` for a
+        bootstrap-only session (`_Doc.__bool__`), so the handoff cleanly starts
+        the target fresh instead of writing a header-only file.
+      - Transcript budget default 200k→**60k**; tool-result cap 2000→**600**.
+    - Tests: `test_agent_sessions.py` (new, 63 — incl. `after=` watermark,
+      empty→None, working-folder doc store), `test_handoff_dialog.py` (new, 17),
+      `test_entitlements.py` [+1], `test_panel.py` §30 (Pro gate + resume with
+      watermark + transcript pane spawn). Same lone pre-existing offscreen "drop
+      focus" flake in `test_panel.py`.
+      Manual smoke still pending (needs sign-in): claude→claude fork with two
+      concurrent claude windows, claude→(installed target) transcript,
+      opencode→opencode fork, plain-shell source, Free-plan upsell.
 
 ## Running / testing
 

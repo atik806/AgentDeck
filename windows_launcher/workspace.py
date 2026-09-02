@@ -303,6 +303,12 @@ class TerminalPane(QFrame):
         return self._startup_command or ""
 
     @property
+    def agent_started_at(self) -> float:
+        """Epoch seconds when this pane started its agent (0 if none / plain
+        shell). Used to match the pane to its on-disk conversation."""
+        return getattr(self.view, "agent_started_at", 0.0)
+
+    @property
     def source_dir(self) -> Optional[str]:
         """The folder this pane's shell started in.
 

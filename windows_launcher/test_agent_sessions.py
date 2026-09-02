@@ -165,6 +165,28 @@ check("opencode hit by directory (slash-normalised)",
 check("opencode any_cwd", S.locate_latest("opencode", "x", any_cwd=True) is not None)
 check("aider miss when no history file", S.locate_latest("aider", PROJ) is None)
 
+# after= watermark: only a session CREATED after the pane started counts as
+# "this pane's"; a fresh watermark still falls back to newest rather than None.
+check("claude: after= far in the future -> falls back to newest (never None)",
+      S.locate_latest("claude", PROJ, after=time.time() + 3600) is not None)
+check("claude: after= far in the past -> the fixture session qualifies",
+      S.locate_latest("claude", PROJ, after=0.0) is not None)
+
+slugdir = _sandbox / "claude" / "projects" / S._claude_slug(PROJ)
+baseline = slugdir / "baseline.jsonl"
+baseline.write_text(CLAUDE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+time.sleep(3.0)
+mark = time.time()
+time.sleep(0.3)
+current = slugdir / "current.jsonl"
+current.write_text(CLAUDE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+# bump baseline's mtime to "now" so a pure newest-mtime pick would wrongly take it
+os.utime(baseline, None)
+picked = S.locate_latest("claude", PROJ, after=mark)
+check("claude: after= picks the session CREATED after the mark, not newest-mtime",
+      picked is not None and picked.session_id == "current")
+baseline.unlink(); current.unlink()
+
 
 # ---------------------------------------------------------------------------
 print("[3] resume_command")
@@ -207,6 +229,39 @@ check("opencode User", "## User" in mdo and "split notes_store" in mdo)
 check("opencode Assistant text", "Done, split into two files." in mdo)
 check("opencode tool part", "### Tool call: `bash`" in mdo)
 check("opencode reasoning gated", "opencode private reasoning" not in mdo)
+
+
+# ---------------------------------------------------------------------------
+print("[5b] empty / bootstrap-only session -> None")
+empty_dir = _sandbox / "claude" / "projects" / S._claude_slug(r"C:\empty")
+empty_dir.mkdir(parents=True, exist_ok=True)
+ep = empty_dir / "eeeeeeee-0000-0000-0000-000000000000.jsonl"
+ep.write_text("\n".join(json.dumps(x) for x in [
+    {"type": "queue-operation", "operation": "enqueue"},
+    {"type": "mode", "mode": "normal"},
+    {"type": "system", "subtype": "turn_duration"},
+]), encoding="utf-8")
+es = S.locate_latest("claude", r"C:\empty")
+check("locates the bootstrap-only file", es is not None)
+check("transcript of a bootstrap-only session is None",
+      S.transcript_markdown("claude", es) is None)
+
+
+# ---------------------------------------------------------------------------
+print("[5c] write_handoff_doc -> working-folder store, absolute path, pruned, git-excluded")
+wf = _sandbox / "wf"
+(wf / ".git" / "info").mkdir(parents=True)
+p = S.write_handoff_doc(wf, "# a handoff\n\n## User\n\nhi", source_key="claude", target_key="codex")
+check("returns an absolute path that exists", p.is_absolute() and p.exists())
+check("lives in <folder>/.agentdeck, not %APPDATA%", p.parent.name == ".agentdeck"
+      and str(wf) in str(p))
+check("name tags source->target", "claude-to-codex" in p.name)
+check("git-excluded the dir",
+      ".agentdeck/" in (wf / ".git" / "info" / "exclude").read_text(encoding="utf-8").split())
+for i in range(12):
+    S.write_handoff_doc(wf, f"# {i}", source_key="x", target_key="y")
+check("pruned to the keep limit",
+      len(list(S.handoff_store_dir(wf).glob('handoff-*.md'))) <= S._KEEP_HANDOFFS)
 
 
 # ---------------------------------------------------------------------------

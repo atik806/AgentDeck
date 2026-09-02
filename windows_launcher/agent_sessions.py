@@ -45,17 +45,26 @@ __all__ = [
     "resume_command",
     "transcript_markdown",
     "initial_prompt_command",
+    "write_handoff_doc",
+    "handoff_store_dir",
 ]
 
 #: Test / portable-mode override -- see the module docstring.
 _HOME_ENV = "ADK_AGENT_HOME_DIR"
 
 #: Hard cap on a single rendered tool result inside a transcript (chars).
-_TOOL_RESULT_CHARS = 2000
+_TOOL_RESULT_CHARS = 600
 #: Hard cap on a rendered tool-call input blob (chars).
-_TOOL_INPUT_CHARS = 1200
-#: Default transcript budget before head+tail truncation kicks in.
-DEFAULT_MAX_CHARS = 200_000
+_TOOL_INPUT_CHARS = 800
+#: Default transcript budget before head+tail truncation kicks in. Kept modest:
+#: this becomes another agent's opening context, so a 200 KB wall is worse than
+#: a focused 60 KB one.
+DEFAULT_MAX_CHARS = 60_000
+#: Clock slack: a session file whose creation time is within this many seconds
+#: *before* the pane typed its startup command still counts as "this pane's".
+#: The agent process always creates its transcript a beat *after* we stamp the
+#: time, so this only needs to cover minor clock jitter.
+_AFTER_SLACK_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +150,31 @@ def _newest(paths: Iterable[Path]) -> Optional[Path]:
     return best
 
 
+def _pick(paths: Iterable[Path], after: Optional[float]) -> Optional[Path]:
+    """The transcript that belongs to a pane started at ``after``.
+
+    With ``after`` set, prefer the newest file *created* (or last modified) at or
+    after that moment -- i.e. the session that pane opened -- and only fall back
+    to the newest overall when nothing qualifies.
+    """
+    paths = list(paths)
+    if after is None:
+        return _newest(paths)
+    cutoff = after - _AFTER_SLACK_S
+    fresh: list[Path] = []
+    for p in paths:
+        try:
+            # st_ctime is the file *creation* time on Windows (this app is
+            # Windows-only). "Created after the pane started its agent" is
+            # exactly "this pane's session" -- a concurrently-running older
+            # session has an old creation time even though its mtime is fresh.
+            if p.stat().st_ctime >= cutoff:
+                fresh.append(p)
+        except OSError:
+            continue
+    return _newest(fresh) or _newest(paths)
+
+
 # ---------------------------------------------------------------------------
 # Markdown assembly
 # ---------------------------------------------------------------------------
@@ -167,6 +201,9 @@ class _Doc:
 
     def __init__(self) -> None:
         self._sections: List[str] = []
+
+    def __bool__(self) -> bool:
+        return bool(self._sections)
 
     def add(self, text: str) -> None:
         t = (text or "").strip()
@@ -253,7 +290,11 @@ class SessionAdapter:
     takes_initial_prompt_arg = False
 
     def locate_latest(
-        self, cwd: Optional[str], *, any_cwd: bool = False
+        self,
+        cwd: Optional[str],
+        *,
+        any_cwd: bool = False,
+        after: Optional[float] = None,
     ) -> Optional[AgentSession]:
         return None
 
@@ -336,7 +377,7 @@ class _ClaudeAdapter(SessionAdapter):
             return None
         return None
 
-    def locate_latest(self, cwd, *, any_cwd=False):
+    def locate_latest(self, cwd, *, any_cwd=False, after=None):
         dirs: List[Path] = []
         if cwd:
             d = self._session_dir_for(cwd)
@@ -352,7 +393,7 @@ class _ClaudeAdapter(SessionAdapter):
                 transcripts += [p for p in d.glob("*.jsonl") if p.stat().st_size > 0]
             except OSError:
                 continue
-        best = _newest(transcripts)
+        best = _pick(transcripts, after)
         if best is None:
             return None
         return AgentSession(
@@ -377,6 +418,8 @@ class _ClaudeAdapter(SessionAdapter):
         try:
             _render_claude_jsonl(session.path, doc, include_thinking)
         except OSError:
+            return None
+        if not doc:
             return None
         return doc.render(source_label=self.label, session=session, max_chars=max_chars)
 
@@ -493,22 +536,21 @@ class _CodexAdapter(SessionAdapter):
             return []
         return list(base.rglob("rollout-*.jsonl"))
 
-    def locate_latest(self, cwd, *, any_cwd=False):
+    def locate_latest(self, cwd, *, any_cwd=False, after=None):
         rollouts = self._rollouts()
         if not rollouts:
             return None
         want = _norm_dir(cwd)
         chosen: Optional[Path] = None
         if want and not any_cwd:
-            best_m = -1.0
-            for p in rollouts:
-                meta = _codex_meta(p)
-                if meta and _norm_dir(meta.get("cwd")) == want:
-                    m = p.stat().st_mtime
-                    if m > best_m:
-                        chosen, best_m = p, m
+            matches = [
+                p for p in rollouts
+                if (_codex_meta(p) or {}) and
+                _norm_dir((_codex_meta(p) or {}).get("cwd")) == want
+            ]
+            chosen = _pick(matches, after)
         if chosen is None and (any_cwd or not want):
-            chosen = _newest(rollouts)
+            chosen = _pick(rollouts, after)
         if chosen is None:
             return None
         meta = _codex_meta(chosen) or {}
@@ -533,6 +575,8 @@ class _CodexAdapter(SessionAdapter):
         try:
             _render_codex_rollout(session.path, doc, include_thinking)
         except OSError:
+            return None
+        if not doc:
             return None
         return doc.render(source_label=self.label, session=session, max_chars=max_chars)
 
@@ -626,7 +670,7 @@ class _OpencodeAdapter(SessionAdapter):
     def _connect(self, db: Path) -> sqlite3.Connection:
         return sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
 
-    def locate_latest(self, cwd, *, any_cwd=False):
+    def locate_latest(self, cwd, *, any_cwd=False, after=None):
         db = self._db()
         if db is None:
             return None
@@ -636,9 +680,11 @@ class _OpencodeAdapter(SessionAdapter):
         except sqlite3.Error:
             return None
         try:
+            cols = {d[1] for d in con.execute("PRAGMA table_info(session)")}
+            tc = "time_created" if "time_created" in cols else "time_updated"
             rows = list(
                 con.execute(
-                    "SELECT id, directory, title, time_updated "
+                    f"SELECT id, directory, title, time_updated, {tc} "
                     "FROM session ORDER BY time_updated DESC"
                 )
             )
@@ -646,17 +692,23 @@ class _OpencodeAdapter(SessionAdapter):
             return None
         finally:
             con.close()
-        chosen = None
+
+        def _fresh(row):
+            if after is None:
+                return True
+            return (row[4] or 0) / 1000.0 >= after - _AFTER_SLACK_S
+
+        pool = rows
         if want and not any_cwd:
-            for sid, directory, title, updated in rows:
-                if _norm_dir(directory) == want:
-                    chosen = (sid, directory, title, updated)
-                    break
-        if chosen is None and (any_cwd or not want) and rows:
-            chosen = rows[0]
+            pool = [r for r in rows if _norm_dir(r[1]) == want]
+        chosen = next((r for r in pool if _fresh(r)), None)
+        if chosen is None and (any_cwd or not want):
+            chosen = next((r for r in rows if _fresh(r)), rows[0] if rows else None)
+        elif chosen is None and pool:
+            chosen = pool[0]
         if chosen is None:
             return None
-        sid, directory, title, updated = chosen
+        sid, directory, title, updated = chosen[0], chosen[1], chosen[2], chosen[3]
         return AgentSession(
             agent_key=self.key,
             session_id=str(sid),
@@ -677,7 +729,7 @@ class _OpencodeAdapter(SessionAdapter):
         ok = self._render_from_db(session, doc, include_thinking)
         if not ok:
             ok = self._render_from_export(session, doc, include_thinking)
-        if not ok:
+        if not ok or not doc:
             return None
         return doc.render(source_label=self.label, session=session, max_chars=max_chars)
 
@@ -835,7 +887,7 @@ class _AiderAdapter(SessionAdapter):
     can_resume = False
     takes_initial_prompt_arg = False
 
-    def locate_latest(self, cwd, *, any_cwd=False):
+    def locate_latest(self, cwd, *, any_cwd=False, after=None):
         if not cwd:
             return None
         f = Path(cwd) / ".aider.chat.history.md"
@@ -877,8 +929,8 @@ class _GooseAdapter(SessionAdapter):
             return []
         return [p for p in base.glob("*.jsonl") if p.stat().st_size > 0]
 
-    def locate_latest(self, cwd, *, any_cwd=False):
-        best = _newest(self._sessions())
+    def locate_latest(self, cwd, *, any_cwd=False, after=None):
+        best = _pick(self._sessions(), after)
         if best is None:
             return None
         return AgentSession(
@@ -971,10 +1023,14 @@ def known_session_agents() -> List[str]:
 
 
 def locate_latest(
-    agent_key: str, cwd: Optional[str], *, any_cwd: bool = False
+    agent_key: str,
+    cwd: Optional[str],
+    *,
+    any_cwd: bool = False,
+    after: Optional[float] = None,
 ) -> Optional[AgentSession]:
     try:
-        return adapter_for(agent_key).locate_latest(cwd, any_cwd=any_cwd)
+        return adapter_for(agent_key).locate_latest(cwd, any_cwd=any_cwd, after=after)
     except Exception:  # noqa: BLE001 - never let a scan crash the handoff
         return None
 
@@ -1005,11 +1061,15 @@ def transcript_markdown(
     if not session:
         return None
     try:
-        return adapter_for(agent_key).transcript_markdown(
+        md = adapter_for(agent_key).transcript_markdown(
             session, include_thinking=include_thinking, max_chars=max_chars
         )
     except Exception:  # noqa: BLE001
         return None
+    # A header with no turns is not worth handing to another agent -- each
+    # adapter already returns None for an empty/bootstrap-only session, so this
+    # is just a floor.
+    return md if md and len(md.strip()) > 200 else None
 
 
 def initial_prompt_command(
@@ -1019,3 +1079,75 @@ def initial_prompt_command(
         return adapter_for(agent_key).initial_prompt_command(base_command, prompt)
     except Exception:  # noqa: BLE001
         return None
+
+
+# ---------------------------------------------------------------------------
+# Handoff document store
+# ---------------------------------------------------------------------------
+#
+# The cross-agent transcript is written into the working folder at
+# ``.agentdeck/handoff-<stamp>.md`` -- NOT under %APPDATA%. It has to be readable
+# by the *target agent's* shell, which is a plain, non-sandboxed process; when
+# AgentDeck itself runs on MS Store Python (the dev `.venv`), an %APPDATA% write
+# is silently redirected into a per-package LocalCache the agent's shell can't
+# see. The working folder has no such redirection. The dir is git-excluded and
+# pruned to the newest few.
+
+_HANDOFF_DIR = ".agentdeck"
+_KEEP_HANDOFFS = 8
+
+
+def handoff_store_dir(folder: str | Path) -> Path:
+    d = Path(folder) / _HANDOFF_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _git_exclude(folder: Path, pattern: str) -> None:
+    exclude = folder / ".git" / "info" / "exclude"
+    try:
+        if not exclude.parent.is_dir():
+            return
+        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if pattern in existing.split():
+            return
+        with exclude.open("a", encoding="utf-8") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write(f"{pattern}\n")
+    except OSError:
+        pass
+
+
+def write_handoff_doc(
+    folder: str | Path,
+    markdown: str,
+    *,
+    source_key: str = "",
+    target_key: str = "",
+) -> Path:
+    """Write a cross-agent transcript under ``<folder>/.agentdeck/`` and return
+    its absolute path. Git-excludes the dir; prunes to the newest
+    :data:`_KEEP_HANDOFFS`."""
+    folder = Path(folder)
+    d = handoff_store_dir(folder)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    tag = f"{source_key or 'agent'}-to-{target_key or 'agent'}"
+    path = d / f"handoff-{stamp}-{tag}.md"
+    i = 2
+    while path.exists():
+        path = d / f"handoff-{stamp}-{tag}-{i}.md"
+        i += 1
+    path.write_text(markdown, encoding="utf-8")
+    _git_exclude(folder, f"{_HANDOFF_DIR}/")
+    try:
+        docs = sorted(
+            d.glob("handoff-*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        for old in docs[_KEEP_HANDOFFS:]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass
+    # abspath, not resolve(): keep the logical path (resolve() would follow the
+    # MS Store LocalCache junction into a path the agent's shell can't use).
+    return Path(os.path.abspath(path))

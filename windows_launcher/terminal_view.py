@@ -1008,6 +1008,11 @@ class TerminalView(QWidget):
         # printing its banner / first prompt, i.e. it is ready for input.
         self._startup_command = (startup_command or "").strip()
         self._startup_sent = not self._startup_command
+        # Wall-clock (epoch) moment the startup agent command was typed at the
+        # shell. The conversation-handoff feature uses it to tell which on-disk
+        # agent session belongs to *this* pane (the newest one created after the
+        # pane started its agent), rather than blindly the newest overall.
+        self._agent_started_at = 0.0
         # When the pty last produced output; the alt-screen watchdog uses it to
         # skip its process-table walk while a program is visibly still painting.
         self._last_output_at = 0.0
@@ -1206,7 +1211,14 @@ class TerminalView(QWidget):
         """Type the wizard's agent command at the fresh shell, once."""
         if self._startup_command and self.session.is_alive():
             self.session.write(self._startup_command + "\r")
+            self._agent_started_at = time.time()
         self._startup_command = ""
+
+    @property
+    def agent_started_at(self) -> float:
+        """Epoch seconds when this pane typed its startup agent command (0 if
+        it never had one)."""
+        return self._agent_started_at
 
     def _show_local(self, text: str) -> None:
         """Write text into the screen without involving the shell."""

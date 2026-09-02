@@ -98,8 +98,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # to the receiving agent.
     "handoff_include_thinking": False,
     # Character budget for a cross-agent transcript before it is trimmed to a
-    # head + the most-recent tail.
-    "handoff_max_transcript_chars": 200_000,
+    # head + the most-recent tail. This becomes another agent's opening context,
+    # so it is kept modest on purpose.
+    "handoff_max_transcript_chars": 60_000,
 
     # --- Appearance ---
     "theme": "system",

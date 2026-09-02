@@ -821,20 +821,33 @@ class TerminalPanel(QMainWindow):
         if pane is None or self._active_ws is None or pane not in self._active_ws.panes:
             return
 
-        from handoff_dialog import HandoffDialog
+        try:
+            import agents
+            from handoff_dialog import HandoffDialog
 
-        dlg = HandoffDialog(
-            source_key=pane.detect_agent_key(),
-            source_dir=pane.source_dir or self._working_folder or "",
-            fork_default=bool(self.config.get("handoff_fork_session", True)),
-            thinking_default=bool(self.config.get("handoff_include_thinking", False)),
-            parent=self,
-        )
-        if dlg.exec() != QDialog.Accepted:
-            return
-        choice = dlg.result_choice()
-        if choice:
-            self._do_handoff(pane, choice)
+            # Best guess at the source agent: the pane's own startup command,
+            # then its shell title, then the workspace's configured agent.
+            src = pane.detect_agent_key() or agents.agent_key_for_command(
+                self._startup_command or ""
+            ) or (self._last_ws_agent if self._last_ws_agent not in ("none", "custom") else "")
+
+            dlg = HandoffDialog(
+                source_key=src,
+                source_dir=pane.source_dir or self._working_folder or "",
+                fork_default=bool(self.config.get("handoff_fork_session", True)),
+                thinking_default=bool(self.config.get("handoff_include_thinking", False)),
+                parent=self,
+            )
+            if dlg.exec() != QDialog.Accepted:
+                return
+            choice = dlg.result_choice()
+            if choice:
+                choice["_after"] = getattr(pane, "agent_started_at", 0.0) or None
+                self._do_handoff(pane, choice)
+        except Exception as exc:  # noqa: BLE001 - surface, never vanish
+            self.statusBar().showMessage(f"Handoff failed: {exc}", 6000)
+            import traceback
+            traceback.print_exc()
 
     def _do_handoff(self, pane, choice: dict) -> None:
         """Build the target agent's startup command from ``choice`` and open a
@@ -857,48 +870,61 @@ class TerminalPanel(QMainWindow):
 
         folder = choice.get("source_dir") or self._working_folder or str(Path.home())
         any_cwd = bool(choice.get("any_cwd"))
+        after = choice.get("_after") if "_after" in choice else (
+            getattr(pane, "agent_started_at", 0.0) or None
+        )
         same_agent = bool(source_key) and source_key == target_key
 
         session = None
         if source_key:
-            session = agent_sessions.locate_latest(source_key, folder, any_cwd=any_cwd)
+            session = agent_sessions.locate_latest(
+                source_key, folder, any_cwd=any_cwd, after=after
+            )
             if session is None and not any_cwd:
-                session = agent_sessions.locate_latest(source_key, folder, any_cwd=True)
+                session = agent_sessions.locate_latest(
+                    source_key, folder, any_cwd=True, after=after
+                )
 
         command = base_command
         seed_prompt = ""
+        src_label = agents.agent_label(source_key) if source_key else "the source"
+        tgt_label = agents.agent_label(target_key)
 
+        resumed = None
         if session is not None and same_agent and agent_sessions.supports_resume(source_key):
             resumed = agent_sessions.resume_command(
                 source_key, base_command, session, fork=bool(choice.get("fork", True))
             )
-            command = resumed or base_command
+
+        if resumed:
+            command = resumed
+            self.statusBar().showMessage(f"Resuming {src_label} in a new pane.", 5000)
         elif session is not None:
             md = agent_sessions.transcript_markdown(
                 source_key,
                 session,
                 include_thinking=bool(choice.get("include_thinking")),
-                max_chars=int(self.config.get("handoff_max_transcript_chars", 200_000)),
+                max_chars=int(self.config.get("handoff_max_transcript_chars", 60_000)),
             )
             if md is None:
                 self.statusBar().showMessage(
-                    f"Couldn't read {agents.agent_label(source_key)}'s conversation "
-                    f"— starting {agents.agent_label(target_key)} fresh.", 6000
+                    f"Couldn't read {src_label}'s conversation — starting "
+                    f"{tgt_label} fresh.", 6000
                 )
             else:
                 try:
-                    import github_mcp
-
-                    doc = github_mcp.write_handoff_doc(folder, md)
-                    rel = f"{github_mcp.AGENTDECK_DIR}/{doc.name}"
+                    doc = agent_sessions.write_handoff_doc(
+                        folder, md, source_key=source_key, target_key=target_key
+                    )
+                    abs_path = str(doc)
                 except OSError as exc:
                     self.statusBar().showMessage(f"Couldn't write the handoff: {exc}", 6000)
-                    rel = ""
-                if rel:
+                    abs_path = ""
+                if abs_path:
                     seed_prompt = (
-                        f"Read {rel} — it is a handoff of an earlier session with "
-                        f"another coding agent. Continue that work from where it "
-                        f"left off."
+                        f'Read the file "{abs_path}" — it is a transcript of an '
+                        f"earlier session with {src_label}. Pick the work up from "
+                        f"where it left off."
                     )
                     command = (
                         agent_sessions.initial_prompt_command(
@@ -906,10 +932,12 @@ class TerminalPanel(QMainWindow):
                         )
                         or base_command
                     )
+                    self.statusBar().showMessage(
+                        f"Handed {src_label}'s conversation to {tgt_label}.", 5000
+                    )
         else:
             self.statusBar().showMessage(
-                f"No {agents.agent_label(source_key) or 'source'} conversation found "
-                f"— starting {agents.agent_label(target_key)} fresh.", 6000
+                f"No {src_label} conversation found — starting {tgt_label} fresh.", 6000
             )
 
         # Pre-trust + plugin-wire the target the same way _add_workspace does.
@@ -924,19 +952,20 @@ class TerminalPanel(QMainWindow):
 
         new_pane = ws.add_pane_with_command(command)
         if new_pane is None:
-            if ws.max_panes < 16:
-                self._prompt_upgrade(
-                    "More panes",
-                    "The handoff needs a new pane, but this workspace is at the "
-                    "Free-plan limit.",
-                )
+            self._prompt_upgrade(
+                "More panes",
+                "The handoff needs a new pane, but this workspace is at its pane "
+                "limit — close a pane and try again.",
+            ) if ws.max_panes < 16 else self.statusBar().showMessage(
+                "This workspace is at the 16-pane limit — close a pane first.", 6000
+            )
             return
 
         # When the target can't take the instruction as a CLI arg, type it in
         # after it's up — without Enter, so the user reviews it first.
         if seed_prompt and command == base_command:
             QTimer.singleShot(
-                2500,
+                2800,
                 lambda p=new_pane, t=seed_prompt: p.view.insert_text(t + " ")
                 if p in ws.panes else None,
             )

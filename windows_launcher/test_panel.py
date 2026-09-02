@@ -764,8 +764,17 @@ def _():
     )
     state["_real_locate"] = agent_sessions.locate_latest
     state["_real_md"] = agent_sessions.transcript_markdown
+    state["_real_write"] = agent_sessions.write_handoff_doc
+    import pathlib
+
+    def _fake_write(folder, md, **k):
+        p = pathlib.Path(tmp) / "handoff.md"
+        p.write_text(md, encoding="utf-8")
+        return p
+
     agent_sessions.locate_latest = lambda *a, **k: fake
     agent_sessions.transcript_markdown = lambda *a, **k: "# handoff\n\n## User\n\nhi\n"
+    agent_sessions.write_handoff_doc = _fake_write
 
     # Free plan: the button is gated before any pane is spawned.
     hits = []
@@ -809,11 +818,11 @@ def _():
         "fork": False, "include_thinking": False, "any_cwd": False,
     })
     check("cross-agent handoff added a pane", p2._active_ws.pane_count, before + 1)
-    check("new pane starts codex on the handoff file",
-          p2._active_ws.panes[-1].startup_command.startswith('codex "Read .agentdeck/handoff-'),
-          True)
+    cmd = p2._active_ws.panes[-1].startup_command
+    check("cross-agent pane runs codex with the transcript path as a prompt",
+          cmd.startswith('codex "Read the file ') and "handoff.md" in cmd, True)
     check("handoff doc was written",
-          os.path.exists(os.path.join(tmp, ".agentdeck", "handoff-1.md")), True)
+          os.path.exists(os.path.join(tmp, "handoff.md")), True)
 
 
 @step
@@ -822,6 +831,7 @@ def _():
     p2 = state["panel2"]
     agent_sessions.locate_latest = state["_real_locate"]
     agent_sessions.transcript_markdown = state["_real_md"]
+    agent_sessions.write_handoff_doc = state["_real_write"]
     p2._voice_engine.shutdown()
     for ws in p2._workspaces:
         ws.shutdown()

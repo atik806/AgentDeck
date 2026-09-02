@@ -50,7 +50,6 @@ __all__ = [
     "build_review_brief",
     "write_review_brief",
     "review_startup_command",
-    "write_handoff_doc",
 ]
 
 AGENTDECK_DIR = ".agentdeck"
@@ -407,26 +406,6 @@ def _git_exclude(folder: Path, pattern: str) -> None:
             fh.write(f"{pattern}\n")
     except OSError:
         pass
-
-
-def write_handoff_doc(folder: str | Path, markdown: str) -> Path:
-    """Write a conversation-handoff transcript under ``<folder>/.agentdeck/`` and
-    return its path.
-
-    Reuses the review flow's scratch dir + ``.git/info/exclude`` handling, so the
-    file stays out of ``git status`` without touching a tracked ``.gitignore``.
-    Names are ``handoff-1.md``, ``handoff-2.md``, … -- the next free number.
-    """
-    folder = Path(folder)
-    out_dir = folder / AGENTDECK_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-    n = 1
-    while (out_dir / f"handoff-{n}.md").exists():
-        n += 1
-    path = out_dir / f"handoff-{n}.md"
-    path.write_text(markdown, encoding="utf-8")
-    _git_exclude(folder, f"{AGENTDECK_DIR}/")
-    return path
 
 
 def review_startup_command(
