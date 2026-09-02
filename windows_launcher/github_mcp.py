@@ -1,45 +1,48 @@
-"""Wire a connected GitHub account into the coding agent running in a pane.
+"""Wire a connected GitHub account into the coding agent(s) running in a pane.
 
 Agents in AgentDeck are external CLIs we launch in a ConPTY pane -- we can't add
-tools to them at runtime. What we *can* do (``agents.pretrust_folder`` already
-does it for the trust prompt) is write the agent's config. This module adds a
-**GitHub MCP server** to it, authenticated with the user's connected token and
-scoped to the capabilities they opted into, so the agent gets
+tools to them at runtime. What we *can* do is write the agent's config file. This
+module adds a **GitHub MCP server** to it, authenticated with the user's connected
+token and scoped to the capabilities they opted into, so the agent gets
 ``create_pull_request_review`` / ``run_workflow`` / … as native tools.
 
-Qt-free. v1 supports **Claude Code**; :func:`supports_agent` gates everything, so
-an unsupported agent is simply left untouched.
+Qt-free. The per-agent details (which file, which format, ``url`` vs ``httpUrl``,
+whether a bearer goes in a header or a ``bearer_token`` field) live in
+``mcp_targets``; this module builds one transport-agnostic :func:`canonical_server`
+spec and writes it to every target agent that can take it.
 
-**Where the server is written:** the **root** ``mcpServers`` block inside
-``~/.claude.json`` -- i.e. Claude Code's *user* scope -- *not* a
-``<folder>/.mcp.json`` file and *not* a per-project entry. So a Claude Code pane
-has the GitHub tools whatever folder it's `cd`'d to, which is how the user thinks
-about it ("I connected GitHub"). A user-scope server is trusted automatically
-(no ``/mcp`` approval prompt), the bearer token never lands in a project tree,
-and there's no clash with ``pretrust_folder`` refusing folders with a
-``.mcp.json``.
+**Where the server is written:** each agent's *user* scope (Claude Code's root
+``mcpServers`` in ``~/.claude.json``, Codex's ``~/.codex/config.toml``, …) -- *not*
+a ``<folder>/.mcp.json`` and *not* a per-project entry. So a pane has the GitHub
+tools whatever folder it's `cd`'d to, which is how the user thinks about it ("I
+connected GitHub"). A user-scope server is trusted automatically, and the bearer
+token never lands in a project tree.
 
 Transport:
-* ``remote`` (default) -- GitHub's hosted MCP server, token as a bearer header,
-  no local binary;
-* ``local`` -- the ``github-mcp-server`` binary on PATH.
+* ``remote`` (default) -- GitHub's hosted MCP server, token as a bearer header
+  (or a ``bearer_token`` field for Codex), no local binary;
+* ``local`` -- the ``github-mcp-server`` binary on PATH (Claude Code only).
 """
 
 from __future__ import annotations
 
-import json
-import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
+import mcp_io
+import mcp_targets
+from mcp_targets import McpLedger
+from plugin_store import GITHUB as _PROVIDER
 from plugin_store import PluginConnection, toolsets_for
 
 __all__ = [
     "AGENTDECK_DIR",
     "REMOTE_MCP_URL",
     "supports_agent",
+    "canonical_server",
     "mcp_server_config",
+    "review_supported",
     "inject",
     "remove",
     "remove_all",
@@ -54,8 +57,12 @@ REMOTE_MCP_URL = "https://api.githubcopilot.com/mcp/"
 
 #: Marks the server entry as ours, so :func:`remove` only ever deletes a block
 #: AgentDeck wrote -- never a ``github`` server the user configured by hand.
+#: (JSON agents; TOML/YAML adapters use ``x_agentdeck_managed``.)
 _MANAGED = "x-agentdeck-managed"
 _SERVER_NAME = "github"
+
+#: Agents whose one-shot "review this PR" task invocation is verified to work.
+_REVIEW_AGENTS = {"claude", "codex"}
 
 
 def _is_claude(agent_command: str) -> bool:
@@ -68,14 +75,69 @@ def _is_claude(agent_command: str) -> bool:
         return bool(first) and Path(first[0].strip('"\'')).stem.lower() == "claude"
 
 
-def supports_agent(agent_command: Optional[str]) -> bool:
-    """True when AgentDeck knows how to inject MCP config for this agent (v1: Claude Code)."""
-    return _is_claude(agent_command or "")
+def _key_of(agent: Optional[str]) -> str:
+    """A ``_KNOWN`` key from either a bare key or a full command string."""
+    if not agent:
+        return ""
+    if mcp_targets.target(agent) is not None:
+        return agent.strip().lower()
+    try:
+        from agents import agent_key_for_command
+
+        return agent_key_for_command(agent)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def supports_agent(agent: Optional[str]) -> bool:
+    """True when this agent can take a header-authenticated remote MCP server
+    (i.e. the GitHub plugin can wire it). Accepts a key or a command string."""
+    return bool(mcp_targets.caps(_key_of(agent)).get("mcp_remote_headers"))
+
+
+def review_supported(agent_key: str) -> bool:
+    """Whether the PR-review one-shot task flow is known to work for this agent."""
+    return _key_of(agent_key) in _REVIEW_AGENTS
 
 
 # ---------------------------------------------------------------------------
 # Server config
 # ---------------------------------------------------------------------------
+
+def canonical_server(
+    token: str,
+    *,
+    toolsets: Optional[List[str]] = None,
+    transport: str = "remote",
+    read_only: bool = False,
+) -> dict:
+    """The transport-agnostic spec ``mcp_targets.render_entry`` turns into each
+    agent's own entry shape."""
+    toolsets = toolsets or ["context", "repos", "pull_requests"]
+    ts = ",".join(toolsets)
+    if transport == "local":
+        return {
+            "transport": "stdio",
+            "command": shutil.which("github-mcp-server") or "github-mcp-server",
+            "args": ["stdio"],
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": token,
+                "GITHUB_TOOLSETS": ts,
+                **({"GITHUB_READ_ONLY": "1"} if read_only else {}),
+            },
+            "oauth": False,
+        }
+    headers = {"Authorization": f"Bearer {token}", "X-MCP-Toolsets": ts}
+    if read_only:
+        headers["X-MCP-Readonly"] = "true"
+    return {
+        "transport": "http",
+        "url": REMOTE_MCP_URL,
+        "headers": headers,
+        "bearer": token,
+        "oauth": False,
+    }
+
 
 def mcp_server_config(
     token: str,
@@ -84,58 +146,47 @@ def mcp_server_config(
     transport: str = "remote",
     read_only: bool = False,
 ) -> dict:
-    """The ``mcpServers["github"]`` block written into Claude Code's config."""
-    toolsets = toolsets or ["context", "repos", "pull_requests"]
-    ts = ",".join(toolsets)
-    if transport == "local":
-        cfg: Dict[str, object] = {
-            "command": shutil.which("github-mcp-server") or "github-mcp-server",
-            "args": ["stdio"],
-            "env": {
-                "GITHUB_PERSONAL_ACCESS_TOKEN": token,
-                "GITHUB_TOOLSETS": ts,
-                **({"GITHUB_READ_ONLY": "1"} if read_only else {}),
-            },
-        }
-    else:
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-MCP-Toolsets": ts,
-        }
-        if read_only:
-            headers["X-MCP-Readonly"] = "true"
-        cfg = {"type": "http", "url": REMOTE_MCP_URL, "headers": headers}
-    cfg[_MANAGED] = True
-    return cfg
+    """The ``mcpServers["github"]`` block for **Claude Code** specifically.
+
+    Kept for call sites / tests that want the concrete Claude entry; new code
+    should use :func:`canonical_server` + ``mcp_targets``.
+    """
+    canonical = canonical_server(
+        token, toolsets=toolsets, transport=transport, read_only=read_only
+    )
+    return mcp_targets.render_entry(mcp_targets.target("claude"), _SERVER_NAME, canonical) or {}
 
 
-def _claude_config_path() -> Path:
-    return Path.home() / ".claude.json"
+def _resolve_keys(agent_keys: Optional[List[str]], agent_command: Optional[str]) -> List[str]:
+    if agent_keys:
+        return [k for k in (_key_of(k) for k in agent_keys) if k]
+    k = _key_of(agent_command)
+    return [k] if k else ["claude"]
 
 
-def _load_json(path: Path) -> tuple[dict, bool]:
-    """Return ``(config, existed)``. A malformed file reads as empty-but-existed
-    so we never blow away something we can't parse."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}, False
-    try:
-        data = json.loads(text) if text.strip() else {}
-    except ValueError:
-        return {}, True
-    return (data if isinstance(data, dict) else {}), True
+def _target_keys_for(keys: List[str], canonical: dict) -> List[str]:
+    need_oauth = bool(canonical.get("oauth"))
+    http = canonical.get("transport") == "http"
+    out: List[str] = []
+    for k in keys:
+        c = mcp_targets.caps(k)
+        if not c.get("mcp"):
+            continue
+        if need_oauth and not c.get("mcp_oauth"):
+            continue
+        if not need_oauth and http and not c.get("mcp_remote_headers"):
+            continue
+        if k not in out:
+            out.append(k)
+    return out
 
 
-def _atomic_write_json(path: Path, data: dict) -> bool:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.adk{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-        return True
-    except OSError:
-        return False
+def _path_override(agent_key: str, config_paths, claude_config):
+    if config_paths and agent_key in config_paths:
+        return Path(config_paths[agent_key])
+    if agent_key == "claude" and claude_config:
+        return Path(claude_config)
+    return None
 
 
 def cleanup_legacy_mcp_json(folder: str | Path) -> bool:
@@ -147,13 +198,10 @@ def cleanup_legacy_mcp_json(folder: str | Path) -> bool:
     just our managed ``github`` server. Returns True if a file was deleted.
     """
     p = Path(folder) / ".mcp.json"
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data, existed = mcp_io.load(p, "json")
+    if not existed:
         return False
-    if not isinstance(data, dict):
-        return False
-    servers = data.get("mcpServers")
+    servers = data.get("mcpServers") if hasattr(data, "get") else None
     if not isinstance(servers, dict):
         return False
     gh = servers.get(_SERVER_NAME)
@@ -163,30 +211,10 @@ def cleanup_legacy_mcp_json(folder: str | Path) -> bool:
     try:
         if not servers and list(data.keys()) == ["mcpServers"]:
             p.unlink()
-        else:
-            _atomic_write_json(p, data)
-        return True
+            return True
     except OSError:
         return False
-
-
-def _strip_managed(config: dict) -> bool:
-    """Remove our managed ``github`` server from the root and every project.
-    Mutates ``config``; returns True if anything was removed."""
-    changed = False
-    scopes = [config]
-    projects = config.get("projects")
-    if isinstance(projects, dict):
-        scopes += [e for e in projects.values() if isinstance(e, dict)]
-    for scope in scopes:
-        servers = scope.get("mcpServers")
-        if not isinstance(servers, dict):
-            continue
-        gh = servers.get(_SERVER_NAME)
-        if isinstance(gh, dict) and gh.get(_MANAGED):
-            del servers[_SERVER_NAME]
-            changed = True
-    return changed
+    return mcp_io.dump(p, data, "json")
 
 
 def inject(
@@ -194,26 +222,26 @@ def inject(
     token: str,
     connection: PluginConnection,
     *,
+    agent_keys: Optional[List[str]] = None,
     agent_command: Optional[str] = None,
     claude_config: Optional[str | Path] = None,
+    config_paths: Optional[dict] = None,
 ) -> bool:
-    """Add the GitHub MCP server to Claude Code's **user-scope** config.
+    """Add the GitHub MCP server to each target agent's **user-scope** config.
 
-    Writes the root ``mcpServers.github`` block in ``~/.claude.json`` -- so a
-    Claude Code pane has the GitHub tools whatever folder it runs in, which is
-    how the user thinks about it ("I connected GitHub"). A user-scope server is
-    trusted automatically (no ``/mcp`` approval prompt), and the bearer token
-    never lands in a project tree.
+    ``agent_keys`` -- the agents to wire (``["claude", "codex", …]``). If omitted,
+    falls back to ``agent_command`` (a resolved command string) and finally to
+    ``["claude"]``. Non-MCP agents (aider) and, for a header-auth server, agents
+    with no header path are silently skipped.
 
-    ``folder`` is used only for a sanity check and to clean up a ``.mcp.json`` an
-    older build wrote; pass ``None`` if there is no folder.
+    ``folder`` is used only to clean up a ``.mcp.json`` an older build wrote.
+    ``claude_config`` / ``config_paths`` (``{key: Path}``) redirect a target's file
+    for tests.
 
-    * No-op (returns False) when the agent isn't Claude Code or the token is empty.
-    * Idempotent.
-    * Refuses to touch a root ``github`` server the user configured themselves.
+    * No-op (returns False) when the token is empty or no target could be written.
+    * Idempotent per agent.
+    * Refuses to touch a ``github`` server the user configured themselves.
     """
-    if agent_command is not None and not supports_agent(agent_command):
-        return False
     if not token:
         return False
     if folder:
@@ -222,45 +250,65 @@ def inject(
         except OSError:
             pass
 
-    read_only = connection.capabilities == ["read"]
-    desired = mcp_server_config(
+    canonical = canonical_server(
         token,
         toolsets=toolsets_for(connection.capabilities),
         transport=connection.transport,
-        read_only=read_only,
+        read_only=connection.capabilities == ["read"],
     )
 
-    path = Path(claude_config) if claude_config else _claude_config_path()
-    config, _existed = _load_json(path)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-        config["mcpServers"] = servers
-
-    existing = servers.get(_SERVER_NAME)
-    if isinstance(existing, dict) and not existing.get(_MANAGED):
-        return False  # a github server the user set up themselves
-    if existing == desired:
-        return False
-
-    servers[_SERVER_NAME] = desired
-    return _atomic_write_json(path, config)
-
-
-def remove(folder: str | Path | None = None, *, claude_config: Optional[str | Path] = None) -> bool:
-    """Drop the AgentDeck-managed GitHub server from ``~/.claude.json`` -- the
-    root entry plus any per-project entries an older build wrote. Leaves
-    everything else (trust flags, other servers) alone. ``folder`` is ignored;
-    kept for call-site compatibility."""
-    path = Path(claude_config) if claude_config else _claude_config_path()
-    config, existed = _load_json(path)
-    if not existed:
-        return False
-    return _atomic_write_json(path, config) if _strip_managed(config) else False
+    ledger = McpLedger()
+    changed = False
+    for key in _target_keys_for(_resolve_keys(agent_keys, agent_command), canonical):
+        tgt = mcp_targets.target(key)
+        if tgt is None:
+            continue
+        did, wrote_root_extra = mcp_targets.write_server(
+            tgt, _SERVER_NAME, canonical,
+            path_override=_path_override(key, config_paths, claude_config),
+            ledger_managed=ledger.has(_PROVIDER, key),
+        )
+        if did:
+            ledger.record(_PROVIDER, key, _SERVER_NAME, wrote_root_extra=wrote_root_extra)
+            changed = True
+    return changed
 
 
-#: Same behaviour as :func:`remove` now that the server is user-scoped; kept so
-#: existing call sites (``github_controller.unwire_all``) stay readable.
+def remove(
+    folder: str | Path | None = None,
+    *,
+    agent_keys: Optional[List[str]] = None,
+    claude_config: Optional[str | Path] = None,
+    config_paths: Optional[dict] = None,
+) -> bool:
+    """Drop the AgentDeck-managed GitHub server from every agent config we wrote it
+    into (per the ledger), plus any legacy per-project entries in ``~/.claude.json``.
+    Leaves everything else alone. ``folder`` is ignored; kept for call-site
+    compatibility."""
+    ledger = McpLedger()
+    ledger.backfill_claude(
+        _PROVIDER, _SERVER_NAME, _MANAGED,
+        claude_path=_path_override("claude", config_paths, claude_config),
+    )
+    keys = agent_keys or list(ledger.agents_for(_PROVIDER).keys()) or ["claude"]
+
+    changed = False
+    for key in keys:
+        tgt = mcp_targets.target(key)
+        if tgt is None:
+            continue
+        did = mcp_targets.remove_server(
+            tgt, _SERVER_NAME,
+            path_override=_path_override(key, config_paths, claude_config),
+            ledger_managed=ledger.has(_PROVIDER, key),
+            drop_root_extra=ledger.wrote_root_extra(_PROVIDER, key),
+        )
+        ledger.forget(_PROVIDER, key)
+        changed = changed or did
+    return changed
+
+
+#: Kept so existing call sites (``github_controller.unwire_all``) stay readable.
 remove_all = remove
 
 
@@ -379,6 +427,7 @@ def review_startup_command(
         f"Follow the brief in {rel} exactly."
     )
     base = (agent_command or "claude").strip() or "claude"
-    if _is_claude(base):
+    key = _key_of(base)
+    if key in _REVIEW_AGENTS:  # claude / codex take an initial prompt as an arg
         return f'{base} "{task}"'
     return base

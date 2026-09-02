@@ -11,6 +11,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+_SANDBOX = tempfile.mkdtemp(prefix="adk-jiractrl-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -54,21 +58,25 @@ def pump(until, ms=3000):
     return hit["v"]
 
 
-# Never let the injector touch the real ~/.claude.json during tests.
-_TEST_CC = Path(tempfile.mkdtemp()) / ".claude.json"
-jira_mcp._claude_config_path = lambda: _TEST_CC
+_CLAUDE_CFG = Path(_SANDBOX) / "claude.json"
+
+
+def _reset_sandbox():
+    for p in Path(_SANDBOX).glob("*"):
+        p.unlink(missing_ok=True)
 
 
 def fresh_controller(tmp):
-    jc = jira_controller.JiraController(account=None, config={"agent": "claude"})
+    jc = jira_controller.JiraController(
+        account=None, config={"agent": "claude", "plugins_wire_all_agents": False})
     jc._store = PluginStore(Path(tmp) / "plugins.json")
     return jc
 
 
 def _atlassian_srv():
-    if not _TEST_CC.exists():
+    if not _CLAUDE_CFG.exists():
         return None
-    return (json.loads(_TEST_CC.read_text()).get("mcpServers") or {}).get("atlassian")
+    return (json.loads(_CLAUDE_CFG.read_text()).get("mcpServers") or {}).get("atlassian")
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +122,16 @@ with tempfile.TemporaryDirectory() as tmp:
 
 
 # ---------------------------------------------------------------------------
-print("[4] ensure_wired no-ops when the agent isn't claude")
+print("[4] ensure_wired no-ops when no target agent can run the OAuth handshake")
 with tempfile.TemporaryDirectory() as tmp:
+    _reset_sandbox()
     jc = fresh_controller(tmp)
-    jc._config = {"agent": "codex"}
+    jc._config = {"agent": "codex", "plugins_wire_all_agents": False}
     jc._store.put(jira_controller.PluginConnection(JIRA))
-    check("ensure_wired declines for a non-claude agent", not jc.ensure_wired())
+    check("ensure_wired declines -- codex isn't OAuth-capable yet", not jc.ensure_wired())
+
+    jc._config = {"agent": "claude", "plugins_wire_all_agents": False}
+    check("ensure_wired writes for claude", jc.ensure_wired() and _atlassian_srv() is not None)
 
 
 print()

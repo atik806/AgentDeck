@@ -4,11 +4,20 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
+_SANDBOX = tempfile.mkdtemp(prefix="adk-vercelmcp-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 import vercel_mcp
+
+
+def _reset_ledger():
+    Path(os.environ["ADK_MCP_STATE"]).unlink(missing_ok=True)
 
 _passed = 0
 _failed = 0
@@ -33,10 +42,12 @@ def _root_vercel(cfg):
 
 
 # ---------------------------------------------------------------------------
-print("[1] supports_agent")
+print("[1] supports_agent -- tokenless OAuth server: only OAUTH_ALLOWLIST agents")
 check("claude supported", vercel_mcp.supports_agent("claude"))
 check("claude with args supported", vercel_mcp.supports_agent("claude --dangerously-skip-permissions"))
-check("codex not supported (v1)", not vercel_mcp.supports_agent("codex"))
+check("codex not yet supported (phased OAuth rollout)", not vercel_mcp.supports_agent("codex"))
+check("gemini not yet supported", not vercel_mcp.supports_agent("gemini"))
+check("aider not supported", not vercel_mcp.supports_agent("aider"))
 check("plain shell not supported", not vercel_mcp.supports_agent(""))
 
 
@@ -51,6 +62,7 @@ check("no token anywhere", "vercel_tok" not in json.dumps(cfg) and "Bearer" not 
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[3] inject / remove round-trip -- user scope, folder-independent")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -70,6 +82,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[4] inject preserves the rest of ~/.claude.json (coexists with github)")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -99,6 +112,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[5] inject refuses a hand-rolled root vercel server")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -109,6 +123,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[6] unsupported agent / project-scope sweep")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"

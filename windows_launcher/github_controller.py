@@ -323,35 +323,51 @@ class GitHubController(QObject):
             return fresh.access_token
         return token.access_token
 
-    def _agent_is_claude(self, agent_command: Optional[str]) -> bool:
-        """Whether AgentDeck's agent for this session is Claude Code.
+    def _target_agent_keys(self, agent_command: Optional[str] = None) -> list[str]:
+        """Which coding agents to write the GitHub MCP server into.
 
-        ``agent_command`` may be empty when ``claude`` isn't on the *packaged
-        app's* PATH even though the user runs it fine in a pane -- so fall back to
-        the configured agent key.
+        Always the workspace's own agent (from ``agent_command`` if given, else
+        the configured ``agent`` key). Plus -- unless ``plugins_wire_all_agents``
+        is off -- every other agent installed on PATH, so "I connected GitHub"
+        works in whatever agent the user opens next. Only ever installed agents.
         """
-        if agent_command and github_mcp.supports_agent(agent_command):
-            return True
-        return str(self._config.get("agent", "")).strip().lower() == "claude"
+        import agents
+
+        keys: set[str] = set()
+        k = agents.agent_key_for_command(agent_command) if agent_command else ""
+        if not k:
+            k = str(self._config.get("agent", "")).strip().lower()
+        if k and k not in ("none", "custom"):
+            keys.add(k)
+        if self._config.get("plugins_wire_all_agents", True):
+            keys |= set(agents.installed_agent_keys())
+        return sorted(keys)
 
     def ensure_wired(self, folder: Optional[str] = None,
                      agent_command: Optional[str] = None) -> bool:
-        """Add the GitHub MCP server to Claude Code's user-scope config.
+        """Add the GitHub MCP server to every target agent's user-scope config.
 
-        Folder-independent now (the server is user-scope), but ``folder`` is
-        still passed through for the legacy ``.mcp.json`` cleanup. Best-effort;
-        returns True if the config changed.
+        Folder-independent (the server is user-scope), but ``folder`` is still
+        passed through for the legacy ``.mcp.json`` cleanup. Best-effort; returns
+        True if any config changed.
         """
-        if not self.is_connected or not self._agent_is_claude(agent_command):
+        if not self.is_connected:
             return False
         conn = self.connection
         if conn is None:
             return False
-        token = self._valid_token_blocking()
+        keys = self._target_agent_keys(agent_command)
+        if not keys:
+            return False
+        # Use the token we already hold -- never block the UI thread on a network
+        # refresh here (this runs on every workspace open). An expired token still
+        # gets written; a real GitHub call refreshes it, and connect / capability
+        # edits re-wire with the fresh one.
+        token = self._token.access_token if self._token is not None else None
         if not token:
             return False
         try:
-            changed = github_mcp.inject(folder, token, conn)
+            changed = github_mcp.inject(folder, token, conn, agent_keys=keys)
         except Exception:  # noqa: BLE001
             return False
         if folder:

@@ -287,6 +287,24 @@ check("detail hides Connect when connected", vd._primary.isHidden())
 check("info box (/mcp instructions) shown when connected", not vd._info.isHidden())
 check("disconnect button shown", not vd._disconnect_btn.isHidden())
 
+# -- agent-aware authorise copy (per-agent, not hard-coded to Claude)
+import mcp_targets as _mt
+_saved = set(_mt.OAUTH_ALLOWLIST)
+_mt.OAUTH_ALLOWLIST = {"claude", "codex"}   # simulate Phase 3 widening the set
+try:
+    vp_multi = PluginsPanel(github=FakeGitHub(), vercel=FakeVercel(connected=True), account=None, config={},
+                            agents_provider=lambda: ["claude", "codex", "gemini"])
+    vp_multi._open_detail("vercel")
+    vd2 = vp_multi._vercel_detail
+    vd2.refresh()
+    _txt = vd2._step.text()
+    check("names Claude Code's /mcp", "Claude Code" in _txt and "/mcp" in _txt)
+    check("names Codex's own login command", "codex mcp login vercel" in _txt)
+    check("gemini (not OAuth-capable) is left out", "Gemini" not in _txt)
+    check("sub line lists the wired agents", "Enabled for:" in vd2._sub.text())
+finally:
+    _mt.OAUTH_ALLOWLIST = _saved
+
 # -- search filter
 vp.show_catalog()
 vp._filter_cards("vercel")

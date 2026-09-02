@@ -509,3 +509,127 @@ Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
 
 `test_jira_mcp.py`, `test_jira_controller.py` (copies of the Vercel ones);
 `test_plugin_store.py` §7, `test_plugins_panel.py` §6 (with a `FakeJira` stub).
+
+---
+
+## 14. Multi-agent MCP targets — GitHub on every agent (2026-09-01)
+
+Until now all three plugins only wrote **Claude Code**'s `~/.claude.json`. They now
+write the right MCP config for **every coding agent AgentDeck can launch** that is
+installed on the machine, in that agent's own format and location.
+
+### Supported target agents (11)
+
+`claude`, `codex`, `copilot`, `gemini`, `cursor-agent`, `opencode`, `amp`,
+`antigravity`, `qwen`, `crush`, `goose`. **`aider` is excluded** — no native MCP
+support (feature PRs closed unmerged as of 0.86); the UI shows a "not supported by
+Aider" note in an Aider workspace.
+
+### Per-agent config format
+
+| key | file (Windows) | env override | fmt | server map | url field | `type` value | notes |
+|---|---|---|---|---|---|---|---|
+| claude | `~/.claude.json` | — | json | `mcpServers` | `url` | `http` | unchanged |
+| codex | `~/.codex/config.toml` | `CODEX_HOME` | toml | `mcp_servers` | `url` | — | + root `experimental_use_rmcp_client = true`; bearer via `bearer_token` (no header → toolset scoping is dropped for Codex) |
+| copilot | `~/.copilot/mcp-config.json` | `COPILOT_HOME` | json | `mcpServers` | `url` | `http` | `tools:["*"]`; **GitHub only** (remote-OAuth support unconfirmed) |
+| gemini | `~/.gemini/settings.json` | — | json | `mcpServers` | `httpUrl` | — | |
+| cursor-agent | `~/.cursor/mcp.json` | — | json | `mcpServers` | `url` | — | |
+| opencode | `~/.config/opencode/opencode.json` | `XDG_CONFIG_HOME` | json | `mcp` | `url` | `remote` | `enabled:true`; auto-DCR OAuth (may open a browser on first use) |
+| amp | `~/.config/amp/settings.json` | `AMP_SETTINGS_FILE` | json | `amp.mcpServers` (flat dotted key) | `url` | — | |
+| antigravity | `~/.gemini/config/mcp_config.json` | — | json | `mcpServers` | `serverUrl` | — | different file from Gemini CLI — never cross-write |
+| qwen | `~/.qwen/settings.json` | — | json | `mcpServers` | `httpUrl` | — | Gemini fork |
+| crush | `%LOCALAPPDATA%\crush\crush.json` | — | json | `mcp` | `url` | `http` | |
+| goose | `%APPDATA%\Block\goose\config\config.yaml` | — | yaml | `extensions` | `uri` | `streamable_http` | `enabled:true`, `bundled:false`, entry needs `name` == server name |
+
+### New modules
+
+| Module | What it does |
+|---|---|
+| `mcp_io.py` | Format-agnostic config IO — `load` / `dump` / `locked` / `get_in` / `as_item` for JSON (stdlib), TOML (read `tomllib`, write `tomlkit`), YAML (`ruamel.yaml`). Atomic `<name>.adk<pid>.tmp` + `os.replace`. A missing writer lib → that format's adapters no-op. `locked(path)` is a process-wide re-entrant lock that serialises same-file read-modify-writes (replaces the old `singleShot(0/250/400)` stagger). |
+| `mcp_targets.py` | One `McpTarget` adapter per agent (`_TARGETS`), the capability model (`caps(key)` → `{"mcp","mcp_remote_headers","mcp_oauth","format"}`), `render_entry` (canonical spec → that agent's entry shape), `write_server` / `remove_server`, `oauth_hint`, and `McpLedger`. |
+
+New deps: `tomlkit`, `ruamel.yaml` (both pure-Python-importable; guarded).
+`config.py` gains `plugins_wire_all_agents` (default `True`).
+`agents.py` gains `agent_key_for_command` and `installed_agent_keys`.
+
+### Canonical spec
+
+The `*_mcp.py` injectors build one transport-agnostic dict; `render_entry` turns it
+into each agent's own shape:
+
+```python
+{"transport": "http"|"stdio",
+ "url": str, "headers": {str:str}, "bearer": str|None,   # http
+ "command": str, "args": [str], "env": {str:str},        # stdio (Claude only)
+ "oauth": bool}                                          # True => tokenless
+```
+
+### Capability model — who gets what
+
+* **GitHub** injects a bearer token, so it wires **every** agent with
+  `mcp_remote_headers` (all 11 — Codex via `bearer_token`).
+* **Vercel / Jira** are tokenless; the agent runs the MCP OAuth handshake itself.
+  They wire only agents in `mcp_targets.OAUTH_ALLOWLIST` — **`{"claude"}` today**.
+  Phase 3 widens this set one agent at a time as each in-pane OAuth command is
+  verified. `oauth_hint(agent, server)` supplies the per-agent instruction
+  (`/mcp` for Claude, `codex mcp login <server>` for Codex, `/mcp auth` for
+  Gemini/Qwen, …) shown in the detail page and the status bar.
+
+### The ledger — `%APPDATA%\multi-terminal\mcp_state.json`
+
+`{provider: {agent_key: {"server", "wrote_root_extra"}}}`. The authoritative record
+of what `disconnect` must undo — more reliable than the inline
+`x-agentdeck-managed` (`x_agentdeck_managed` for TOML/YAML) marker if a strict
+parser drops unknown keys. `wrote_root_extra` records whether **we** added Codex's
+global `experimental_use_rmcp_client` (so disconnect only strips it if we added it
+and no other managed server remains). Removal deletes an entry iff the inline
+marker is set **or** the ledger records it. `backfill_claude` seeds the ledger for
+users who connected before it existed.
+
+### Wiring scope
+
+`plugins_wire_all_agents` (default `True`): a connected plugin is written into
+**every installed agent** at user scope — "I connected GitHub" then works in
+whatever agent the user opens. Only ever touches agents found on PATH; never
+creates a config dir for an absent agent. Set `False` to scope wiring to the
+active workspace's agent only. `terminal_panel._add_workspace` wires once per
+session (servers are user-scope); the controllers also (re)wire on `__init__` and
+on `connected`.
+
+### Integration points
+
+| File | Change |
+|---|---|
+| `github_mcp.py` / `vercel_mcp.py` / `jira_mcp.py` | `canonical_server()` + adapter-driven `inject(…, agent_keys=…, config_paths=…)` / `remove(…)`; `supports_agent` redefined (key or command → capability); `mcp_server_config` kept as a Claude-rendered alias; `github_mcp.review_supported()` (`{claude, codex}`). |
+| `*_controller.py` | `_agent_is_claude` → `_target_agent_keys(agent_command)` (active agent + installed set); `ensure_wired` iterates; stagger dropped. |
+| `plugins_panel.py` | `PluginsPanel(agents_provider=…)`; `_VercelDetail` / `_JiraDetail` info box is per-agent (`_oauth_auth_html`); "Enabled for: …" / "tools in: …" sub-lines; docstrings de-Claude-d. |
+| `terminal_panel.py` | `agents_provider` wired to `github._target_agent_keys`; `_start_github_review` uses the workspace's agent (falls back to Claude for non-`review_supported` agents); `_on_{vercel,jira}_connected` status text via `_oauth_hint`. |
+| `config.py` | `plugins_wire_all_agents` default + schema. |
+| `agents.py` | `agent_key_for_command`, `installed_agent_keys`. |
+| `requirements.txt` / `constraints.txt` | `tomlkit`, `ruamel.yaml` (+ `ruamel.yaml.clib`). |
+
+### Tests
+
+`test_mcp_io.py`, `test_mcp_targets.py` (new); `test_github_mcp.py` §8 loops every
+agent; `test_vercel_mcp.py` / `test_jira_mcp.py` / `test_*_controller.py` updated
+for the OAuth allowlist; `test_agents.py`, `test_plugins_panel.py` extended. All
+suites redirect config + ledger via `ADK_MCP_CONFIG_DIR` / `ADK_MCP_STATE`.
+
+### Phasing
+
+* **Phase 0–2 (this change)** — `mcp_io` + `mcp_targets` + adapter refactor;
+  **GitHub on all 11 agents**; Vercel/Jira stay Claude-only via `OAUTH_ALLOWLIST`.
+* **Phase 3** — verify each agent's in-pane OAuth command, add it to
+  `OAUTH_ALLOWLIST` one at a time.
+* **Phase 4** — optional Settings toggle for `plugins_wire_all_agents`.
+
+### Known risks
+
+* `ruamel.yaml` / `tomlkit` must be collected by PyInstaller — verify in the
+  frozen build (guarded imports mean the worst case is YAML/TOML agents no-op).
+* Codex's `experimental_use_rmcp_client` is a **global** user setting; the
+  `wrote_root_extra` ledger flag keeps disconnect from stripping a flag the user
+  set themselves.
+* Windows path variance per agent — every env override has a test.
+* Each agent's exact format is verified against docs as of 2026-09; re-check when
+  an agent ships a breaking config change.

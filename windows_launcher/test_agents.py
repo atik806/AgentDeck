@@ -182,6 +182,21 @@ finally:
     agents._CLAUDE_CONFIG = _real_cfg
 
 
+# ---------------------------------------------------------------------------
+print("[*] agent_key_for_command / installed_agent_keys")
+check("bare command -> key", agents.agent_key_for_command("claude") == "claude")
+check("command with args -> key", agents.agent_key_for_command("claude --foo bar") == "claude")
+check("antigravity's command 'agy' -> key", agents.agent_key_for_command("agy") == "antigravity")
+check("a full path still resolves", agents.agent_key_for_command(r'"C:\tools\codex.exe" -q') == "codex")
+check("empty -> ''", agents.agent_key_for_command("") == "")
+check("unknown -> ''", agents.agent_key_for_command("totally-made-up") == "")
+_installed = set(agents.installed_agent_keys())
+check("installed_agent_keys is a subset of known keys",
+      _installed <= {k for k, _l, _c in agents.known_agents()})
+check("installed_agent_keys agrees with is_installed",
+      all(agents.is_installed(k) for k in _installed))
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

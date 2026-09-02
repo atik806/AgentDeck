@@ -7,7 +7,7 @@ Two levels (see ``docs/PLUGINS.md`` §2):
   "Coming soon".
 * **detail** -- click GitHub to connect it, pick which capabilities the agent
   gets, list your repos, and kick off a **GitHub review**; click Vercel or Jira
-  to enable its (thin, OAuth-owned-by-Claude-Code) MCP server.
+  to enable its (thin, agent-owns-the-OAuth) MCP server.
 
 Keep :func:`plugin_icon` -- the sidebar's "Plugins" nav button reuses it.
 """
@@ -43,6 +43,37 @@ except Exception:  # noqa: BLE001
 from plugin_store import CAPABILITIES, CAPABILITY_LABELS, REQUIRED_CAPABILITY
 
 __all__ = ["PluginsPanel", "plugin_icon"]
+
+
+def _wired_agent_labels(agents_provider, need: str = "mcp") -> list[str]:
+    """Human labels of the agents a plugin will write its MCP server into.
+
+    ``need`` -- the capability the plugin requires: ``"mcp"`` for GitHub (token
+    injected), ``"mcp_oauth"`` for Vercel / Jira (agent runs the OAuth itself).
+    """
+    import agents
+    import mcp_targets
+
+    keys = list(agents_provider()) if agents_provider else ["claude"]
+    return [agents.agent_label(k) for k in keys if mcp_targets.caps(k).get(need)]
+
+
+def _oauth_auth_html(agents_provider, server: str) -> str:
+    """One authorise-instruction line per OAuth-capable wired agent, as HTML."""
+    import agents
+    import mcp_targets
+
+    keys = list(agents_provider()) if agents_provider else ["claude"]
+    keys = [k for k in keys if mcp_targets.caps(k).get("mcp_oauth")]
+    if not keys:
+        return (
+            f"Connected. No installed agent can authorise {server} on its own yet — "
+            "this activates automatically once a supported agent (e.g. Claude Code) is on PATH."
+        )
+    rows = "<br>".join(
+        f"• <b>{agents.agent_label(k)}</b> — {mcp_targets.oauth_hint(k, server)}" for k in keys
+    )
+    return "Almost there. One-time authorisation, in each agent's pane:<br>" + rows
 
 
 def plugin_icon(px: int = 18, color: Optional[str] = None) -> QIcon:
@@ -322,11 +353,12 @@ class _GitHubDetail(QWidget):
     back = Signal()
     review_ready = Signal(dict)
 
-    def __init__(self, github, account, config, parent=None):
+    def __init__(self, github, account, config, agents_provider=None, parent=None):
         super().__init__(parent)
         self._gh = github
         self._account = account
         self._config = config or {}
+        self._agents_provider = agents_provider
         self._cap_boxes: dict[str, QCheckBox] = {}
         self._auto_combos: dict[str, QComboBox] = {}
 
@@ -478,9 +510,11 @@ class _GitHubDetail(QWidget):
 
         if connected:
             conn = gh.connection
-            self._sub.setText(
-                f"Connected as @{gh.login}" if gh.login else "Connected"
-            )
+            who = f"Connected as @{gh.login}" if gh.login else "Connected"
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            if wired:
+                who += " · tools in: " + ", ".join(wired)
+            self._sub.setText(who)
             caps = set(conn.capabilities) if conn else set()
             for cap, box in self._cap_boxes.items():
                 box.blockSignals(True)
@@ -584,18 +618,20 @@ class _VercelDetail(QWidget):
     """Thin detail page: enable / disable the Vercel MCP server.
 
     No device-code box, no capability checklist, no repo list -- Vercel's MCP
-    server is hosted and OAuth-only, and Claude Code owns the OAuth. "Connect"
-    just drops the server entry into the agent's config; the user authorises with
-    ``/mcp`` inside a workspace.
+    server is hosted and OAuth-only, and the agent owns the OAuth. "Connect" just
+    drops the server entry into every OAuth-capable agent's config; the user
+    authorises in a pane (``/mcp`` for Claude, ``codex mcp login vercel`` for
+    Codex, …).
     """
 
     back = Signal()
 
-    def __init__(self, vercel, account, config, parent=None):
+    def __init__(self, vercel, account, config, agents_provider=None, parent=None):
         super().__init__(parent)
         self._vercel = vercel
         self._account = account
         self._config = config or {}
+        self._agents_provider = agents_provider
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -636,13 +672,10 @@ class _VercelDetail(QWidget):
         ib = QVBoxLayout(self._info)
         ib.setContentsMargins(14, 12, 14, 12)
         ib.setSpacing(4)
-        step = QLabel(
-            "Almost there. Open a workspace, then in the Claude Code pane run "
-            "<b>/mcp</b> and authorise Vercel in your browser — one time. The "
-            "agent then has the Vercel tools (deployments, logs, analytics)."
-        )
-        step.setWordWrap(True)
-        ib.addWidget(step)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
         self._info.setVisible(False)
         root.addWidget(self._info)
 
@@ -685,11 +718,15 @@ class _VercelDetail(QWidget):
         self._disconnect_btn.setVisible(connected)
 
         if connected:
-            self._sub.setText("Enabled — authorise in a workspace with /mcp.")
+            self._step.setText(_oauth_auth_html(self._agents_provider, "vercel"))
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            self._sub.setText(
+                "Enabled for: " + (", ".join(wired) if wired else "no installed agent yet")
+            )
         else:
             self._sub.setText(
-                "Let the agent in a workspace ship deployments, read build logs "
-                "and query analytics — no tokens to copy."
+                "Let your agents ship deployments, read build logs and query "
+                "analytics — no tokens to copy."
             )
 
     def _on_primary(self) -> None:
@@ -715,17 +752,19 @@ class _JiraDetail(QWidget):
     """Thin detail page: enable / disable the Atlassian (Jira) MCP server.
 
     Same shape as :class:`_VercelDetail` -- Atlassian's Rovo MCP server is hosted
-    and OAuth-only, and Claude Code owns the OAuth. "Connect" drops the tokenless
-    server entry into the agent's config; the user authorises with ``/mcp``.
+    and OAuth-only, and the agent owns the OAuth. "Connect" drops the tokenless
+    server entry into every OAuth-capable agent's config; the user authorises in
+    a pane.
     """
 
     back = Signal()
 
-    def __init__(self, jira, account, config, parent=None):
+    def __init__(self, jira, account, config, agents_provider=None, parent=None):
         super().__init__(parent)
         self._jira = jira
         self._account = account
         self._config = config or {}
+        self._agents_provider = agents_provider
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -766,13 +805,10 @@ class _JiraDetail(QWidget):
         ib = QVBoxLayout(self._info)
         ib.setContentsMargins(14, 12, 14, 12)
         ib.setSpacing(4)
-        step = QLabel(
-            "Almost there. Open a workspace, then in the Claude Code pane run "
-            "<b>/mcp</b> and approve the Atlassian sign-in in your browser — one "
-            "time. The agent then has the Jira &amp; Confluence tools."
-        )
-        step.setWordWrap(True)
-        ib.addWidget(step)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
         self._info.setVisible(False)
         root.addWidget(self._info)
 
@@ -815,11 +851,15 @@ class _JiraDetail(QWidget):
         self._disconnect_btn.setVisible(connected)
 
         if connected:
-            self._sub.setText("Enabled — authorise in a workspace with /mcp.")
+            self._step.setText(_oauth_auth_html(self._agents_provider, "atlassian"))
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            self._sub.setText(
+                "Enabled for: " + (", ".join(wired) if wired else "no installed agent yet")
+            )
         else:
             self._sub.setText(
-                "Let the agent in a workspace search, read and update Jira issues "
-                "and Confluence pages — no tokens to copy."
+                "Let your agents search, read and update Jira issues and "
+                "Confluence pages — no tokens to copy."
             )
 
     def _on_primary(self) -> None:
@@ -847,11 +887,14 @@ class PluginsPanel(QWidget):
     review_ready = Signal(dict)
 
     def __init__(self, parent: QWidget | None = None, *, github=None, vercel=None,
-                 jira=None, account=None, config: Optional[dict] = None):
+                 jira=None, account=None, config: Optional[dict] = None,
+                 agents_provider=None):
         super().__init__(parent)
         self._github = github
         self._vercel = vercel
         self._jira = jira
+        # () -> list[str] of agent keys the plugins will wire (installed + active).
+        self._agents_provider = agents_provider
         self.setObjectName("pluginsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(_qss())
@@ -908,7 +951,7 @@ class PluginsPanel(QWidget):
         inner = QWidget()
         il = QVBoxLayout(inner)
         il.setContentsMargins(40, 28, 40, 24)
-        self._gh_detail = _GitHubDetail(github, account, config)
+        self._gh_detail = _GitHubDetail(github, account, config, agents_provider=agents_provider)
         self._gh_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
         self._gh_detail.review_ready.connect(self.review_ready.emit)
         il.addWidget(self._gh_detail)
@@ -922,7 +965,7 @@ class PluginsPanel(QWidget):
         v_inner = QWidget()
         vil = QVBoxLayout(v_inner)
         vil.setContentsMargins(40, 28, 40, 24)
-        self._vercel_detail = _VercelDetail(vercel, account, config)
+        self._vercel_detail = _VercelDetail(vercel, account, config, agents_provider=agents_provider)
         self._vercel_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
         vil.addWidget(self._vercel_detail)
         v_host.setWidget(v_inner)
@@ -935,7 +978,7 @@ class PluginsPanel(QWidget):
         j_inner = QWidget()
         jil = QVBoxLayout(j_inner)
         jil.setContentsMargins(40, 28, 40, 24)
-        self._jira_detail = _JiraDetail(jira, account, config)
+        self._jira_detail = _JiraDetail(jira, account, config, agents_provider=agents_provider)
         self._jira_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
         jil.addWidget(self._jira_detail)
         j_host.setWidget(j_inner)

@@ -80,6 +80,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # tools -- the prompt is exactly the check the user should get to make).
     "pretrust_agent_folder": False,
 
+    # --- Plugins (see docs/PLUGINS.md) ---
+    # When a plugin (GitHub / Vercel / Jira) is connected, write its MCP server
+    # into every *installed* coding agent's user-scope config -- not just the one
+    # the current workspace runs. Matches how the user thinks about it ("I
+    # connected GitHub" -> it works in whatever agent I open). Only ever touches
+    # agents found on PATH; disconnecting removes exactly what was written. Set
+    # False to scope wiring to the active workspace's agent only.
+    "plugins_wire_all_agents": True,
+
     # --- Appearance ---
     "theme": "system",
     "window_width": 1400,
@@ -150,6 +159,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "skip_wizard": bool,
     "show_splash": bool,
     "pretrust_agent_folder": bool,
+    "plugins_wire_all_agents": bool,
     "theme": str,
     "window_width": int,
     "window_height": int,
