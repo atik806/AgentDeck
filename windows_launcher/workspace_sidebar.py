@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 import theme
+from notes_panel import note_icon
 from plugins_panel import plugin_icon
 
 __all__ = ["WorkspaceSidebar"]
@@ -302,6 +303,8 @@ class WorkspaceSidebar(QWidget):
     selected = Signal(object)
     #: The "Plugins" nav button was pressed.
     plugins_selected = Signal()
+    #: The "Notes" nav button was pressed.
+    notes_selected = Signal()
     #: The "+" button was pressed.
     created = Signal()
     #: A row's close button was pressed. Carries the workspace.
@@ -322,7 +325,7 @@ class WorkspaceSidebar(QWidget):
         root.setSpacing(0)
 
         # -- nav strip: pinned to the bottom, under the Workspaces list; one
-        #    row per destination (currently just "Plugins").
+        #    row per destination ("Plugins", "Notes").
         nav = QWidget(self)
         nav.setObjectName("wsNav")
         nav.setAttribute(Qt.WA_StyledBackground, True)
@@ -330,19 +333,28 @@ class WorkspaceSidebar(QWidget):
         nav_box.setContentsMargins(6, 6, 6, 5)
         nav_box.setSpacing(2)
 
-        self._plugins_btn = QToolButton(nav)
-        self._plugins_btn.setObjectName("navBtn")
-        self._plugins_btn.setText("Plugins")
-        self._plugins_btn.setIcon(plugin_icon(16))
-        self._plugins_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self._plugins_btn.setCheckable(True)
-        self._plugins_btn.setCursor(Qt.PointingHandCursor)
-        self._plugins_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._plugins_btn.clicked.connect(lambda: self.plugins_selected.emit())
-        nav_box.addWidget(self._plugins_btn)
+        def _nav_button(text: str, icon, on_click) -> QToolButton:
+            btn = QToolButton(nav)
+            btn.setObjectName("navBtn")
+            btn.setText(text)
+            btn.setIcon(icon)
+            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(on_click)
+            nav_box.addWidget(btn)
+            return btn
 
-        # The nav strip (currently just "Plugins") is pinned to the bottom of
-        # the sidebar, under the workspace list -- see the addWidget order below.
+        self._plugins_btn = _nav_button(
+            "Plugins", plugin_icon(16), lambda: self.plugins_selected.emit()
+        )
+        self._notes_btn = _nav_button(
+            "Notes", note_icon(16), lambda: self.notes_selected.emit()
+        )
+
+        # The nav strip is pinned to the bottom of the sidebar, under the
+        # workspace list -- see the addWidget order below.
         rule = QFrame(self)
         rule.setObjectName("navRule")
         rule.setFixedHeight(1)
@@ -386,7 +398,7 @@ class WorkspaceSidebar(QWidget):
         self._scroll.setWidget(inner)
         root.addWidget(self._scroll, 1)
 
-        # Bottom-pinned nav strip: a hairline rule, then the Plugins button.
+        # Bottom-pinned nav strip: a hairline rule, then the nav buttons.
         root.addWidget(rule)
         root.addWidget(nav)
 
@@ -427,3 +439,7 @@ class WorkspaceSidebar(QWidget):
     def set_plugins_active(self, active: bool) -> None:
         """Reflect whether the PLUGINS view (not a workspace) is on screen."""
         self._plugins_btn.setChecked(bool(active))
+
+    def set_notes_active(self, active: bool) -> None:
+        """Reflect whether the NOTES view (not a workspace) is on screen."""
+        self._notes_btn.setChecked(bool(active))
