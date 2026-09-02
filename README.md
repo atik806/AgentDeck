@@ -5,6 +5,10 @@
 <p align="center"><em>Every terminal, every agent, one deck.</em></p>
 
 <p align="center">
+  <a href="https://vibeflow.tech/agentdeck"><strong>Website &amp; pricing &rarr;</strong></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/atik806/AgentDeck/releases/latest"><img src="https://img.shields.io/github/v/release/atik806/AgentDeck?label=download" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/backend-ConPTY-2ea043" alt="ConPTY">
@@ -13,7 +17,7 @@
 
 ---
 
-**AgentDeck** is a Windows multi-terminal panel built for driving coding agents.
+**AgentDeck** is a [Windows multi-terminal for AI coding agents](https://vibeflow.tech/agentdeck).
 Open a grid of **real terminals** in one window, pick a coding agent
 (Claude Code, Codex, Gemini CLI, …), and it auto-runs in every pane. Group panes
 into **workspaces**, talk to your agent with **voice input**, and keep your setup
