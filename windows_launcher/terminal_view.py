@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import perf
 import theme
 from pty_backend import DEFAULT_SHELL, PtySession
 from vt_screen import DEFAULT_SCROLLBACK, Palette, TerminalScreen, TerminalStream
@@ -92,6 +93,26 @@ _WHEEL_LINES = 3
 #: rather than ``ESC [ A``. Pagers set it, so the synthesised wheel arrows have
 #: to follow suit.
 _MODE_APP_CURSOR = 1 << 5
+
+#: Most characters fed to pyte in one frame. A ``dir /s`` or ``cat bigfile``
+#: burst can deliver megabytes between two frames; feeding all of it to the
+#: parser synchronously freezes the window for the whole parse. Cap it and
+#: re-arm the flush timer with the remainder, so a loud command degrades to a
+#: fast scroll (the window stays responsive, other panes keep painting) instead
+#: of a hang. This is a *responsiveness* cap, not throughput: pure-Python pyte
+#: parses on the order of 1 MB/s, so ~96K keeps a single frame's parse near
+#: 100 ms worst case while the total dump still streams through in the
+#: background. See ``bench_terminal.py``.
+_MAX_FEED_CHARS = 96 * 1024
+
+#: Hard ceiling on unparsed pty output held in memory. A producer that outruns
+#: the parser past this point is dumping content the user will scroll straight
+#: past; the oldest bytes are shed to stay bounded (counted for the perf HUD).
+_MAX_BACKLOG_CHARS = 8 * 1024 * 1024
+
+#: The run cache is keyed by absolute row. Cap its size so scrolling through a
+#: long scrollback cannot grow it without limit.
+_RUN_CACHE_LIMIT = 512
 
 _MONOSPACE_PREFERENCE = (
     "Cascadia Mono",
@@ -262,6 +283,14 @@ class TerminalCanvas(QWidget):
         self._palette = Palette()
         self._scroll_top = 0
 
+        # Per-row cache of painted runs, keyed by absolute row -> (width, runs,
+        # cells). Populated during paint, invalidated per-row from _flush by the
+        # rows pyte marked dirty; wiped wholesale on any change that shifts every
+        # row (resize, theme, font, a structural scroll into history).
+        self._run_cache: dict[int, tuple] = {}
+        # Stamped by the owning TerminalView; None in isolation / tests.
+        self._perf: Optional[perf.PaneMetrics] = None
+
         # Selection is stored in absolute (row, col) coordinates spanning
         # scrollback and screen, so it survives new output scrolling the view.
         self._sel_anchor: Optional[tuple[int, int]] = None
@@ -288,7 +317,47 @@ class TerminalCanvas(QWidget):
     def apply_theme(self) -> None:
         """Rebuild the colour palette for the current theme and repaint."""
         self._palette = Palette()
+        self.invalidate_all()
+
+    # -- repaint invalidation -------------------------------------------------
+
+    def invalidate_all(self) -> None:
+        """Drop every cached row and schedule a full repaint.
+
+        For a change that moves every row relative to the viewport or restyles
+        them all: resize, font, theme, alternate-screen swap, a scroll that
+        pushed lines into history.
+        """
+        self._run_cache.clear()
         self.update()
+
+    def invalidate_rows(self, abs_rows) -> None:
+        """Drop the given absolute rows from the cache and repaint just them.
+
+        The fast path out of :meth:`TerminalView._flush`: only the handful of
+        rows pyte marked dirty (a spinner frame, a streamed token, one edited
+        line) are rebuilt and blitted.
+        """
+        if not abs_rows:
+            return
+        top = self._scroll_top
+        visible = self.visible_rows()
+        cell_h = self._cell_h
+        lo = hi = None
+        for row in abs_rows:
+            self._run_cache.pop(row, None)
+            view_row = row - top
+            if 0 <= view_row < visible:
+                lo = view_row if lo is None else min(lo, view_row)
+                hi = view_row if hi is None else max(hi, view_row)
+        if lo is None:
+            return
+        self.update(
+            0,
+            int(lo * cell_h),
+            self.width(),
+            int((hi - lo + 1) * cell_h) + 1,
+        )
 
     # -- font / geometry ---------------------------------------------------
 
@@ -303,7 +372,7 @@ class TerminalCanvas(QWidget):
         self._cell_w = max(1.0, metrics.horizontalAdvance("W"))
         self._cell_h = max(1.0, metrics.height(), metrics.lineSpacing())
         self._ascent = metrics.ascent()
-        self.update()
+        self.invalidate_all()
         self._emit_geometry()
 
     @property
@@ -430,6 +499,7 @@ class TerminalCanvas(QWidget):
     # -- painting ----------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        t0 = perf.now() if perf.enabled() else 0.0
         painter = QPainter(self)
         painter.setFont(self._font)
         painter.fillRect(event.rect(), self._palette.BACKGROUND)
@@ -439,31 +509,55 @@ class TerminalCanvas(QWidget):
         rows = self.visible_rows()
         top = self._scroll_top
         cell_w, cell_h = self._cell_w, self._cell_h
+        # Invariant across the row loop -- recomputing it per row (per frame per
+        # pane) showed up in the profile.
+        width = self.visible_cols()
 
         sel_start, sel_end = self._normalised_selection()
+        # A selection tints backgrounds per-row, so its rows can't be served
+        # from (or written to) the style cache.
+        use_cache = sel_start is None
 
-        for view_row in range(rows):
+        # Only the rows the incoming damage rect actually covers. A dirty-row
+        # repaint hands us a thin band; without this the loop still walked every
+        # visible row each frame.
+        first = max(0, int(event.rect().top() // cell_h))
+        last = min(rows, int(event.rect().bottom() // cell_h) + 1)
+
+        painted = 0
+        for view_row in range(first, last):
             abs_row = top + view_row
             if abs_row >= screen.total_rows():
                 break
 
             y = view_row * cell_h
-            cells = dict(screen.row(abs_row))
+            entry = self._run_cache.get(abs_row) if use_cache else None
+            if entry is not None and entry[0] == width:
+                runs, cells = entry[1], entry[2]
+            else:
+                cells = dict(screen.row(abs_row))
+                if not cells and use_cache:
+                    self._run_cache[abs_row] = (width, (), {})
+                    continue
+                runs = self._build_runs(cells, width, abs_row, sel_start, sel_end)
+                if use_cache:
+                    self._run_cache[abs_row] = (width, runs, cells)
+
             if not cells and sel_start is None:
                 continue
-
-            width = self.visible_cols()
-            runs = self._build_runs(cells, width, abs_row, sel_start, sel_end)
+            painted += 1
 
             for start_x, text, fg, bg in runs:
-                rect = QRect(
-                    int(start_x * cell_w),
-                    int(y),
-                    int(len(text) * cell_w) + 1,
-                    int(cell_h) + 1,
-                )
                 if bg != self._palette.BACKGROUND:
-                    painter.fillRect(rect, bg)
+                    painter.fillRect(
+                        QRect(
+                            int(start_x * cell_w),
+                            int(y),
+                            int(len(text) * cell_w) + 1,
+                            int(cell_h) + 1,
+                        ),
+                        bg,
+                    )
 
             for start_x, text, fg, bg in runs:
                 if not text.strip():
@@ -476,8 +570,15 @@ class TerminalCanvas(QWidget):
 
             self._paint_decorations(painter, cells, abs_row, y)
 
+        if use_cache and len(self._run_cache) > _RUN_CACHE_LIMIT:
+            self._run_cache.clear()
+
         self._paint_cursor(painter, history, top, rows)
         painter.end()
+
+        if t0 and self._perf is not None:
+            self._perf.frame_ms.add((perf.now() - t0) * 1000.0)
+            self._perf.rows_painted.add(painted)
 
     def _build_runs(
         self,
@@ -926,6 +1027,17 @@ class TerminalView(QWidget):
         self.session = PtySession(shell=shell, rows=24, cols=80, cwd=cwd, parent=self)
         self.shell_label = self.session.label
 
+        # Perf instrumentation (near-free unless the HUD is on). The canvas
+        # shares the same metrics object so paint time lands beside parse time.
+        self._perf = perf.register(self.shell_label)
+        self.canvas._perf = self._perf
+        #: Running size of _pending, so the backlog check in _on_output is O(1).
+        self._pending_chars = 0
+        #: Absolute row the cursor sat on at the end of the last flush -- so a
+        #: cursor that moved without redrawing its old cell still gets that cell
+        #: repainted.
+        self._last_cursor_row = 0
+
         # Batch pty output and apply it on a frame timer; see module docstring.
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(_FRAME_MS)
@@ -965,6 +1077,39 @@ class TerminalView(QWidget):
 
     def _on_output(self, data: str) -> None:
         self._pending.append(data)
+        self._pending_chars += len(data)
+
+        # High-water mark: a producer this far ahead of the parser is dumping
+        # output that will only ever be scrolled past. Shed the oldest held
+        # chunks back down to three-quarters of the ceiling so we stay bounded
+        # without stalling; the drop is counted for the HUD. (This is a last
+        # resort -- _MAX_FEED_CHARS below normally keeps the backlog draining.)
+        if self._pending_chars > _MAX_BACKLOG_CHARS:
+            target = _MAX_BACKLOG_CHARS * 3 // 4
+            dropped = 0
+            while self._pending_chars > target and len(self._pending) > 1:
+                dropped += len(self._pending[0])
+                self._pending_chars -= len(self._pending.pop(0))
+            if dropped:
+                # The gap almost certainly cut an escape sequence, and whatever
+                # is now at the front of the queue may itself start mid-CSI. A
+                # newline can't fall inside a CSI/OSC, so resume just after the
+                # first one and prepend an SGR reset -- the parser then starts
+                # from a known-clean line instead of rendering a half-sequence
+                # as stray text ("48;5;21m…").
+                head = self._pending[0]
+                nl = head.find("\n")
+                if nl != -1:
+                    dropped += nl + 1
+                    self._pending[0] = "\x1b[m" + head[nl + 1:]
+                    self._pending_chars += len("\x1b[m") - (nl + 1)
+                if self._perf is not None:
+                    self._perf.note_dropped(dropped)
+
+        if self._perf is not None:
+            self._perf.note_bytes(len(data))
+            self._perf.note_backlog(self._pending_chars)
+
         if not self._flush_timer.isActive():
             self._flush_timer.start()
 
@@ -973,8 +1118,22 @@ class TerminalView(QWidget):
             self._flush_timer.stop()
             return
 
-        chunk = "".join(self._pending)
+        t_flush = perf.now() if perf.enabled() else 0.0
+
+        data = "".join(self._pending)
         self._pending.clear()
+        self._pending_chars = 0
+
+        # Bound the work this frame. The remainder goes back on the queue and
+        # the still-running timer drains it next tick -- a loud command scrolls
+        # fast instead of freezing the window for one giant parse.
+        if len(data) > _MAX_FEED_CHARS:
+            rest = data[_MAX_FEED_CHARS:]
+            data = data[:_MAX_FEED_CHARS]
+            self._pending.append(rest)
+            self._pending_chars = len(rest)
+
+        chunk = data
         self._last_output_at = time.monotonic()
 
         if not self._startup_sent:
@@ -985,20 +1144,63 @@ class TerminalView(QWidget):
             QTimer.singleShot(300, self._send_startup_command)
 
         follow = self.canvas.at_bottom()
+        scroll_before = self.canvas.scroll_top()
+        history_before = self._screen.history_length
+        alt_before = self._screen.alternate_screen
+
+        t_parse = perf.now() if perf.enabled() else 0.0
         try:
             self._stream.feed(chunk)
         except Exception:  # noqa: BLE001 - a malformed sequence must not crash the pane
             pass
+        if t_parse and self._perf is not None:
+            self._perf.parse_ms.add((perf.now() - t_parse) * 1000.0)
 
         if follow:
             self.canvas.scroll_to_bottom()
         self._sync_scrollbar()
         self._sync_alt_watchdog()
-        self.canvas.update()
+        self._repaint_after_feed(scroll_before, history_before, alt_before)
+
+        if self._perf is not None:
+            self._perf.note_backlog(self._pending_chars)
+        if t_flush and self._perf is not None:
+            self._perf.flush_ms.add((perf.now() - t_flush) * 1000.0)
 
         if self._screen.title and self._screen.title != self._last_title:
             self._last_title = self._screen.title
             self.title_changed.emit(self._screen.title)
+
+    def _repaint_after_feed(
+        self, scroll_before: int, history_before: int, alt_before: bool
+    ) -> None:
+        """Repaint only what the feed changed.
+
+        pyte tracks dirty lines; the renderer just never consumed them before
+        (so every frame was a full canvas repaint). A structural change -- lines
+        scrolled into history, the alternate buffer swapped in/out, the view
+        scrolled -- moves every row relative to the viewport, so those still
+        force a full repaint. Everything else (a spinner, streamed text landing
+        mid-screen, one edited line) touches a handful of rows.
+        """
+        screen = self._screen
+        dirty = screen.dirty
+        structural = (
+            screen.history_length != history_before
+            or screen.alternate_screen != alt_before
+            or self.canvas.scroll_top() != scroll_before
+        )
+        cursor_row = screen.history_length + screen.cursor.y
+        if structural or len(dirty) >= screen.lines:
+            self.canvas.invalidate_all()
+        else:
+            offset = screen.history_length
+            abs_rows = {offset + line for line in dirty}
+            abs_rows.add(cursor_row)
+            abs_rows.add(self._last_cursor_row)
+            self.canvas.invalidate_rows(abs_rows)
+        dirty.clear()
+        self._last_cursor_row = cursor_row
 
     def _send_startup_command(self) -> None:
         """Type the wizard's agent command at the fresh shell, once."""
@@ -1009,9 +1211,10 @@ class TerminalView(QWidget):
     def _show_local(self, text: str) -> None:
         """Write text into the screen without involving the shell."""
         self._stream.feed(text)
+        self._screen.dirty.clear()
         self.canvas.scroll_to_bottom()
         self._sync_scrollbar()
-        self.canvas.update()
+        self.canvas.invalidate_all()
 
     def _on_exited(self, code: int) -> None:
         self._flush()
@@ -1048,11 +1251,13 @@ class TerminalView(QWidget):
         follow = self.canvas.at_bottom()
         self._screen.resize(lines=rows, columns=cols)
         self.session.resize(rows, cols)
+        self._screen.dirty.clear()
 
         if follow:
             self.canvas.scroll_to_bottom()
         self._sync_scrollbar()
-        self.canvas.update()
+        # Width changed -> every cached row's run layout is stale.
+        self.canvas.invalidate_all()
 
     def _sync_scrollbar(self) -> None:
         maximum = self.canvas.max_scroll_top()
@@ -1098,18 +1303,20 @@ class TerminalView(QWidget):
             return
 
         self._screen.exit_alternate_screen()
+        self._screen.dirty.clear()
         self._alt_watchdog.stop()
         self.canvas.scroll_to_bottom()
         self._sync_scrollbar()
-        self.canvas.update()
+        self.canvas.invalidate_all()
 
     def reset_screen(self) -> None:
         """Recover a pane wedged on the alternate screen, on demand."""
         self._screen.exit_alternate_screen()
+        self._screen.dirty.clear()
         self._sync_alt_watchdog()
         self.canvas.scroll_to_bottom()
         self._sync_scrollbar()
-        self.canvas.update()
+        self.canvas.invalidate_all()
 
     # -- programmatic input --------------------------------------------------
 
@@ -1187,4 +1394,8 @@ class TerminalView(QWidget):
         self._flush_timer.stop()
         self._alt_watchdog.stop()
         self._pending.clear()
+        self._pending_chars = 0
+        perf.unregister(self._perf)
+        self._perf = None
+        self.canvas._perf = None
         self.session.close()
