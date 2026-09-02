@@ -535,7 +535,8 @@ class TerminalPanel(QMainWindow):
         self._ws_stack = QStackedWidget(central)
         self._plugins_panel = PluginsPanel(
             central, github=self.github, vercel=self.vercel, jira=self.jira,
-            account=self.account, config=self.config
+            account=self.account, config=self.config,
+            agents_provider=lambda: self.github._target_agent_keys(self._startup_command),
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
         self._main_stack = QStackedWidget(central)
@@ -643,12 +644,15 @@ class TerminalPanel(QMainWindow):
         startup_command: Optional[str] = None,
     ) -> Workspace:
         accent = _WS_ACCENTS[len(self._workspaces) % len(_WS_ACCENTS)]
-        # If GitHub is connected and this workspace's folder is a repo, wire the
-        # GitHub MCP server into the agent's config *before* its panes fire the
-        # startup command, so the agent comes up with the GitHub tools ready.
-        self._wire_github_for(self._working_folder, startup_command)
-        self._wire_vercel_for(self._working_folder, startup_command)
-        self._wire_jira_for(self._working_folder, startup_command)
+        # Wire the connected plugins' MCP servers into the agents' configs *before*
+        # this workspace's panes fire their startup command, so an agent comes up
+        # with the tools ready. The servers are user-scope, so once per session is
+        # enough -- the controllers also (re)wire on __init__ and on connect.
+        if not getattr(self, "_plugins_wired_this_session", False):
+            self._plugins_wired_this_session = True
+            self._wire_github_for(self._working_folder, startup_command)
+            self._wire_vercel_for(self._working_folder, startup_command)
+            self._wire_jira_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -685,11 +689,11 @@ class TerminalPanel(QMainWindow):
         return workspace
 
     def _wire_github_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
-        """Best-effort: add the GitHub MCP server to the agent's config for ``folder``.
+        """Best-effort: add the GitHub MCP server to every installed agent's config.
 
-        A no-op unless GitHub is connected, the folder exists, and the agent is
-        one AgentDeck knows how to configure (v1: Claude Code). Returns True if
-        the config was actually changed.
+        A no-op unless GitHub is connected. Writes the workspace's agent plus, by
+        default, every other coding agent on PATH (``plugins_wire_all_agents``).
+        Returns True if any config was actually changed.
         """
         gh = getattr(self, "github", None)
         if gh is None:
@@ -700,11 +704,12 @@ class TerminalPanel(QMainWindow):
             return False
 
     def _wire_vercel_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
-        """Best-effort: add the Vercel MCP server to the agent's config.
+        """Best-effort: add the Vercel MCP server to every OAuth-capable agent's config.
 
-        A no-op unless Vercel is enabled and the agent is Claude Code. The folder
-        is irrelevant (the server is user-scope) but kept for call-site symmetry
-        with :meth:`_wire_github_for`. Returns True if the config changed.
+        A no-op unless Vercel is enabled. Only agents that can run the MCP OAuth
+        handshake themselves are written (see ``mcp_targets.OAUTH_ALLOWLIST``).
+        The folder is irrelevant (user scope) but kept for call-site symmetry.
+        Returns True if any config changed.
         """
         v = getattr(self, "vercel", None)
         if v is None:
@@ -715,10 +720,9 @@ class TerminalPanel(QMainWindow):
             return False
 
     def _wire_jira_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
-        """Best-effort: add the Atlassian (Jira) MCP server to the agent's config.
-
-        A no-op unless Jira is enabled and the agent is Claude Code. Mirrors
-        :meth:`_wire_vercel_for`. Returns True if the config changed.
+        """Best-effort: add the Atlassian (Jira) MCP server to every OAuth-capable
+        agent's config. Mirrors :meth:`_wire_vercel_for`. Returns True if any
+        config changed.
         """
         j = getattr(self, "jira", None)
         if j is None:
@@ -742,10 +746,23 @@ class TerminalPanel(QMainWindow):
         options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
 
         folder = self._working_folder or str(Path.home())
-        agent = "claude"
+        # The review runs in whatever agent this workspace uses. A few agents
+        # can't take a one-shot task on the command line the way the brief needs
+        # -- fall back to Claude for those.
+        import agents
+
+        agent_cmd = self._startup_command or agents.resolve_agent(
+            self._last_ws_agent, self._last_ws_agent_custom
+        )
+        agent_key = agents.agent_key_for_command(agent_cmd) or "claude"
+        if not github_mcp.review_supported(agent_key):
+            agent_cmd = "claude"
+            self.statusBar().showMessage(
+                "PR review runs best in Claude or Codex — starting a Claude pane", 5000
+            )
         try:
             brief = github_mcp.write_review_brief(folder, repo, pr_number, options)
-            command = github_mcp.review_startup_command(agent, repo, pr_number, brief)
+            command = github_mcp.review_startup_command(agent_cmd, repo, pr_number, brief)
         except OSError as exc:
             self.statusBar().showMessage(f"Couldn't start the review: {exc}", 5000)
             return
@@ -1350,9 +1367,17 @@ class TerminalPanel(QMainWindow):
     def _on_vercel_connected(self) -> None:
         self._wire_vercel_for(self._working_folder, self._startup_command)
         self.statusBar().showMessage(
-            "Vercel enabled — restart the agent (↻) in a pane, then run /mcp to authorise",
+            f"Vercel enabled — restart the agent (↻) in a pane, then {self._oauth_hint('vercel')}",
             8000,
         )
+
+    def _oauth_hint(self, server: str) -> str:
+        """How the current workspace's agent authorises a hosted OAuth MCP server."""
+        import agents
+        import mcp_targets
+
+        key = agents.agent_key_for_command(self._startup_command) or "claude"
+        return mcp_targets.oauth_hint(key, server)
 
     def _on_vercel_disconnected(self) -> None:
         self.statusBar().showMessage(
@@ -1362,7 +1387,7 @@ class TerminalPanel(QMainWindow):
     def _on_jira_connected(self) -> None:
         self._wire_jira_for(self._working_folder, self._startup_command)
         self.statusBar().showMessage(
-            "Jira enabled — restart the agent (↻) in a pane, then run /mcp to authorise Atlassian",
+            f"Jira enabled — restart the agent (↻) in a pane, then {self._oauth_hint('atlassian')}",
             8000,
         )
 

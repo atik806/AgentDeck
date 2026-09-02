@@ -13,6 +13,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+_SANDBOX = tempfile.mkdtemp(prefix="adk-ghctrl-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -98,13 +102,19 @@ class FakeRequests:
 
 github_auth.GITHUB_CLIENT_ID = "Iv1.test"
 
-# Never let the injector touch the real ~/.claude.json during tests.
-_TEST_CC = Path(tempfile.mkdtemp()) / ".claude.json"
-github_mcp._claude_config_path = lambda: _TEST_CC
+# Every agent config + the ledger live in _SANDBOX (env vars set above), so the
+# injector never touches the real ~/.claude.json, ~/.codex, %APPDATA%\...
+_CLAUDE_CFG = Path(_SANDBOX) / "claude.json"
+
+
+def _reset_sandbox():
+    for p in Path(_SANDBOX).glob("*"):
+        p.unlink(missing_ok=True)
 
 
 def fresh_controller(tmp):
-    gc = github_controller.GitHubController(account=None, config={})
+    gc = github_controller.GitHubController(
+        account=None, config={"agent": "claude", "plugins_wire_all_agents": False})
     gc._tokens = GitHubTokenStore(Path(tmp) / "github.bin")
     gc._store = PluginStore(Path(tmp) / "plugins.json")
     gc._token = None
@@ -161,19 +171,17 @@ with tempfile.TemporaryDirectory() as tmp:
     gc._token = GitHubToken(access_token="gho_x", expires_at=0)
     gc._store.put(github_controller.PluginConnection(GITHUB, login="atik806", capabilities=["read", "review"]))
 
-    # keep the injector off the real ~/.claude.json
-    cc = Path(tmp) / ".claude.json"
-    github_mcp._claude_config_path = lambda: cc
-    gc._config = {"agent": "claude"}
+    _reset_sandbox()
+    gc._config = {"agent": "claude", "plugins_wire_all_agents": False}
 
     repo = Path(tmp) / "repo"
     repo.mkdir()
 
     def _gh_srv():
         import json
-        if not cc.exists():
+        if not _CLAUDE_CFG.exists():
             return None
-        return (json.loads(cc.read_text()).get("mcpServers") or {}).get("github")
+        return (json.loads(_CLAUDE_CFG.read_text()).get("mcpServers") or {}).get("github")
 
     check("ensure_wired writes the user-scope server for claude",
           gc.ensure_wired(str(repo), "claude") and _gh_srv() is not None)
@@ -181,12 +189,9 @@ with tempfile.TemporaryDirectory() as tmp:
     check("ensure_wired works with no agent_command when config says claude",
           gc.ensure_wired() is not None)
 
-    gc._config = {"agent": "codex"}
-    gc2cc = Path(tmp) / "cc2.json"
-    github_mcp._claude_config_path = lambda: gc2cc
-    check("ensure_wired no-ops when the agent isn't claude", not gc.ensure_wired())
-    github_mcp._claude_config_path = lambda: cc
-    gc._config = {"agent": "claude"}
+    gc._config = {"agent": "none", "plugins_wire_all_agents": False}
+    check("ensure_wired no-ops when there's no target agent", not gc.ensure_wired())
+    gc._config = {"agent": "claude", "plugins_wire_all_agents": False}
 
     gc.set_capabilities(["read", "review", "actions"])
     check("capability persisted", "actions" in gc._store.get(GITHUB).capabilities)

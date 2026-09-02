@@ -4,11 +4,20 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
+_SANDBOX = tempfile.mkdtemp(prefix="adk-jiramcp-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 import jira_mcp
+
+
+def _reset_ledger():
+    Path(os.environ["ADK_MCP_STATE"]).unlink(missing_ok=True)
 
 _passed = 0
 _failed = 0
@@ -33,10 +42,11 @@ def _root_atlassian(cfg):
 
 
 # ---------------------------------------------------------------------------
-print("[1] supports_agent")
+print("[1] supports_agent -- tokenless OAuth server: only OAUTH_ALLOWLIST agents")
 check("claude supported", jira_mcp.supports_agent("claude"))
 check("claude with args supported", jira_mcp.supports_agent("claude --dangerously-skip-permissions"))
-check("codex not supported (v1)", not jira_mcp.supports_agent("codex"))
+check("codex not yet supported (phased OAuth rollout)", not jira_mcp.supports_agent("codex"))
+check("aider not supported", not jira_mcp.supports_agent("aider"))
 check("plain shell not supported", not jira_mcp.supports_agent(""))
 
 
@@ -51,6 +61,7 @@ check("no token anywhere", "Bearer" not in json.dumps(cfg) and "Basic" not in js
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[3] inject / remove round-trip -- user scope, server named 'atlassian'")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -70,6 +81,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[4] inject preserves the rest of ~/.claude.json (coexists with github + vercel)")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -102,6 +114,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[5] inject refuses a hand-rolled root atlassian server")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
@@ -112,6 +125,7 @@ with tempfile.TemporaryDirectory() as d:
 
 
 # ---------------------------------------------------------------------------
+_reset_ledger()
 print("[6] unsupported agent / project-scope sweep")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"

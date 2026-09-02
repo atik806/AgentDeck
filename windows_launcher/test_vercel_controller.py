@@ -11,6 +11,11 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Redirect every agent config + the disconnect ledger into a sandbox.
+_SANDBOX = tempfile.mkdtemp(prefix="adk-vercelctrl-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -54,21 +59,25 @@ def pump(until, ms=3000):
     return hit["v"]
 
 
-# Never let the injector touch the real ~/.claude.json during tests.
-_TEST_CC = Path(tempfile.mkdtemp()) / ".claude.json"
-vercel_mcp._claude_config_path = lambda: _TEST_CC
+_CLAUDE_CFG = Path(_SANDBOX) / "claude.json"
+
+
+def _reset_sandbox():
+    for p in Path(_SANDBOX).glob("*"):
+        p.unlink(missing_ok=True)
 
 
 def fresh_controller(tmp):
-    vc = vercel_controller.VercelController(account=None, config={"agent": "claude"})
+    vc = vercel_controller.VercelController(
+        account=None, config={"agent": "claude", "plugins_wire_all_agents": False})
     vc._store = PluginStore(Path(tmp) / "plugins.json")
     return vc
 
 
 def _vercel_srv():
-    if not _TEST_CC.exists():
+    if not _CLAUDE_CFG.exists():
         return None
-    return (json.loads(_TEST_CC.read_text()).get("mcpServers") or {}).get("vercel")
+    return (json.loads(_CLAUDE_CFG.read_text()).get("mcpServers") or {}).get("vercel")
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +122,16 @@ with tempfile.TemporaryDirectory() as tmp:
 
 
 # ---------------------------------------------------------------------------
-print("[4] ensure_wired no-ops when the agent isn't claude")
+print("[4] ensure_wired no-ops when no target agent can run the OAuth handshake")
 with tempfile.TemporaryDirectory() as tmp:
+    _reset_sandbox()
     vc = fresh_controller(tmp)
-    vc._config = {"agent": "codex"}
+    vc._config = {"agent": "codex", "plugins_wire_all_agents": False}
     vc._store.put(vercel_controller.PluginConnection(VERCEL))
-    check("ensure_wired declines for a non-claude agent", not vc.ensure_wired())
+    check("ensure_wired declines -- codex isn't OAuth-capable yet", not vc.ensure_wired())
+
+    vc._config = {"agent": "claude", "plugins_wire_all_agents": False}
+    check("ensure_wired writes for claude", vc.ensure_wired() and _vercel_srv() is not None)
 
 
 print()

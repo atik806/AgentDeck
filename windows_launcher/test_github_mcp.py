@@ -4,12 +4,24 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
+# Redirect every agent's config file + the disconnect ledger into a sandbox so
+# nothing here touches the real ~/.claude.json, ~/.codex, %APPDATA%\...
+_SANDBOX = tempfile.mkdtemp(prefix="adk-ghmcp-")
+os.environ["ADK_MCP_CONFIG_DIR"] = _SANDBOX
+os.environ["ADK_MCP_STATE"] = str(Path(_SANDBOX) / "mcp_state.json")
+
 import github_mcp
+import mcp_targets
 from plugin_store import PluginConnection, GITHUB
+
+
+def _reset_ledger():
+    Path(os.environ["ADK_MCP_STATE"]).unlink(missing_ok=True)
 
 _passed = 0
 _failed = 0
@@ -30,11 +42,15 @@ def _read(p):
 
 
 # ---------------------------------------------------------------------------
-print("[1] supports_agent")
+print("[1] supports_agent -- GitHub wires any agent that can bear a remote token")
 check("claude supported", github_mcp.supports_agent("claude"))
 check("claude with args supported", github_mcp.supports_agent('claude --dangerously-skip-permissions'))
-check("codex not supported (v1)", not github_mcp.supports_agent("codex"))
+check("codex supported (bearer_token)", github_mcp.supports_agent("codex"))
+check("gemini supported", github_mcp.supports_agent("gemini"))
+check("aider NOT supported (no MCP)", not github_mcp.supports_agent("aider"))
 check("plain shell not supported", not github_mcp.supports_agent(""))
+check("review flow: claude + codex only", github_mcp.review_supported("claude")
+      and github_mcp.review_supported("codex") and not github_mcp.review_supported("gemini"))
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +74,7 @@ def _root_gh(cfg):
 # ---------------------------------------------------------------------------
 print("[3] inject / remove round-trip -- user scope, no repo file, folder-independent")
 conn = PluginConnection(GITHUB, login="atik806", capabilities=["review"])
+_reset_ledger()
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
     repo = Path(d) / "repo"
@@ -83,6 +100,7 @@ with tempfile.TemporaryDirectory() as d:
 
 # ---------------------------------------------------------------------------
 print("[4] inject preserves the rest of ~/.claude.json")
+_reset_ledger()
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
     cc.write_text(json.dumps({
@@ -105,6 +123,7 @@ with tempfile.TemporaryDirectory() as d:
 
 # ---------------------------------------------------------------------------
 print("[5] inject refuses a hand-rolled root github server")
+_reset_ledger()
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
     cc.write_text(json.dumps({"mcpServers": {"github": {"command": "my-own-github-mcp"}}}), encoding="utf-8")
@@ -116,8 +135,10 @@ with tempfile.TemporaryDirectory() as d:
 # ---------------------------------------------------------------------------
 print("[6] unsupported agent / legacy .mcp.json cleanup / project-scope sweep")
 with tempfile.TemporaryDirectory() as d:
+    _reset_ledger()
     cc = Path(d) / ".claude.json"
-    check("codex agent -> no-op", not github_mcp.inject(d, "t", conn, agent_command="codex", claude_config=cc))
+    check("aider agent -> no-op (no MCP support)",
+          not github_mcp.inject(d, "t", conn, agent_command="aider", claude_config=cc))
     check("empty token -> no-op", not github_mcp.inject(d, "", conn, agent_command="claude", claude_config=cc))
 
     repo = Path(d) / "repo"
@@ -161,6 +182,61 @@ with tempfile.TemporaryDirectory() as d:
     cmd = github_mcp.review_startup_command("claude", "atik806/AgentDeck", 7, bp)
     check("startup command runs claude with a task", cmd.startswith('claude "') and "#7" in cmd)
     check("points at the brief path", ".agentdeck/review-7.md" in cmd)
+
+
+
+# ---------------------------------------------------------------------------
+print("[8] multi-agent fan-out -- one connection, every installed agent's format")
+_reset_ledger()
+with tempfile.TemporaryDirectory() as d:
+    paths = {k: Path(d) / f"{k}.cfg" for k in mcp_targets.all_keys()}
+    changed = github_mcp.inject(None, "gho_multi", conn,
+                                agent_keys=mcp_targets.all_keys(), config_paths=paths)
+    check("inject reports a change", changed)
+
+    claude_cfg = json.loads(paths["claude"].read_text(encoding="utf-8"))
+    check("claude: mcpServers.github, type http, bearer header",
+          claude_cfg["mcpServers"]["github"]["type"] == "http"
+          and claude_cfg["mcpServers"]["github"]["headers"]["Authorization"] == "Bearer gho_multi")
+
+    gem = json.loads(paths["gemini"].read_text(encoding="utf-8"))
+    check("gemini: httpUrl (not url)", "httpUrl" in gem["mcpServers"]["github"]
+          and "url" not in gem["mcpServers"]["github"])
+
+    anti = json.loads(paths["antigravity"].read_text(encoding="utf-8"))
+    check("antigravity: serverUrl", "serverUrl" in anti["mcpServers"]["github"])
+
+    oc = json.loads(paths["opencode"].read_text(encoding="utf-8"))
+    check("opencode: mcp.<name>, type remote, enabled",
+          oc["mcp"]["github"]["type"] == "remote" and oc["mcp"]["github"]["enabled"] is True)
+
+    amp = json.loads(paths["amp"].read_text(encoding="utf-8"))
+    check("amp: flat dotted key 'amp.mcpServers'", "amp.mcpServers" in amp)
+
+    crush = json.loads(paths["crush"].read_text(encoding="utf-8"))
+    check("crush: mcp.<name>, type http", crush["mcp"]["github"]["type"] == "http")
+
+    codex_txt = paths["codex"].read_text(encoding="utf-8")
+    check("codex: [mcp_servers.github] with bearer_token, rmcp flag, no type",
+          "[mcp_servers.github]" in codex_txt and "bearer_token" in codex_txt
+          and "experimental_use_rmcp_client" in codex_txt and "type =" not in codex_txt)
+
+    if mcp_targets.caps("goose")["format"] == "yaml":
+        goose_txt = paths["goose"].read_text(encoding="utf-8")
+        check("goose: extensions.github, streamable_http, uri, name",
+              "streamable_http" in goose_txt and "uri:" in goose_txt and "name: github" in goose_txt)
+    else:
+        check("SKIP goose (no yaml writer)", True)
+
+    check("re-inject is a no-op", not github_mcp.inject(None, "gho_multi", conn,
+          agent_keys=mcp_targets.all_keys(), config_paths=paths))
+
+    removed = github_mcp.remove(agent_keys=mcp_targets.all_keys(), config_paths=paths)
+    check("remove reports a change", removed)
+    check("claude github gone", "github" not in json.loads(paths["claude"].read_text())["mcpServers"])
+    check("codex server + rmcp flag gone",
+          "[mcp_servers.github]" not in paths["codex"].read_text(encoding="utf-8")
+          and "experimental_use_rmcp_client" not in paths["codex"].read_text(encoding="utf-8"))
 
 
 print()

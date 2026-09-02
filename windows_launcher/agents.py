@@ -27,6 +27,8 @@ __all__ = [
     "refresh_path",
     "resolve_agent",
     "agent_label",
+    "agent_key_for_command",
+    "installed_agent_keys",
     "is_claude_command",
     "pretrust_folder",
     "PLAIN_KEY",
@@ -212,6 +214,26 @@ def resolve_agent(key: str, custom: str = "") -> str:
 def agent_label(key: str) -> str:
     """A human name for a persisted key (falls back to the key itself)."""
     return _LABELS.get(key, key or "Plain shell")
+
+
+def agent_key_for_command(command: str) -> str:
+    """The ``_KNOWN`` key whose command is ``command`` (the reverse of
+    :func:`resolve_agent`). ``""`` for a plain shell, an unrecognised command, or a
+    custom one. Ignores arguments: ``"claude --foo"`` -> ``"claude"``.
+    """
+    if not command or not command.strip():
+        return ""
+    first = command.strip().split()[0].strip('"').strip("'")
+    stem = Path(first).stem.lower()
+    for key, _label, cmd in _KNOWN:
+        if key == stem or Path(cmd).stem.lower() == stem:
+            return key
+    return ""
+
+
+def installed_agent_keys() -> List[str]:
+    """Keys of the known agents currently on PATH, best-known first."""
+    return [k for k, _lbl, _cmd, ok in all_agents() if ok]
 
 
 # ---------------------------------------------------------------------------

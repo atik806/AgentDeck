@@ -57,10 +57,10 @@ class VercelController(QObject):
         self._workers: set = set()
 
         # Already connected from a previous run? Make sure the MCP server is in
-        # Claude Code's config now. Staggered behind GitHubController's
-        # singleShot(0) -- both do read-modify-write of the whole ~/.claude.json.
+        # every target agent's config now. Same-file writers are serialised by
+        # mcp_io.locked(), so no stagger is needed.
         if self.is_connected:
-            QTimer.singleShot(250, self.ensure_wired)
+            QTimer.singleShot(0, self.ensure_wired)
 
     # -- state -----------------------------------------------------------
 
@@ -101,29 +101,33 @@ class VercelController(QObject):
 
     # -- MCP wiring ----------------------------------------------------
 
-    def _agent_is_claude(self, agent_command: Optional[str]) -> bool:
-        """Whether AgentDeck's agent for this session is Claude Code.
+    def _target_agent_keys(self, agent_command: Optional[str] = None) -> list[str]:
+        """Which agents to write the Vercel MCP server into -- the workspace's
+        agent plus, unless ``plugins_wire_all_agents`` is off, every installed
+        agent. ``vercel_mcp.inject`` further filters to the OAuth-capable set."""
+        import agents
 
-        ``agent_command`` may be empty when ``claude`` isn't on the *packaged
-        app's* PATH even though the user runs it fine in a pane -- so fall back to
-        the configured agent key.
-        """
-        if agent_command and vercel_mcp.supports_agent(agent_command):
-            return True
-        return str(self._config.get("agent", "")).strip().lower() == "claude"
+        keys: set[str] = set()
+        k = agents.agent_key_for_command(agent_command) if agent_command else ""
+        if not k:
+            k = str(self._config.get("agent", "")).strip().lower()
+        if k and k not in ("none", "custom"):
+            keys.add(k)
+        if self._config.get("plugins_wire_all_agents", True):
+            keys |= set(agents.installed_agent_keys())
+        return sorted(keys)
 
     def ensure_wired(self, folder: Optional[str] = None,
                      agent_command: Optional[str] = None) -> bool:
-        """Add the Vercel MCP server to Claude Code's user-scope config.
-
-        Folder-independent (the server is user-scope); ``folder`` is accepted for
-        call-site symmetry with the GitHub controller. Best-effort; returns True
-        if the config changed.
-        """
-        if not self.is_connected or not self._agent_is_claude(agent_command):
+        """Add the Vercel MCP server to every OAuth-capable target agent's
+        user-scope config. Best-effort; returns True if any config changed."""
+        if not self.is_connected:
+            return False
+        keys = self._target_agent_keys(agent_command)
+        if not keys:
             return False
         try:
-            return vercel_mcp.inject()
+            return vercel_mcp.inject(agent_keys=keys)
         except Exception:  # noqa: BLE001
             return False
 

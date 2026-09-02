@@ -57,7 +57,12 @@ hiddenimports += [
     "github_controller", "github_review_dialog",
     "vercel_mcp", "vercel_controller",
     "jira_mcp", "jira_controller",
+    "mcp_io", "mcp_targets",
 ]
+
+# Writing non-JSON agent config (Codex's TOML, Goose's YAML). Pure-Python but
+# PyInstaller under-collects ruamel.yaml's plugin submodules; tomlkit is flat.
+hiddenimports += ["tomlkit"] + collect_submodules("ruamel.yaml")
 
 # The voice pipeline lives in the sibling `voice_capture` package. It must be
 # `pip install`ed into the build venv for this to find anything.

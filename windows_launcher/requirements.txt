@@ -22,6 +22,17 @@ numpy>=1.26,<2.0
 # install it as a real package so PyInstaller can collect it:
 #     pip install ../voice_capture
 
+# --- Plugins: writing coding-agent MCP config (see docs/PLUGINS.md) ------
+# Each agent stores its MCP servers in its own format. JSON is stdlib; TOML
+# read is stdlib (tomllib, 3.11+). These two add round-trip *writing* of the
+# non-JSON formats without trashing the user's comments:
+#   tomlkit      -- Codex's ~/.codex/config.toml
+#   ruamel.yaml  -- Goose's config.yaml
+# Both pure-Python-importable; if either is somehow missing, mcp_io degrades
+# that format to a no-op and the JSON agents still work.
+tomlkit>=0.13,<1.0
+ruamel.yaml>=0.18,<0.19
+
 # --- Accounts / cloud sync (see docs/ACCOUNTS.md) ------------------------
 # Sign-in and settings sync talk to Supabase over plain HTTPS -- no supabase
 # SDK, to keep the frozen build light. Optional at runtime: with no network
