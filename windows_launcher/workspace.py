@@ -147,21 +147,21 @@ class TerminalPane(QFrame):
         self._restart_btn = QPushButton("↻", self._header)
         self._restart_btn.setObjectName("paneRestart")
         self._restart_btn.setCursor(Qt.PointingHandCursor)
-        self._restart_btn.setFixedWidth(22)
+        self._restart_btn.setFixedSize(26, 22)
         self._restart_btn.setToolTip("Restart this shell")
         self._restart_btn.clicked.connect(self.restart)
 
         self._expand_btn = QPushButton(_EXPAND_GLYPH, self._header)
         self._expand_btn.setObjectName("paneExpand")
         self._expand_btn.setCursor(Qt.PointingHandCursor)
-        self._expand_btn.setFixedWidth(22)
+        self._expand_btn.setFixedSize(26, 22)
         self._expand_btn.setToolTip("Expand pane (Ctrl+Shift+E)")
         self._expand_btn.clicked.connect(lambda: self.expand_requested.emit(self))
 
         close_btn = QPushButton("✕", self._header)
         close_btn.setObjectName("paneClose")
         close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setFixedWidth(22)
+        close_btn.setFixedSize(26, 22)
         close_btn.setToolTip("Close pane (Ctrl+Shift+W)")
         close_btn.clicked.connect(lambda: self.close_requested.emit(self))
 
@@ -340,15 +340,17 @@ class TerminalPane(QFrame):
             }}
             QPushButton#paneClose, QPushButton#paneRestart,
             QPushButton#paneExpand {{
-                color: {t('pane_title')};
-                background: transparent;
-                border: none;
-                font-size: 11px;
-                padding: 1px 4px;
+                color: {t('text')};
+                background: {t('surface')};
+                border: 1px solid {t('border')};
+                border-radius: 5px;
+                font-size: 13px;
+                padding: 1px 3px;
             }}
             QPushButton#paneExpand {{
-                color: {on_accent if self._expanded else t('pane_title')};
-                background: {accent if self._expanded else 'transparent'};
+                color: {on_accent if self._expanded else t('text')};
+                background: {accent if self._expanded else t('surface')};
+                border-color: {accent if self._expanded else t('border')};
             }}
             QPushButton#paneClose:hover {{ color: {on_accent}; background: {t('danger_hover')}; }}
             QPushButton#paneRestart:hover {{ color: {on_accent}; background: {accent}; }}
