@@ -563,6 +563,11 @@ console — hence the crash-to-MessageBox handler in `main.py`).
         bootstrap-only session (`_Doc.__bool__`), so the handoff cleanly starts
         the target fresh instead of writing a header-only file.
       - Transcript budget default 200k→**60k**; tool-result cap 2000→**600**.
+      - **opencode cross-agent target** launches `opencode --prompt "<abs path>"`
+        (was: bare launch + `insert_text` into the TUI, which opencode's TUI
+        wipes on first paint). "no session / empty transcript / not installed"
+        are now Yes/No dialogs, not transient status lines. Every step is logged
+        to `~/.agentdeck-handoff.log` (`TerminalPanel._hlog`).
     - Tests: `test_agent_sessions.py` (new, 63 — incl. `after=` watermark,
       empty→None, working-folder doc store), `test_handoff_dialog.py` (new, 17),
       `test_entitlements.py` [+1], `test_panel.py` §30 (Pro gate + resume with
