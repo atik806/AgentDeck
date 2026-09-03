@@ -126,9 +126,11 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    accuracy/VAD/segmentation knobs from config (`voice_beam_size`,
    `voice_n_threads`, `voice_initial_prompt` (default = code/terminal
    vocabulary), `voice_vad_aggressiveness`, `voice_silence_ms` /
-   `voice_min_speech_ms` / `voice_preroll_ms`, `voice_language`); each finished
-   utterance passes through `voice_postprocess.apply()` (capitalise, drop
-   whisper's trailing period) unless `voice_post_processing` is off. Overlay is
+   `voice_min_speech_ms` / `voice_preroll_ms`, `voice_language`). The engine
+   emits the **raw** utterance; `terminal_panel._on_voice_text` runs
+   `voice_postprocess.apply()` (drop whisper's trailing period; opt-in spoken
+   punctuation / command fixups — no auto-capitalise) after checking it for a
+   spoken command (see section 5's voice-overhaul note). Overlay is
    parented to the **window** (not the stack — loses the z-fight otherwise) and
    kept over the panes via `VoiceOverlay.set_bounds()`. Audio deps optional:
    missing → mic disabled, panel fine. One additive hook in
@@ -161,6 +163,45 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    on). The raw daemon-thread model is kept (proven, 48 engine tests) rather
    than a QThread rewrite — the worker→GUI hop is already a queued `_Bridge`
    signal.
+   **Global hotkey** (`global_hotkey.py`): a `QAbstractNativeEventFilter` +
+   `ctypes` `RegisterHotKey` (no new dep, not a keyboard hook). `parse_hotkey`
+   → `(mods|MOD_NOREPEAT, vk)`; a bare key is allowed only for F1–F24.
+   `terminal_panel._build_voice` installs it + `_rebind_global_hotkey()` (bound
+   only when `voice_global_hotkey_enabled` + `voice_input_enabled` + Pro;
+   re-run from `_apply_entitlements` and after Settings). A press fires
+   `_on_global_voice_hotkey` (250 ms de-dupe vs the focused `QAction`):
+   `voice_global_target="agentdeck"` un-minimises + raises the window then
+   toggles; `"foreground"` records `GetForegroundWindow()` and
+   `_paste_to_foreground()` sends the transcript there via clipboard +
+   synthesised Ctrl+V (clipboard restored after 400 ms). `voice_hotkey` /
+   `voice_global_hotkey_enabled` / `voice_global_target` are machine-local.
+   Settings ▸ Voice has a `QKeySequenceEdit` + a target combo. `_shutdown_all`
+   → `GlobalHotkey.dispose()`.
+   **Theming + partial transcript:** the capsule now paints from `theme.py`
+   `voice_*` tokens (Mocha + Latte) instead of a fixed dark HUD — repaints on
+   `theme.manager().changed`; grew to 208×34. `VoiceOverlay.set_partial(text)`
+   shows whisper's interim per-segment text (dim, italic, left-elided tail, no
+   auto-revert) while `listening`, cleared by the next `set_state` or the final
+   `flash_text`. Pipeline: `TranscriptionEngine.transcribe(audio, on_partial=)`
+   forwards `new_segment_callback`; `AudioCapture(on_partial=)` →
+   `VoiceEngine._emit_partial` (gated by `voice_show_partial`) → `partial`
+   signal → `overlay.set_partial`. Not word-streaming — whisper.cpp fires the
+   segment callback near the end of each `transcribe()` pass; a true rolling
+   partial would need overlapping-window re-decode (out of scope).
+   **Spoken commands + punctuation:** `voice_commands.parse(text, cfg)` →
+   `(action, rest)` where a *whole* utterance matching a phrase set is
+   `submit`/`newline`/`scratch`/`stop` (mid-sentence "send" stays literal).
+   `terminal_panel._on_voice_text` dispatches: `submit`/auto-send →
+   `TerminalView.submit()` (writes `\r` + emits `submitted`), `scratch` →
+   `TerminalView.erase_text(_last_voice_len)` (DEL bytes, best-effort, never
+   crosses `\n`), `stop` → `stop_listening()`. The **engine now emits the raw
+   utterance**; all clean-up moved to the panel via `voice_postprocess.apply`
+   (no auto-capitalise — feeds a shell; opt-in `voice_spoken_punctuation`
+   "period"→"." and experimental `voice_command_fixups` "get"→"git").
+   `voice_auto_send` (default off) presses Enter after each phrase unless it
+   ends with a `\`/`|`/`&&` continuation. `voice_commands_enabled` /
+   `voice_spoken_punctuation` / `voice_auto_send` / `voice_command_fixups` are
+   in `CLOUD_KEYS`.
 
 6. **Setup wizard** (2026-08-28) — `main.py` opens a 3-step `QDialog`
    (`setup_wizard.py`, amber accent) before the panel: **Start** (welcome +
@@ -360,8 +401,9 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     → Catppuccin hues; sidebar swatch text → `on_accent`; active pane title →
     bold; wordmark 12→13px; `vt_screen` static-fallback palette refreshed.
     **Deliberately not changed:** setup wizard / login / trial gate / `agents_ui`
-    stay amber (front-door vs in-app split); `voice_overlay.py` keeps its own
-    dark HUD palette (most visible against Latte — top follow-up candidate).
+    stay amber (front-door vs in-app split). (`voice_overlay.py` used to keep a
+    fixed dark HUD palette — now theme-token driven, see the voice-overhaul
+    Phase 5 note in section 5.)
     Qt QSS has no box-shadow/transition, so the pitch's glows/motion were
     dropped — this is palette + typography only. Tests: `test_theme.py` green;
     same pre-existing panel-suite fails.
@@ -623,6 +665,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_voice_models.py       # model pick + resolve; offline
 .venv\Scripts\python.exe test_voice_postprocess.py  # utterance clean-up; offline
 .venv\Scripts\python.exe test_voice_download.py     # model download ctrl; offline
+.venv\Scripts\python.exe test_global_hotkey.py      # OS hotkey parse+filter; offline
+.venv\Scripts\python.exe test_voice_commands.py     # spoken-command parser; offline
 .venv\Scripts\python.exe test_agents.py         # agent discovery; offline
 .venv\Scripts\python.exe test_setup_wizard.py   # wizard pages/validation; offline
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline

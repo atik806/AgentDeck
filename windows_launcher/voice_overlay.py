@@ -52,8 +52,9 @@ import theme
 __all__ = ["VoiceOverlay", "mic_icon"]
 
 # The capsule footprint. Kept deliberately small -- it floats over live
-# terminal output, so it should read as a control chip, not a panel.
-_W, _H = 168, 30
+# terminal output, so it should read as a control chip, not a panel. A touch
+# wider/taller than the original 168x30 to fit a line of interim transcript.
+_W, _H = 208, 34
 
 #: A calm, symmetric "resting" equaliser arch (0..1 per bar).
 _REST = [0.30, 0.46, 0.64, 0.82, 0.92, 0.82, 0.64, 0.46, 0.30]
@@ -69,20 +70,20 @@ def _c(token: str) -> QColor:
 
 def _bar_color(mode: str) -> QColor:
     if mode == "listening":
-        return _c("accent_2")        # the blue->teal waveform
+        return _c("voice_wave")      # the blue->teal waveform
     if mode == "loading":
         return _c("pro")             # a warm "working" amber
-    return _c("text_faint")          # idle: a quiet grey
+    return _c("voice_wave_idle")     # idle: a quiet grey
 
 
 def _edge_color(state: str) -> QColor:
     if state == "listening":
-        return _c("danger")          # the "recording" red ring
+        return _c("voice_border_rec")  # the "recording" ring
     if state == "loading":
         return _c("pro")
     if state == "error":
-        return _c("danger")
-    return _c("border")
+        return _c("voice_border_rec")
+    return _c("voice_border")
 
 
 def mic_icon(px: int = 18, color: Optional[str] = None) -> QIcon:
@@ -153,13 +154,13 @@ class _MicButton(QPushButton):
 
     def _fg(self) -> QColor:
         if self._state == "listening":
-            return QColor("#ffffff")
+            return _c("on_accent")
         if self._state == "loading":
             return _c("pro")
         if self._state == "error":
-            return _c("danger")
+            return _c("voice_border_rec")
         if self._state == "unavailable":
-            return _c("text_faint")
+            return _c("voice_wave_idle")
         return _c("text_muted") if not self.underMouse() else _c("text")
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -171,7 +172,7 @@ class _MicButton(QPushButton):
         # A soft expanding ring while listening / loading.
         if self._pulse_timer.isActive():
             grow = 4.0 * math.sin(self._pulse * math.pi)
-            ring = QColor(_c("danger") if self._state == "listening" else _c("pro"))
+            ring = QColor(_c("voice_border_rec") if self._state == "listening" else _c("pro"))
             ring.setAlphaF(0.22 * (1.0 - self._pulse))
             p.setPen(Qt.NoPen)
             p.setBrush(ring)
@@ -179,8 +180,8 @@ class _MicButton(QPushButton):
                                  2 * (r + grow), 2 * (r + grow)))
 
         if self._state == "listening":
-            disc = _c("danger")
-            edge = _c("danger")
+            disc = _c("voice_border_rec")
+            edge = _c("voice_border_rec")
         elif self.underMouse() and self.isEnabled():
             disc = _c("surface_hover")
             edge = _c("border_hover")
@@ -226,6 +227,8 @@ class _Equalizer(QWidget):
         self._caption = ""
         self._cap_alpha = 0.0         # 0 = bars, 1 = caption
         self._cap_color = QColor(theme.color("text_muted"))
+        self._cap_italic = False
+        self._cap_elide = Qt.ElideRight
         self._timer = QTimer(self)
         self._timer.setInterval(28)
         self._timer.timeout.connect(self._tick)
@@ -266,9 +269,12 @@ class _Equalizer(QWidget):
 
     # -- caption ---------------------------------------------------------------
 
-    def set_caption(self, text: str, color: QColor) -> None:
+    def set_caption(self, text: str, color: QColor,
+                    italic: bool = False, elide=Qt.ElideRight) -> None:
         self._caption = text or ""
         self._cap_color = color
+        self._cap_italic = italic
+        self._cap_elide = elide
 
     def _get_cap_alpha(self) -> float:
         return self._cap_alpha
@@ -320,8 +326,9 @@ class _Equalizer(QWidget):
             c.setAlphaF(self._cap_alpha)
             p.setPen(c)
             f = QFont("Segoe UI", 8)
+            f.setItalic(self._cap_italic)
             p.setFont(f)
-            text = p.fontMetrics().elidedText(self._caption, Qt.ElideRight, w)
+            text = p.fontMetrics().elidedText(self._caption, self._cap_elide, w)
             p.drawText(QRectF(0, 0, w, h), Qt.AlignVCenter | Qt.AlignLeft, text)
 
 
@@ -342,10 +349,8 @@ _CAPTIONS = {
 def _cap_color(state: str) -> QColor:
     if state == "loading":
         return _c("pro")
-    if state == "error":
-        return _c("danger")
-    if state == "unavailable":
-        return _c("danger")
+    if state in ("error", "unavailable"):
+        return _c("voice_border_rec")
     return _c("text_muted")
 
 
@@ -432,13 +437,34 @@ class VoiceOverlay(QWidget):
             self._eq.capAlpha = 1.0
         self._eq.update()
 
+    def set_partial(self, text: str) -> None:
+        """Dim, italic interim transcript shown over the bars while listening.
+
+        No auto-revert -- cleared by the next :meth:`set_state` or the final
+        :meth:`flash_text`. A blank string drops back to the bars.
+        """
+        if self._state != "listening":
+            return
+        text = (text or "").strip()
+        if not text:
+            self._apply_caption("", _c("voice_partial_text"))
+            return
+        tail = text[-48:]
+        self._revert_token += 1          # cancel a pending flash_text revert
+        self._eq.set_caption(tail, _c("voice_partial_text"),
+                             italic=True, elide=Qt.ElideLeft)
+        if self._eq.capAlpha < 1.0:
+            self._cap_anim.stop()
+            self._eq.capAlpha = 1.0
+        self._eq.update()
+
     def flash_text(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
         self._revert_token += 1
         token = self._revert_token
-        self._apply_caption(text, _c("text"))
+        self._apply_caption(text, _c("voice_text"))
         QTimer.singleShot(2800, lambda: self._revert(token))
 
     def set_available(self, available: bool, reason: str = "") -> None:
@@ -457,8 +483,11 @@ class VoiceOverlay(QWidget):
         # Repaint everything against the new palette. Re-resolve the caption
         # colour: a system caption tracks its state, a transcript stays "text".
         is_system = self._eq._caption == _CAPTIONS.get(self._state, "")
-        self._eq.set_caption(self._eq._caption,
-                             _cap_color(self._state) if is_system else _c("text"))
+        self._eq.set_caption(
+            self._eq._caption,
+            _cap_color(self._state) if is_system else _c("voice_text"),
+            italic=self._eq._cap_italic, elide=self._eq._cap_elide,
+        )
         self._mic.update()
         self._eq.update()
         self.update()
@@ -561,14 +590,15 @@ class VoiceOverlay(QWidget):
         path.addRoundedRect(rect, rad, rad)
 
         grad = QLinearGradient(0, 0, 0, self.height())
-        top = _c("surface")
-        grad.setColorAt(0.0, top.lighter(108))
-        grad.setColorAt(1.0, top.darker(112))
+        top = _c("voice_bg")
+        grad.setColorAt(0.0, top.lighter(106))
+        grad.setColorAt(1.0, top.darker(108))
         p.fillPath(path, grad)
 
-        # A hairline top highlight for a touch of depth.
-        hi = QColor("#ffffff")
-        hi.setAlphaF(0.05)
+        # A hairline top highlight for a touch of depth -- barely-there so it
+        # doesn't read as a line on the light (Latte) capsule.
+        hi = QColor(_c("voice_text"))
+        hi.setAlphaF(0.06)
         p.setPen(QPen(hi, 1))
         p.drawLine(QPointF(rad, 1.4), QPointF(self.width() - rad, 1.4))
 

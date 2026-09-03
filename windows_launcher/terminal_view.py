@@ -1349,6 +1349,27 @@ class TerminalView(QWidget):
         self.session.write(payload)
         self.canvas.content_changed.emit()
 
+    def erase_text(self, count: int) -> None:
+        """Best-effort: delete ``count`` chars left of the cursor (DEL bytes).
+
+        ``\\x7f`` is what a real Backspace sends to PSReadLine / readline. The
+        caller clamps ``count`` to what it typed and never lets it cross a
+        newline, so an over- or under-erase after the user also typed is on
+        them -- this is a "scratch that" convenience, not an editor.
+        """
+        count = int(count)
+        if count <= 0:
+            return
+        self.canvas.scroll_to_bottom()
+        self.session.write("\x7f" * count)
+        self.canvas.content_changed.emit()
+
+    def submit(self) -> None:
+        """Press Enter at the prompt (and let the panel know, like a real key)."""
+        self.canvas.scroll_to_bottom()
+        self.session.write("\r")
+        self.submitted.emit()
+
     # -- appearance --------------------------------------------------------
 
     def set_font_size(self, size: int) -> None:

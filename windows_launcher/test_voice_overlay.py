@@ -97,6 +97,32 @@ overlay.set_state("idle")
 overlay.set_progress(80)
 check("progress is ignored when not loading", "80%" not in overlay.caption_text())
 
+# interim partial transcript
+overlay.set_state("listening")
+overlay.set_partial("open the config file and")
+check("partial text shows in the caption", "config file" in overlay.caption_text())
+check("partial is italic + left-elided",
+      overlay._eq._cap_italic and overlay._eq._cap_elide == Qt.ElideLeft)
+overlay.set_partial("")
+check("blank partial drops back to the bars", overlay.caption_text() == "")
+overlay.set_partial("half a sentence")
+overlay.set_state("idle")
+check("changing state clears a partial", "half a sentence" not in overlay.caption_text())
+overlay.set_state("listening")
+overlay.set_partial("first draft")
+overlay.flash_text("First draft done")
+check("a final transcript overrides the partial",
+      "First draft done" in overlay.caption_text() and not overlay._eq._cap_italic)
+
+
+# ---------------------------------------------------------------------------
+print("[3c] voice tokens exist for both themes")
+import theme as _t
+for mode in ("dark", "light"):
+    for tok in ("voice_bg", "voice_border", "voice_border_rec", "voice_wave",
+                "voice_wave_idle", "voice_partial_text", "voice_text"):
+        check(f"{mode}:{tok}", bool(_t.color(tok, mode)))
+
 
 # ---------------------------------------------------------------------------
 print("[4] mic button and Ctrl+X ask to toggle")

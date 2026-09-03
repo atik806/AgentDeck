@@ -3,8 +3,8 @@
 whisper.cpp returns text shaped for prose: a leading capital and a trailing
 period on every clip. Dropped straight into a shell prompt that trailing "."
 corrupts the command, and mid-dictation capitalisation of a continuation is
-wrong. This module fixes only what is unambiguous; anything richer (spoken
-punctuation, command-word fixups) is opt-in and added in a later phase.
+wrong. Always-on clean-up fixes only what is unambiguous; spoken punctuation
+("period" -> ".") and command-word fixups ("get" -> "git") are opt-in.
 
 Pure functions, no Qt, no I/O -- safe to unit-test in isolation.
 """
@@ -14,6 +14,42 @@ from __future__ import annotations
 import re
 
 __all__ = ["apply"]
+
+# Spoken punctuation. Multi-word keys before their prefixes.
+_SPOKEN_PUNCT = [
+    ("question mark", "?"), ("exclamation point", "!"), ("exclamation mark", "!"),
+    ("open parenthesis", "("), ("open paren", "("),
+    ("close parenthesis", ")"), ("close paren", ")"),
+    ("new line", "\n"), ("newline", "\n"),
+    ("full stop", "."), ("period", "."), ("comma", ","), ("colon", ":"),
+    ("semicolon", ";"), ("dash", "-"), ("hyphen", "-"),
+    ("open quote", '"'), ("close quote", '"'), ("quote", '"'),
+]
+_CLOSE_MARKS = set('.,:;?!)"\n')
+# Conservative, line-anchored command-word repairs (experimental, default off).
+_COMMAND_FIXUPS = [
+    (re.compile(r"^(\s*)get\b"), r"\1git"),
+    (re.compile(r"\bpseudo\b", re.I), "sudo"),
+    (re.compile(r"\bg[ -]?it[ -]?hub\b", re.I), "GitHub"),
+    (re.compile(r"\bNPM\b"), "npm"),
+]
+
+
+def _apply_spoken_punctuation(text: str) -> str:
+    for word, sym in _SPOKEN_PUNCT:
+        text = re.sub(rf"\s*\b{re.escape(word)}\b\s*",
+                      sym if sym in _CLOSE_MARKS else sym + " ",
+                      text, flags=re.I)
+    text = re.sub(r"\s+([.,:;?!)])", r"\1", text)      # no space before a mark
+    text = re.sub(r'([.,:;?!)])(?=[^\s.,:;?!)"])', r"\1 ", text)  # one space after
+    text = re.sub(r"\(\s+", "(", text)
+    return text.strip()
+
+
+def _apply_command_fixups(text: str) -> str:
+    for pat, repl in _COMMAND_FIXUPS:
+        text = pat.sub(repl, text)
+    return text
 
 _WS = re.compile(r"[ \t ]+")
 # "one short phrase" = no internal sentence punctuation. If whisper split the
@@ -29,28 +65,29 @@ def _strip_trailing_period(text: str) -> str:
     return text
 
 
-def _capitalize_first(text: str) -> str:
-    for i, ch in enumerate(text):
-        if ch.isalpha():
-            if ch.islower():
-                return text[:i] + ch.upper() + text[i + 1:]
-            return text
-        if ch.isalnum():  # a leading digit -> nothing to capitalise
-            return text
-    return text
-
-
 def apply(text: str, config: dict | None = None) -> str:
-    """Return ``text`` cleaned up, or unchanged if post-processing is off."""
+    """Return ``text`` cleaned up according to ``config``.
+
+    Note: no auto-capitalisation -- this feeds a shell prompt, where "Echo" is
+    not "echo". Only whitespace and whisper's trailing period are touched
+    unconditionally.
+    """
     if text is None:
         return ""
     cfg = config or {}
+
+    spoken = cfg.get("voice_spoken_punctuation", False)
+    if spoken:
+        text = _apply_spoken_punctuation(text)
+    if cfg.get("voice_command_fixups", False):
+        text = _apply_command_fixups(text)
+
     if not cfg.get("voice_post_processing", True):
         return text.strip()
 
-    out = _WS.sub(" ", text).strip()
+    # collapse runs of spaces per line but keep real newlines from "new line"
+    out = "\n".join(_WS.sub(" ", ln).strip() for ln in text.split("\n")).strip()
     if not out:
         return ""
-    out = _strip_trailing_period(out)
-    out = _capitalize_first(out)
-    return out
+    # With spoken punctuation on, a trailing "." was asked for -- keep it.
+    return out if spoken else _strip_trailing_period(out)

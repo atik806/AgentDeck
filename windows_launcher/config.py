@@ -145,8 +145,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "voice_preroll_ms": 300,
     # Clean up a finished utterance (capitalise, drop whisper's trailing period).
     "voice_post_processing": True,
+    # Show whisper's interim per-segment text in the overlay while decoding.
+    "voice_show_partial": True,
+    # Recognise spoken editing commands ("scratch that", "send", "new line").
+    "voice_commands_enabled": True,
+    # Turn spoken punctuation into symbols ("period" -> ".").
+    "voice_spoken_punctuation": True,
+    # Press Enter automatically after each dictated phrase.
+    "voice_auto_send": False,
+    # Experimental: fix common mis-heard command words ("get" -> "git").
+    "voice_command_fixups": False,
     # On a mid-session mic failure, retry once on the system-default device.
     "voice_mic_autofallback": True,
+    # System-wide dictation hotkey (works when AgentDeck isn't focused).
+    "voice_hotkey": "Ctrl+Shift+X",
+    "voice_global_hotkey_enabled": True,
+    # "agentdeck" = focus the app then dictate; "foreground" = type into
+    # whatever window is in front (uses the clipboard briefly).
+    "voice_global_target": "agentdeck",
     # Master switch for the whole voice feature (overlay + engine). Machine-local.
     "voice_input_enabled": True,
     # One-shot: the "Ctrl+Shift+X to dictate" tip has been shown. Machine-local.
@@ -223,7 +239,15 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_min_speech_ms": int,
     "voice_preroll_ms": int,
     "voice_post_processing": bool,
+    "voice_show_partial": bool,
+    "voice_commands_enabled": bool,
+    "voice_spoken_punctuation": bool,
+    "voice_auto_send": bool,
+    "voice_command_fixups": bool,
     "voice_mic_autofallback": bool,
+    "voice_hotkey": str,
+    "voice_global_hotkey_enabled": bool,
+    "voice_global_target": str,
     "voice_input_enabled": bool,
     "voice_hint_seen": bool,
     "account_cloud_sync": bool,
@@ -259,6 +283,7 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "update_channel": ("stable", "beta"),
     "theme": ("system", "light", "dark"),
     "voice_language": ("auto", "en"),
+    "voice_global_target": ("agentdeck", "foreground"),
 }
 
 def ensure_dirs() -> None:

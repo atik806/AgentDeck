@@ -59,6 +59,10 @@ CLOUD_KEYS = [
     "voice_beam_size",
     "voice_initial_prompt",
     "voice_n_threads",
+    "voice_commands_enabled",
+    "voice_spoken_punctuation",
+    "voice_auto_send",
+    "voice_command_fixups",
 ]
 
 #: Downloaded Google avatar, cached beside config.json so the chip has a picture

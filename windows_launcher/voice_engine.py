@@ -32,7 +32,6 @@ from typing import Any, Optional
 from PySide6.QtCore import QObject, Signal
 
 import voice_models
-import voice_postprocess
 
 # --- optional dependency import ------------------------------------------------
 #
@@ -63,6 +62,7 @@ class _Bridge(QObject):
     state = Signal(str)
     level = Signal(float)
     transcription = Signal(str)
+    partial = Signal(str)
     error = Signal(str)
     model_progress = Signal(int)
 
@@ -73,6 +73,8 @@ class VoiceEngine(QObject):
     state = Signal(str)
     level = Signal(float)
     transcription = Signal(str)
+    #: interim per-segment text while an utterance is still being decoded.
+    partial = Signal(str)
     error = Signal(str)
     #: 0..100 while a first-run model download is in progress.
     model_progress = Signal(int)
@@ -89,6 +91,7 @@ class VoiceEngine(QObject):
         self._bridge.state.connect(self._set_state)
         self._bridge.level.connect(self.level)
         self._bridge.transcription.connect(self.transcription)
+        self._bridge.partial.connect(self.partial)
         self._bridge.error.connect(self.error)
         self._bridge.model_progress.connect(self.model_progress)
 
@@ -206,12 +209,16 @@ class VoiceEngine(QObject):
         return max(0, round(ms / (self.BLOCK / self.SAMPLE_RATE * 1000)))
 
     def _emit_transcription(self, text: str) -> None:
-        try:
-            text = voice_postprocess.apply(text, self._config)
-        except Exception:  # noqa: BLE001 - never lose an utterance to clean-up
-            pass
+        # The raw utterance -- clean-up (capitalisation, spoken punctuation,
+        # command parsing) is the panel's job so it can act on phrases like
+        # "scratch that" before the text is reshaped.
+        text = (text or "").strip()
         if text:
             self._bridge.transcription.emit(text)
+
+    def _emit_partial(self, text: str) -> None:
+        if text and self._config.get("voice_show_partial", True):
+            self._bridge.partial.emit(text)
 
     _PERMISSION_HINTS = (
         "-9999", "unanticipated host error", "device unavailable",
@@ -296,6 +303,7 @@ class VoiceEngine(QObject):
             on_transcription=self._emit_transcription,
             on_error=self._bridge.error.emit,
             on_lost=self._on_capture_lost,
+            on_partial=self._emit_partial,
             on_level=self._bridge.level.emit,
             silence_blocks=self._ms_to_blocks("voice_silence_ms", 300, 120, 2000),
             min_speech_blocks=self._ms_to_blocks("voice_min_speech_ms", 120, 0, 1000),

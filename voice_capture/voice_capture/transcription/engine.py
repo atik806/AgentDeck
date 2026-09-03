@@ -111,12 +111,14 @@ class TranscriptionEngine:
         self._model = Model(model_input, **params)
         print("[INFO]  Model loaded successfully.")
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, on_partial=None) -> str:
         """
         Transcribe an audio array.
 
         Args:
             audio: Audio data as numpy array (16 kHz, mono, float32).
+            on_partial: Optional callback(str) fired as each segment finalises
+                within this pass -- an interim view of the result.
 
         Returns:
             Transcribed text.
@@ -128,7 +130,25 @@ class TranscriptionEngine:
         if audio.size == 0:
             return ""
 
-        segments = self._model.transcribe(audio)
+        seg_cb = None
+        if on_partial is not None:
+            def seg_cb(seg):  # pywhispercpp hands us a Segment (or a list of them)
+                try:
+                    item = seg[-1] if isinstance(seg, (list, tuple)) and seg else seg
+                    piece = (getattr(item, "text", "") or "").strip()
+                    if piece and not _NON_SPEECH_RE.match(piece):
+                        on_partial(piece)
+                except Exception:
+                    pass
+
+        try:
+            segments = (
+                self._model.transcribe(audio, new_segment_callback=seg_cb)
+                if seg_cb is not None else self._model.transcribe(audio)
+            )
+        except TypeError:
+            # Older pywhispercpp without new_segment_callback on transcribe().
+            segments = self._model.transcribe(audio)
 
         parts = []
         for segment in segments:
