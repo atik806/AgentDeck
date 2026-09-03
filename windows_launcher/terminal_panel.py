@@ -1319,7 +1319,10 @@ class TerminalPanel(QMainWindow):
         self.statusBar().showMessage(f"Voice: downloading speech model… {int(pct)}%", 4000)
 
     def _on_voice_error(self, message: str) -> None:
-        self.statusBar().showMessage(f"Voice: {message}", 6000)
+        serious = any(k in message.lower() for k in ("windows settings", "microphone"))
+        self.statusBar().showMessage(f"Voice: {message}", 12000 if serious else 6000)
+        if serious:
+            self._voice_overlay.flash_text(message)
 
     def _on_pane_submitted(self, _pane=None) -> None:
         """Running a command ends a dictation session -- stop listening."""

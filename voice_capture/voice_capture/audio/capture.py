@@ -19,6 +19,7 @@ for marshalling ``on_transcription`` / ``on_error`` onto the GUI thread
 import collections
 import queue
 import threading
+import time
 from typing import Any, Callable, Deque, List, Optional
 
 import numpy as np
@@ -46,9 +47,11 @@ class AudioCapture:
         on_transcription: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         on_level: Optional[Callable[[float], None]] = None,
+        on_lost: Optional[Callable[[str], None]] = None,
         silence_blocks: int = 10,
         min_speech_blocks: int = 3,
         preroll_blocks: int = 5,
+        starve_timeout: float = 4.0,
     ):
         self.device = device
         self.sample_rate = sample_rate
@@ -59,7 +62,12 @@ class AudioCapture:
         self.transcriber = transcriber
         self.on_transcription = on_transcription
         self.on_error = on_error
+        # A *fatal* input problem (device unplugged / driver gone), as opposed
+        # to on_error's transient hiccups. The caller stops the session.
+        self.on_lost = on_lost
         self.on_level = on_level
+        self._starve_timeout = max(1.0, float(starve_timeout))
+        self._lost_fired = False
 
         self._stream: Optional[sd.InputStream] = None
         self._audio_queue: "queue.Queue[Optional[np.ndarray]]" = queue.Queue()
@@ -93,6 +101,7 @@ class AudioCapture:
             return
 
         self._is_running = True
+        self._lost_fired = False
         self._audio_queue = queue.Queue()
         self._segment_queue = queue.Queue()
         self._reset_buffer()
@@ -162,16 +171,24 @@ class AudioCapture:
             self._stream.start()
         except Exception as e:
             self._is_running = False
-            self._emit_error(f"could not open microphone: {e}")
+            self._emit_lost(f"could not open microphone: {e}")
             return
 
+        last_block_at = time.monotonic()
         while self._is_running:
             try:
                 block = self._audio_queue.get(timeout=0.2)
             except queue.Empty:
+                # No audio for a while = the device most likely went away
+                # (unplugged, driver reset). WASAPI often just stops calling the
+                # callback rather than raising.
+                if time.monotonic() - last_block_at > self._starve_timeout:
+                    self._emit_lost("microphone stopped delivering audio")
+                    break
                 continue
             if block is None:
                 break
+            last_block_at = time.monotonic()
             try:
                 self._process_block(block)
             except Exception as e:  # never let the loop die silently
@@ -256,6 +273,18 @@ class AudioCapture:
             self.on_error(message)
         else:
             print(f"[ERROR] {message}")
+
+    def _emit_lost(self, message: str) -> None:
+        """Fire ``on_lost`` once per session for a fatal input failure."""
+        if self._lost_fired:
+            return
+        self._lost_fired = True
+        self._is_running = False
+        cb = self.on_lost or self.on_error
+        if cb:
+            cb(message)
+        else:
+            print(f"[LOST] {message}")
 
 
 class AudioDeviceManager:

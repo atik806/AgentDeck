@@ -165,6 +165,23 @@ for tok in ["hello", "[music] playing loud", "a [x] b"]:
 
 
 # ---------------------------------------------------------------------------
+print("[6b] on_lost fires once for a fatal input failure")
+lost = []
+cap = AudioCapture(vad=ScriptedVAD([False] * 4), transcriber=RecordingTranscriber(),
+                   sample_rate=SR, blocksize=BLOCK,
+                   on_lost=lost.append, on_error=lambda m: lost.append(("err", m)))
+cap._emit_lost("microphone disconnected")
+cap._emit_lost("microphone disconnected")   # must not fire again
+check("on_lost fired exactly once", lost == ["microphone disconnected"])
+check("_emit_lost stops the capture loop", cap._is_running is False)
+
+lost2 = []
+cap2 = AudioCapture(sample_rate=SR, blocksize=BLOCK, on_error=lost2.append)  # no on_lost
+cap2._emit_lost("gone")
+check("falls back to on_error when on_lost is unset", lost2 == ["gone"])
+
+
+# ---------------------------------------------------------------------------
 print("[7] device resolution")
 check("None -> None", AudioDeviceManager.resolve_device(None) is None)
 check("'' -> None", AudioDeviceManager.resolve_device("") is None)

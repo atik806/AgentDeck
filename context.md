@@ -149,7 +149,18 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    `voice_post_processing` are in `account.CLOUD_KEYS`; mic device, overlay
    position, the master switch and segmentation ms are machine-local.
    `terminal_panel._open_settings` diffs the voice keys and calls
-   `VoiceEngine.apply_config()` (rebuilds the pipeline lazily while idle).
+   `VoiceEngine.apply_config()` — while idle it drops the built pipeline; while
+   listening it stops and restarts so a model change takes effect at once.
+   **Mic robustness:** `AudioCapture` gained `on_lost` (fatal input failure,
+   distinct from transient `on_error`) — fired on a stream-open error or when
+   the capture loop starves for `starve_timeout` (4 s, WASAPI often just stops
+   calling the callback on unplug). `VoiceEngine._on_capture_lost` turns a
+   PortAudio permission error into "turn the mic on in Windows Settings ▸
+   Privacy ▸ Microphone" and, once per session, auto-retries on the system
+   default device when a *custom* mic dies (`voice_mic_autofallback`, default
+   on). The raw daemon-thread model is kept (proven, 48 engine tests) rather
+   than a QThread rewrite — the worker→GUI hop is already a queued `_Bridge`
+   signal.
 
 6. **Setup wizard** (2026-08-28) — `main.py` opens a 3-step `QDialog`
    (`setup_wizard.py`, amber accent) before the panel: **Start** (welcome +

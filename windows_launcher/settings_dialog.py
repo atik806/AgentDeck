@@ -315,6 +315,14 @@ class SettingsDialog(QDialog):
             lambda v: self._set("voice_post_processing", bool(v))
         )
 
+        self._voice_fallback = self._check(
+            outer, "If the mic drops out, switch to the default device",
+            self._config.get("voice_mic_autofallback", True),
+        )
+        self._voice_fallback.toggled.connect(
+            lambda v: self._set("voice_mic_autofallback", bool(v))
+        )
+
         vhint = QLabel(
             "Press Ctrl+Shift+X anywhere in AgentDeck to dictate into the focused "
             "pane. Say your command, review it, then press Enter to run."
@@ -325,7 +333,8 @@ class SettingsDialog(QDialog):
 
         if not self._voice_pro:
             for w in (self._voice_enable, self._voice_mic, self._voice_model,
-                      self._voice_lang, self._voice_vad, self._voice_post):
+                      self._voice_lang, self._voice_vad, self._voice_post,
+                      self._voice_fallback):
                 w.setEnabled(False)
             pro = QLabel("Voice-to-text is part of AgentDeck Pro.")
             pro.setObjectName("hint")

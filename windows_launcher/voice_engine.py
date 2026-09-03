@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time as _time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -101,6 +102,7 @@ class VoiceEngine(QObject):
         self._vad: Any = None
         self._engine: Any = None       # TranscriptionEngine
         self._capture: Any = None      # AudioCapture
+        self._mic_retry_done = False   # one auto-fallback to the default device
 
     # -- introspection -------------------------------------------------------
 
@@ -125,13 +127,15 @@ class VoiceEngine(QObject):
         elif not self._busy:
             self.start()
 
-    def start(self) -> None:
+    def start(self, *, _keep_retry_flag: bool = False) -> None:
         if not self.available or self._listening or self._busy:
             if not self.available:
                 self._bridge.state.emit("unavailable")
             return
         self._listening = True
         self._busy = True
+        if not _keep_retry_flag:
+            self._mic_retry_done = False
         threading.Thread(target=self._start_pipeline, name="voice-start", daemon=True).start()
 
     def stop(self) -> None:
@@ -163,16 +167,31 @@ class VoiceEngine(QObject):
                 pass
 
     def apply_config(self, new_config: dict) -> None:
-        """Adopt changed settings. Rebuilds the pipeline lazily when idle.
+        """Adopt changed settings, rebuilding the pipeline to match.
 
-        Phase 2: drop the built pipeline while idle so the next ``start()``
-        picks up the new model / mic / tuning. A live rebuild-while-listening is
-        Phase 3.
+        Idle: drop the built pipeline so the next ``start()`` uses the new
+        model / mic / tuning. Listening: stop and restart so the change takes
+        effect now (a live in-place swap of the whisper model would block the
+        GUI on the model load).
         """
+        was_listening = self._listening
         self._config = new_config or {}
-        if self._listening or self._busy:
+        if self._busy and not was_listening:
             return
+        if was_listening:
+            self.stop()
         self._capture = self._engine = self._vad = None
+        if was_listening:
+            threading.Thread(
+                target=self._restart_after_stop, name="voice-reload", daemon=True
+            ).start()
+
+    def _restart_after_stop(self) -> None:
+        deadline = _time.time() + 12.0
+        while self._busy and _time.time() < deadline:
+            _time.sleep(0.05)
+        if not self._listening and not self._busy:
+            self.start()
 
     # -- pipeline ---------------------------------------------------------------
 
@@ -193,6 +212,57 @@ class VoiceEngine(QObject):
             pass
         if text:
             self._bridge.transcription.emit(text)
+
+    _PERMISSION_HINTS = (
+        "-9999", "unanticipated host error", "device unavailable",
+        "access is denied", "not permitted", "-9996", "invalid device",
+    )
+
+    def _friendly_mic_error(self, message: str) -> str:
+        low = message.lower()
+        if any(h in low for h in self._PERMISSION_HINTS):
+            return ("Microphone blocked — turn it on in Windows Settings ▸ "
+                    "Privacy & security ▸ Microphone, then try again.")
+        return message
+
+    def _on_capture_lost(self, message: str) -> None:
+        """A fatal mic failure mid-session: report it, then try the default mic once."""
+        self._bridge.error.emit(self._friendly_mic_error(message))
+
+        used_custom = self._config.get("voice_mic_device") not in (None, "")
+        want_retry = (
+            self._listening
+            and not self._mic_retry_done
+            and used_custom
+            and bool(self._config.get("voice_mic_autofallback", True))
+        )
+
+        self._listening = False
+        self._busy = True
+        self._mic_retry_done = True
+
+        def teardown_then(next_state: str) -> None:
+            cap = self._capture
+            if cap is not None:
+                try:
+                    cap.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._capture = self._engine = self._vad = None
+            self._busy = False
+            if next_state == "retry":
+                cfg = dict(self._config)
+                cfg["voice_mic_device"] = None      # system default
+                self._config = cfg
+                self._bridge.error.emit("Microphone lost — switching to the default mic…")
+                self.start(_keep_retry_flag=True)
+            else:
+                self._bridge.state.emit("error")
+
+        threading.Thread(
+            target=teardown_then, args=("retry" if want_retry else "error",),
+            name="voice-lost", daemon=True,
+        ).start()
 
     def _ensure_built(self) -> None:
         if self._capture is not None:
@@ -225,6 +295,7 @@ class VoiceEngine(QObject):
             transcriber=self._engine,
             on_transcription=self._emit_transcription,
             on_error=self._bridge.error.emit,
+            on_lost=self._on_capture_lost,
             on_level=self._bridge.level.emit,
             silence_blocks=self._ms_to_blocks("voice_silence_ms", 300, 120, 2000),
             min_speech_blocks=self._ms_to_blocks("voice_min_speech_ms", 120, 0, 1000),
