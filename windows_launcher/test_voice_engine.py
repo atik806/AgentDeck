@@ -80,6 +80,12 @@ class StubCapture:
     def stop(self):
         self.stopped = True
 
+    def lose(self, message="could not open microphone: boom"):
+        """Fire the on_lost callback like a real mid-session mic failure."""
+        cb = self.kw.get("on_lost")
+        if cb:
+            cb(message)
+
 
 class BoomTranscriber(StubTranscriber):
     def ensure_loaded(self):
@@ -207,6 +213,58 @@ check("preroll_ms -> blocks", ck.get("preroll_blocks") == 5)
 check("post-processing off -> raw text", texts4c == ["hello world"])
 eng4c.stop()
 pump(lambda: eng4c.current_state == "idle")
+
+
+# ---------------------------------------------------------------------------
+print("[4d] a mid-session mic loss on a custom device retries on the default")
+install_stubs()
+StubCapture.instances.clear()
+eng4d = VoiceEngine({"voice_mic_device": "USB Mic", "voice_mic_autofallback": True})
+errs4d, st4d = [], []
+eng4d.error.connect(errs4d.append)
+eng4d.state.connect(st4d.append)
+eng4d.start()
+check("listening", pump(lambda: eng4d.current_state == "listening"))
+check("started on the configured custom device",
+      eng4d._config.get("voice_mic_device") == "USB Mic")
+eng4d._capture.lose("could not open microphone: Error -9999")
+check("error surfaced with a friendly hint",
+      pump(lambda: any("Windows Settings" in e for e in errs4d)))
+check("auto-retry brings it back to listening",
+      pump(lambda: eng4d.current_state == "listening", timeout=8))
+check("retry built a second capture", len(StubCapture.instances) >= 2)
+check("retry cleared the custom device", eng4d._config.get("voice_mic_device") is None)
+# a second loss must NOT retry again
+errs4d.clear()
+eng4d._capture.lose("could not open microphone: Error -9999")
+check("second loss ends in error, no further retry",
+      pump(lambda: eng4d.current_state == "error", timeout=8))
+eng4d.stop(); pump(lambda: eng4d.current_state == "idle")
+
+
+# ---------------------------------------------------------------------------
+print("[4e] apply_config while listening restarts with the new model")
+install_stubs()
+StubCapture.instances.clear()
+eng4e = VoiceEngine({"voice_model": "base.en"})
+eng4e.start()
+check("listening on base.en", pump(lambda: eng4e.current_state == "listening"))
+check("engine built for base.en", eng4e._engine.kw["model_size"] == "base.en")
+eng4e.apply_config({"voice_model": "small.en"})
+check("comes back to listening", pump(lambda: eng4e.current_state == "listening", timeout=8))
+check("rebuilt for small.en", eng4e._engine.kw["model_size"] == "small.en")
+eng4e.stop(); pump(lambda: eng4e.current_state == "idle")
+
+
+# ---------------------------------------------------------------------------
+print("[4f] apply_config while idle just drops the built pipeline")
+install_stubs()
+eng4f = VoiceEngine({"voice_model": "base.en"})
+eng4f.start(); pump(lambda: eng4f.current_state == "listening")
+eng4f.stop(); pump(lambda: eng4f.current_state == "idle")
+eng4f.apply_config({"voice_model": "small.en"})
+check("pipeline dropped while idle", eng4f._capture is None and eng4f._engine is None)
+check("still idle (no restart)", eng4f.current_state == "idle")
 
 
 # ---------------------------------------------------------------------------

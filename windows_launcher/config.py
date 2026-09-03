@@ -145,6 +145,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "voice_preroll_ms": 300,
     # Clean up a finished utterance (capitalise, drop whisper's trailing period).
     "voice_post_processing": True,
+    # On a mid-session mic failure, retry once on the system-default device.
+    "voice_mic_autofallback": True,
     # Master switch for the whole voice feature (overlay + engine). Machine-local.
     "voice_input_enabled": True,
     # One-shot: the "Ctrl+Shift+X to dictate" tip has been shown. Machine-local.
@@ -221,6 +223,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_min_speech_ms": int,
     "voice_preroll_ms": int,
     "voice_post_processing": bool,
+    "voice_mic_autofallback": bool,
     "voice_input_enabled": bool,
     "voice_hint_seen": bool,
     "account_cloud_sync": bool,
