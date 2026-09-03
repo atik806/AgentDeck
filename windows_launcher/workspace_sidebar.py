@@ -324,13 +324,13 @@ class WorkspaceSidebar(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # -- nav strip: pinned to the bottom, under the Workspaces list; one
+        # -- nav strip: pinned to the top, above the Workspaces header; one
         #    row per destination ("Plugins", "Notes").
         nav = QWidget(self)
         nav.setObjectName("wsNav")
         nav.setAttribute(Qt.WA_StyledBackground, True)
         nav_box = QVBoxLayout(nav)
-        nav_box.setContentsMargins(6, 6, 6, 5)
+        nav_box.setContentsMargins(6, 8, 6, 6)
         nav_box.setSpacing(2)
 
         def _nav_button(text: str, icon, on_click) -> QToolButton:
@@ -353,8 +353,9 @@ class WorkspaceSidebar(QWidget):
             "Notes", note_icon(16), lambda: self.notes_selected.emit()
         )
 
-        # The nav strip is pinned to the bottom of the sidebar, under the
-        # workspace list -- see the addWidget order below.
+        # The nav strip is pinned to the top of the sidebar, above the
+        # Workspaces header -- see the addWidget order below. This rule
+        # separates it from the header.
         rule = QFrame(self)
         rule.setObjectName("navRule")
         rule.setFixedHeight(1)
@@ -383,7 +384,6 @@ class WorkspaceSidebar(QWidget):
         head.addWidget(self._count)
         head.addStretch(1)
         head.addWidget(add)
-        root.addWidget(header)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
@@ -396,11 +396,13 @@ class WorkspaceSidebar(QWidget):
         self._list.setSpacing(2)
         self._list.addStretch(1)
         self._scroll.setWidget(inner)
-        root.addWidget(self._scroll, 1)
 
-        # Bottom-pinned nav strip: a hairline rule, then the nav buttons.
-        root.addWidget(rule)
+        # Top-pinned nav strip: the nav buttons, then a hairline rule, then
+        # the Workspaces header and the scrolling workspace list.
         root.addWidget(nav)
+        root.addWidget(rule)
+        root.addWidget(header)
+        root.addWidget(self._scroll, 1)
 
         self.setStyleSheet(_sidebar_qss())
 
