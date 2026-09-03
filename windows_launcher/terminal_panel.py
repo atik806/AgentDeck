@@ -510,6 +510,7 @@ class TerminalPanel(QMainWindow):
             self.config, self,
             updater=getattr(self, "updater", None),
             current_version=__version__,
+            voice_enabled=entitlements.voice_enabled(self._plan()),
         )
         dialog.exec()
         # The dialog writes straight into self.config; apply anything with a
@@ -521,7 +522,33 @@ class TerminalPanel(QMainWindow):
         new_size = int(self.config.get("font_size", self._font_size) or self._font_size)
         if new_size != self._font_size:
             self._set_font(new_size)
+        self._apply_voice_settings(before)
         self._save_settings()
+
+    _VOICE_KEYS = (
+        "voice_input_enabled", "voice_model", "voice_mic_device", "voice_language",
+        "voice_n_threads", "voice_beam_size", "voice_initial_prompt",
+        "voice_vad_aggressiveness", "voice_silence_ms", "voice_min_speech_ms",
+        "voice_preroll_ms", "voice_post_processing",
+    )
+
+    def _apply_voice_settings(self, before: dict) -> None:
+        """Push changed voice knobs into the (already-built) engine + overlay."""
+        engine = getattr(self, "_voice_engine", None)
+        if engine is None:
+            return
+        if any(before.get(k) != self.config.get(k) for k in self._VOICE_KEYS):
+            engine.apply_config(self.config)
+        enabled = bool(self.config.get("voice_input_enabled", True))
+        if enabled != bool(before.get("voice_input_enabled", True)):
+            self._voice_btn.setEnabled(enabled)
+            if not enabled:
+                if engine.is_listening:
+                    engine.stop_listening()
+                self._voice_overlay.setVisible(False)
+                self._voice_btn.setChecked(False)
+            elif self.config.get("voice_overlay_visible", True):
+                self._set_overlay_visible(True)
 
     def _build_body(self) -> None:
         central = QWidget(self)
@@ -1178,15 +1205,30 @@ class TerminalPanel(QMainWindow):
         self._voice_engine.level.connect(self._voice_overlay.set_level)
         self._voice_engine.transcription.connect(self._on_voice_text)
         self._voice_engine.error.connect(self._on_voice_error)
+        self._voice_engine.model_progress.connect(self._on_voice_progress)
 
         if not self._voice_engine.available:
             self._voice_overlay.set_available(False, self._voice_engine.import_error)
 
-        visible = bool(self.config.get("voice_overlay_visible", True))
+        # The master switch hides the overlay entirely; the engine/overlay are
+        # still built (cheap) so flipping it back on needs no restart.
+        enabled = bool(self.config.get("voice_input_enabled", True))
+        visible = enabled and bool(self.config.get("voice_overlay_visible", True))
         self._voice_overlay.setVisible(visible)
         self._voice_btn.setChecked(visible)
+        self._voice_btn.setEnabled(enabled)
         self._position_overlay()
         self._voice_overlay.raise_()
+
+        # First-run nudge: shown once, only while the feature is on.
+        if enabled and not self.config.get("voice_hint_seen", False):
+            self.config["voice_hint_seen"] = True
+            QTimer.singleShot(
+                4000,
+                lambda: self.statusBar().showMessage(
+                    "Tip: press Ctrl+Shift+X to dictate into the focused pane.", 7000
+                ),
+            )
 
     def _overlay_bounds(self) -> QRect:
         """The terminal-area rectangle, in the window's coordinates."""
@@ -1231,6 +1273,11 @@ class TerminalPanel(QMainWindow):
         """Ctrl+Shift+X -- reveal the widget if hidden, then start/stop listening."""
         if self._voice_gated():
             return
+        if not self.config.get("voice_input_enabled", True):
+            self.statusBar().showMessage(
+                "Voice input is switched off in Settings ▸ Voice input.", 4000
+            )
+            return
         if not self._voice_overlay.isVisible():
             self._set_overlay_visible(True)
         self._voice_engine.toggle()
@@ -1266,6 +1313,10 @@ class TerminalPanel(QMainWindow):
         pane = self._active
         if pane is not None:
             pane.view.insert_text(text.strip() + " ")
+
+    def _on_voice_progress(self, pct: int) -> None:
+        self._voice_overlay.set_progress(pct)
+        self.statusBar().showMessage(f"Voice: downloading speech model… {int(pct)}%", 4000)
 
     def _on_voice_error(self, message: str) -> None:
         self.statusBar().showMessage(f"Voice: {message}", 6000)

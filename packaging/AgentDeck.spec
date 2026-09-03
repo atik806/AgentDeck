@@ -70,7 +70,7 @@ hiddenimports += collect_submodules("voice_capture")
 
 # Voice-to-text helper modules (windows_launcher/*.py). Reached through a
 # top-level import from voice_engine, but named here defensively.
-hiddenimports += ["voice_models", "voice_postprocess"]
+hiddenimports += ["voice_models", "voice_postprocess", "voice_download"]
 
 # The one asset the app loads at runtime.
 datas += [(os.path.join(LAUNCHER, "assets", "icon.ico"), "assets")]

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -46,12 +47,15 @@ class SettingsDialog(QDialog):
         *,
         updater=None,
         current_version: str = "",
+        voice_enabled: bool = True,
     ):
         super().__init__(parent)
         self._config = config
         self._updater = updater
         self._current_version = (current_version or "").lstrip("v")
+        self._voice_pro = bool(voice_enabled)
         self._upd_conns: list = []
+        self._dl = None
 
         self.setWindowTitle("Settings")
         self.setModal(True)
@@ -188,6 +192,10 @@ class SettingsDialog(QDialog):
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         outer.addWidget(hint)
+        outer.addSpacing(10)
+
+        # -- Voice input --------------------------------------------------
+        self._build_voice_section(outer)
 
         outer.addSpacing(14)
         btn_row = QHBoxLayout()
@@ -197,6 +205,201 @@ class SettingsDialog(QDialog):
         done.clicked.connect(self.accept)
         btn_row.addWidget(done)
         outer.addLayout(btn_row)
+
+    # -- voice ------------------------------------------------------------
+
+    _VAD_LABELS = [("High sensitivity", 1), ("Medium sensitivity", 2), ("Low sensitivity", 3)]
+
+    def _build_voice_section(self, outer: QVBoxLayout) -> None:
+        import voice_models
+
+        outer.addWidget(self._section("Voice input"))
+
+        self._voice_enable = self._check(
+            outer, "Enable voice-to-text (Ctrl+Shift+X)",
+            self._config.get("voice_input_enabled", True),
+        )
+        self._voice_enable.toggled.connect(
+            lambda v: self._set("voice_input_enabled", bool(v))
+        )
+
+        # Microphone -------------------------------------------------------
+        try:
+            from voice_engine import AudioDeviceManager
+        except Exception:  # noqa: BLE001
+            AudioDeviceManager = None
+
+        mic_row = QHBoxLayout()
+        mic_row.setSpacing(8)
+        mic_row.addWidget(QLabel("Microphone"))
+        self._voice_mic = QComboBox()
+        self._voice_mic.addItem("System default", None)
+        cur_mic = self._config.get("voice_mic_device")
+        if AudioDeviceManager is not None:
+            try:
+                for dev in AudioDeviceManager.list_input_devices():
+                    self._voice_mic.addItem(dev["name"], dev["name"])
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            self._voice_mic.setEnabled(False)
+            self._voice_mic.setToolTip("Audio libraries aren't installed.")
+        sel = self._voice_mic.findData(cur_mic)
+        self._voice_mic.setCurrentIndex(sel if sel >= 0 else 0)
+        self._voice_mic.currentIndexChanged.connect(
+            lambda _i: self._set("voice_mic_device", self._voice_mic.currentData())
+        )
+        mic_row.addWidget(self._voice_mic, 1)
+        outer.addLayout(mic_row)
+
+        # Model ----------------------------------------------------------
+        model_row = QHBoxLayout()
+        model_row.setSpacing(8)
+        model_row.addWidget(QLabel("Speech model"))
+        self._voice_model = QComboBox()
+        for name, (label, size) in voice_models.MODEL_LABELS.items():
+            self._voice_model.addItem(label, name)
+        self._voice_model.currentIndexChanged.connect(self._on_voice_model_pick)
+        model_row.addWidget(self._voice_model, 1)
+        outer.addLayout(model_row)
+
+        dl_row = QHBoxLayout()
+        dl_row.setSpacing(8)
+        self._voice_dl_btn = QPushButton("Download now")
+        self._voice_dl_btn.clicked.connect(self._on_voice_download)
+        dl_row.addWidget(self._voice_dl_btn)
+        self._voice_dl_bar = QProgressBar()
+        self._voice_dl_bar.setRange(0, 100)
+        self._voice_dl_bar.setValue(0)
+        self._voice_dl_bar.setTextVisible(True)
+        self._voice_dl_bar.hide()
+        dl_row.addWidget(self._voice_dl_bar, 1)
+        outer.addLayout(dl_row)
+        self._sync_voice_model_combo()
+
+        # Language -----------------------------------------------------
+        lang_row = QHBoxLayout()
+        lang_row.setSpacing(8)
+        lang_row.addWidget(QLabel("Language"))
+        self._voice_lang = QComboBox()
+        self._voice_lang.addItem("Auto-detect (needs a multilingual model)", "auto")
+        self._voice_lang.addItem("English", "en")
+        li = self._voice_lang.findData(self._config.get("voice_language", "auto"))
+        self._voice_lang.setCurrentIndex(li if li >= 0 else 0)
+        self._voice_lang.currentIndexChanged.connect(
+            lambda _i: self._set("voice_language", self._voice_lang.currentData())
+        )
+        lang_row.addWidget(self._voice_lang, 1)
+        outer.addLayout(lang_row)
+
+        # VAD sensitivity --------------------------------------------
+        vad_row = QHBoxLayout()
+        vad_row.setSpacing(8)
+        vad_row.addWidget(QLabel("Mic sensitivity"))
+        self._voice_vad = QComboBox()
+        for label, val in self._VAD_LABELS:
+            self._voice_vad.addItem(label, val)
+        vi = self._voice_vad.findData(int(self._config.get("voice_vad_aggressiveness", 2) or 2))
+        self._voice_vad.setCurrentIndex(vi if vi >= 0 else 1)
+        self._voice_vad.currentIndexChanged.connect(
+            lambda _i: self._set("voice_vad_aggressiveness", int(self._voice_vad.currentData()))
+        )
+        vad_row.addWidget(self._voice_vad, 1)
+        outer.addLayout(vad_row)
+
+        self._voice_post = self._check(
+            outer, "Tidy up each phrase (capitalise, drop the trailing period)",
+            self._config.get("voice_post_processing", True),
+        )
+        self._voice_post.toggled.connect(
+            lambda v: self._set("voice_post_processing", bool(v))
+        )
+
+        vhint = QLabel(
+            "Press Ctrl+Shift+X anywhere in AgentDeck to dictate into the focused "
+            "pane. Say your command, review it, then press Enter to run."
+        )
+        vhint.setObjectName("hint")
+        vhint.setWordWrap(True)
+        outer.addWidget(vhint)
+
+        if not self._voice_pro:
+            for w in (self._voice_enable, self._voice_mic, self._voice_model,
+                      self._voice_lang, self._voice_vad, self._voice_post):
+                w.setEnabled(False)
+            pro = QLabel("Voice-to-text is part of AgentDeck Pro.")
+            pro.setObjectName("hint")
+            outer.addWidget(pro)
+
+    def _current_voice_model(self) -> str:
+        return self._voice_model.currentData() or "auto"
+
+    def _sync_voice_model_combo(self) -> None:
+        """Reflect the stored choice + which models are on disk."""
+        import voice_models
+
+        want = str(self._config.get("voice_model", "auto") or "auto")
+        idx = self._voice_model.findData(want)
+        self._voice_model.blockSignals(True)
+        self._voice_model.setCurrentIndex(idx if idx >= 0 else 0)
+        self._voice_model.blockSignals(False)
+        try:
+            import voice_download
+        except Exception:  # noqa: BLE001
+            voice_download = None
+        for i in range(self._voice_model.count()):
+            name = self._voice_model.itemData(i)
+            label = voice_models.MODEL_LABELS.get(name, (name, ""))[0]
+            if name != "auto" and voice_download is not None \
+                    and voice_download.model_is_downloaded(name):
+                label += "  ·  downloaded"
+            self._voice_model.setItemText(i, label)
+        sel = self._current_voice_model()
+        on_disk = (
+            sel != "auto" and voice_download is not None
+            and voice_download.model_is_downloaded(sel)
+        )
+        self._voice_dl_btn.setEnabled(
+            self._voice_pro and sel != "auto" and not on_disk
+            and not (self._dl is not None and self._dl.busy)
+        )
+        self._voice_dl_btn.setText("Downloaded" if on_disk else "Download now")
+
+    def _on_voice_model_pick(self, _idx: int) -> None:
+        self._set("voice_model", self._current_voice_model())
+        self._sync_voice_model_combo()
+
+    def _on_voice_download(self) -> None:
+        sel = self._current_voice_model()
+        if sel == "auto":
+            return
+        try:
+            from voice_download import ModelDownloadController
+        except Exception as exc:  # noqa: BLE001
+            self._voice_dl_bar.show()
+            self._voice_dl_bar.setFormat(f"unavailable: {exc}")
+            return
+        if self._dl is None:
+            self._dl = ModelDownloadController(self)
+            self._dl.progress.connect(self._voice_dl_bar.setValue)
+            self._dl.busy_changed.connect(self._on_voice_dl_busy)
+            self._dl.finished.connect(self._on_voice_dl_finished)
+            self._dl.failed.connect(self._on_voice_dl_failed)
+        self._voice_dl_bar.setFormat("%p%")
+        self._voice_dl_bar.setValue(0)
+        self._voice_dl_bar.show()
+        self._dl.download(sel)
+
+    def _on_voice_dl_busy(self, busy: bool) -> None:
+        self._voice_dl_btn.setEnabled(not busy)
+
+    def _on_voice_dl_finished(self, _name: str) -> None:
+        self._voice_dl_bar.setValue(100)
+        self._sync_voice_model_combo()
+
+    def _on_voice_dl_failed(self, message: str) -> None:
+        self._voice_dl_bar.setFormat(f"failed: {message}")
+        self._sync_voice_model_combo()
 
     # -- updates -----------------------------------------------------------
 

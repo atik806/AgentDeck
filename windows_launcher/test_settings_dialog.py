@@ -161,6 +161,77 @@ check("plus disabled at ceiling", not d._font_plus.isEnabled())
 d.close()
 
 
+# ---------------------------------------------------------------------------
+print("[7] voice section — model combo, mic, VAD, language write config")
+import voice_models
+
+c = new_cfg()
+d = SettingsDialog(c, current_version="1.2.3", voice_enabled=True)
+check("voice section built", hasattr(d, "_voice_model"))
+check("first model row is Auto", d._voice_model.itemData(0) == "auto")
+check("mic combo starts on System default", d._voice_mic.itemData(0) is None)
+
+# pick a concrete model
+bi = d._voice_model.findData("base.en")
+d._voice_model.setCurrentIndex(bi)
+check("model choice written", c["voice_model"] == "base.en")
+
+d._voice_lang.setCurrentIndex(d._voice_lang.findData("en"))
+check("language written", c["voice_language"] == "en")
+
+d._voice_vad.setCurrentIndex(0)   # High sensitivity -> aggressiveness 1
+check("VAD label maps to aggressiveness", c["voice_vad_aggressiveness"] == 1)
+
+d._voice_enable.setChecked(False)
+check("master switch written", c["voice_input_enabled"] is False)
+
+d._voice_post.setChecked(False)
+check("post-processing toggle written", c["voice_post_processing"] is False)
+d.close()
+
+
+# ---------------------------------------------------------------------------
+print("[8] voice section disabled for a non-Pro plan")
+c = new_cfg()
+d = SettingsDialog(c, current_version="1.2.3", voice_enabled=False)
+check("model combo disabled", not d._voice_model.isEnabled())
+check("enable checkbox disabled", not d._voice_enable.isEnabled())
+d.close()
+
+
+# ---------------------------------------------------------------------------
+print("[9] Download now drives the stubbed controller")
+c = new_cfg()
+c["voice_model"] = "base.en"
+d = SettingsDialog(c, current_version="1.2.3", voice_enabled=True)
+
+class StubDL(QObject):
+    progress = Signal(int)
+    finished = Signal(str)
+    failed = Signal(str)
+    busy_changed = Signal(bool)
+    def __init__(self, *a, **k):
+        super().__init__()
+        self.busy = False
+        self.asked = []
+    def download(self, name):
+        self.asked.append(name)
+        self.progress.emit(50)
+        self.finished.emit(name)
+
+import settings_dialog as _sd
+import voice_download as _vd
+_orig = _vd.ModelDownloadController
+_vd.ModelDownloadController = StubDL
+try:
+    d._on_voice_download()
+    check("controller asked for the selected model", d._dl.asked == ["base.en"])
+    check("progress bar un-hidden after a download", not d._voice_dl_bar.isHidden())
+finally:
+    _vd.ModelDownloadController = _orig
+d.close()
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
