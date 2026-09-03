@@ -30,6 +30,9 @@ from typing import Any, Optional
 
 from PySide6.QtCore import QObject, Signal
 
+import voice_models
+import voice_postprocess
+
 # --- optional dependency import ------------------------------------------------
 #
 # The capture pipeline lives in the sibling project. Import failures here are
@@ -157,17 +160,45 @@ class VoiceEngine(QObject):
 
     # -- pipeline ---------------------------------------------------------------
 
+    def _cfg_int(self, key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(self._config.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    def _ms_to_blocks(self, key: str, default_ms: int, lo: int, hi: int) -> int:
+        ms = self._cfg_int(key, default_ms, lo, hi)
+        return max(0, round(ms / (self.BLOCK / self.SAMPLE_RATE * 1000)))
+
+    def _emit_transcription(self, text: str) -> None:
+        try:
+            text = voice_postprocess.apply(text, self._config)
+        except Exception:  # noqa: BLE001 - never lose an utterance to clean-up
+            pass
+        if text:
+            self._bridge.transcription.emit(text)
+
     def _ensure_built(self) -> None:
         if self._capture is not None:
             return
-        model = self._config.get("voice_model") or "tiny.en"
-        device = AudioDeviceManager.resolve_device(self._config.get("voice_mic_device"))
+        cfg = self._config
+        model = voice_models.resolve(cfg.get("voice_model"))
+        lang = None if (cfg.get("voice_language") or "auto") == "auto" else "en"
+        device = AudioDeviceManager.resolve_device(cfg.get("voice_mic_device"))
         self._vad = VADProcessor(
-            backend="webrtc", aggressiveness=2, sample_rate=self.SAMPLE_RATE
+            backend="webrtc",
+            aggressiveness=self._cfg_int("voice_vad_aggressiveness", 2, 0, 3),
+            sample_rate=self.SAMPLE_RATE,
         )
         self._engine = TranscriptionEngine(
-            model_size=model, language="en",
-            print_realtime=False, print_progress=False,
+            model_size=model,
+            language=lang,
+            n_threads=(self._cfg_int("voice_n_threads", 0, 0, 32) or None),
+            initial_prompt=(cfg.get("voice_initial_prompt") or voice_models.DEFAULT_PROMPT),
+            beam_size=self._cfg_int("voice_beam_size", 1, 1, 8),
+            no_context=True,
+            print_realtime=False,
+            print_progress=False,
         )
         self._capture = AudioCapture(
             device=device,
@@ -176,9 +207,12 @@ class VoiceEngine(QObject):
             blocksize=self.BLOCK,
             vad=self._vad,
             transcriber=self._engine,
-            on_transcription=self._bridge.transcription.emit,
+            on_transcription=self._emit_transcription,
             on_error=self._bridge.error.emit,
             on_level=self._bridge.level.emit,
+            silence_blocks=self._ms_to_blocks("voice_silence_ms", 300, 120, 2000),
+            min_speech_blocks=self._ms_to_blocks("voice_min_speech_ms", 120, 0, 1000),
+            preroll_blocks=self._ms_to_blocks("voice_preroll_ms", 300, 0, 1000),
         )
 
     def _start_pipeline(self) -> None:

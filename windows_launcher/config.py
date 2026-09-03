@@ -31,8 +31,9 @@ CACHE_DIR = _get_cache_dir()
 # ---------------------------------------------------------------------------
 
 #: 1 = the original launcher-only config. 2 = added the embedded terminal panel,
-#: which changed what window_width/window_height size.
-CONFIG_VERSION = 2
+#: which changed what window_width/window_height size. 3 = voice_model gained an
+#: "auto" value; an untouched "tiny.en" (the old hard default) migrates to it.
+CONFIG_VERSION = 3
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Bumped when a key changes meaning; see _migrate.
@@ -120,10 +121,30 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # (bottom-right). Clamped to the current window size on load.
     "voice_overlay_x": -1,
     "voice_overlay_y": -1,
-    # whisper.cpp model for transcription; downloaded on first use.
-    "voice_model": "tiny.en",
+    # whisper.cpp model for transcription; downloaded on first use. "auto" picks
+    # one to suit the machine (see voice_models.recommend_model); otherwise a
+    # registry name like "base.en" / "small.en" / "small".
+    "voice_model": "auto",
     # Microphone: null = system default, int = device id, str = name substring.
     "voice_mic_device": None,
+    # Transcription language: "auto" (needs a multilingual model) or "en".
+    "voice_language": "auto",
+    # whisper.cpp CPU threads; 0 = let pywhispercpp decide.
+    "voice_n_threads": 0,
+    # Beam-search width. 1 = fast greedy decode; higher = slower, more accurate.
+    "voice_beam_size": 1,
+    # Decoder vocabulary priming; "" = voice_models.DEFAULT_PROMPT.
+    "voice_initial_prompt": "",
+    # WebRTC VAD mode 0-3. Higher rejects more non-speech (and more quiet speech).
+    "voice_vad_aggressiveness": 2,
+    # Trailing silence (ms) that ends an utterance.
+    "voice_silence_ms": 300,
+    # Minimum speech (ms) for a segment to be worth transcribing.
+    "voice_min_speech_ms": 120,
+    # Audio (ms) kept before speech onset so the first phoneme isn't clipped.
+    "voice_preroll_ms": 300,
+    # Clean up a finished utterance (capitalise, drop whisper's trailing period).
+    "voice_post_processing": True,
 
     # --- Account (Supabase; see docs/ACCOUNTS.md) ---
     # Signing in is mandatory -- there is no config knob to skip it. The window
@@ -187,6 +208,15 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "voice_overlay_y": int,
     "voice_model": str,
     "voice_mic_device": (int, str, type(None)),
+    "voice_language": str,
+    "voice_n_threads": int,
+    "voice_beam_size": int,
+    "voice_initial_prompt": str,
+    "voice_vad_aggressiveness": int,
+    "voice_silence_ms": int,
+    "voice_min_speech_ms": int,
+    "voice_preroll_ms": int,
+    "voice_post_processing": bool,
     "account_cloud_sync": bool,
     "account_email": str,
     "error_reporting": bool,
@@ -206,6 +236,12 @@ CONFIG_RANGES: Dict[str, tuple] = {
     "handoff_max_transcript_chars": (10_000, 5_000_000),
     "window_width": (480, 20_000),
     "window_height": (320, 20_000),
+    "voice_n_threads": (0, 32),
+    "voice_beam_size": (1, 8),
+    "voice_vad_aggressiveness": (0, 3),
+    "voice_silence_ms": (120, 2000),
+    "voice_min_speech_ms": (0, 1000),
+    "voice_preroll_ms": (0, 1000),
 }
 
 CONFIG_CHOICES: Dict[str, tuple] = {
@@ -213,6 +249,7 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "default_shell": ("auto", "pwsh", "powershell", "cmd", "bash"),
     "update_channel": ("stable", "beta"),
     "theme": ("system", "light", "dark"),
+    "voice_language": ("auto", "en"),
 }
 
 def ensure_dirs() -> None:
@@ -246,6 +283,16 @@ def _migrate(data: Dict[str, Any]) -> bool:
                 data[key] = DEFAULT_CONFIG[key]
                 changed = True
         print("[INFO] Upgraded config to v2 (window size now sizes the panel).")
+
+    if version < 3:
+        # "tiny.en" was the only value the app ever wrote for voice_model, so an
+        # untouched copy is the old default, not a deliberate choice -- move it
+        # to "auto" (a machine-suitable model). A user who picked tiny.en by
+        # hand keeps it only if they also bump config_version, which is fine.
+        if data.get("voice_model") == "tiny.en":
+            data["voice_model"] = "auto"
+            changed = True
+        print("[INFO] Upgraded config to v3 (voice_model 'auto').")
 
     if version != CONFIG_VERSION:
         data["config_version"] = CONFIG_VERSION

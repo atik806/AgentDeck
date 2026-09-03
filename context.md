@@ -120,13 +120,24 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    startup; `Ctrl+Shift+X` toggles listening (`Ctrl+X` too, but only while the
    widget has focus, so the shell keeps its own `Ctrl+X`). Each utterance is
    `insert_text()`'d at the active pane's prompt — **no Enter**, same as a file
-   drop. `tiny.en` model auto-downloads on first use. Overlay is parented to the
-   **window** (not the stack — loses the z-fight otherwise) and kept over the
-   panes via `VoiceOverlay.set_bounds()`. Audio deps optional: missing → mic
-   disabled, panel fine. One additive hook in `voice_capture/audio/capture.py`
-   (`on_level` callback). Tests: `test_voice_engine.py`, `test_voice_overlay.py`
-   (both offline), panel suite §25–28. Needs `sounddevice webrtcvad-wheels
-   pywhispercpp numpy` in `windows_launcher/.venv` (added to requirements.txt).
+   drop. Model auto-downloads on first use: `voice_model` defaults to `"auto"`
+   (`voice_models.recommend_model()` → `base.en`/`small.en` by RAM+cores; old
+   `tiny.en` configs migrate to `"auto"` at config v3). `_ensure_built()` reads
+   accuracy/VAD/segmentation knobs from config (`voice_beam_size`,
+   `voice_n_threads`, `voice_initial_prompt` (default = code/terminal
+   vocabulary), `voice_vad_aggressiveness`, `voice_silence_ms` /
+   `voice_min_speech_ms` / `voice_preroll_ms`, `voice_language`); each finished
+   utterance passes through `voice_postprocess.apply()` (capitalise, drop
+   whisper's trailing period) unless `voice_post_processing` is off. Overlay is
+   parented to the **window** (not the stack — loses the z-fight otherwise) and
+   kept over the panes via `VoiceOverlay.set_bounds()`. Audio deps optional:
+   missing → mic disabled, panel fine. One additive hook in
+   `voice_capture/audio/capture.py` (`on_level` callback);
+   `TranscriptionEngine` gained additive `initial_prompt`/`beam_size`/
+   `no_context` args. Tests: `test_voice_engine.py`, `test_voice_overlay.py`,
+   `test_voice_models.py`, `test_voice_postprocess.py` (all offline), panel
+   suite §25–28. Needs `sounddevice webrtcvad-wheels pywhispercpp numpy` in
+   `windows_launcher/.venv` (added to requirements.txt).
 
 6. **Setup wizard** (2026-08-28) — `main.py` opens a 3-step `QDialog`
    (`setup_wizard.py`, amber accent) before the panel: **Start** (welcome +
@@ -586,6 +597,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_vt_screen.py  # screen model; ALL PASS
 .venv\Scripts\python.exe test_voice_engine.py   # voice pipeline, stubbed; offline
 .venv\Scripts\python.exe test_voice_overlay.py  # voice widget; offline
+.venv\Scripts\python.exe test_voice_models.py       # model pick + resolve; offline
+.venv\Scripts\python.exe test_voice_postprocess.py  # utterance clean-up; offline
 .venv\Scripts\python.exe test_agents.py         # agent discovery; offline
 .venv\Scripts\python.exe test_setup_wizard.py   # wizard pages/validation; offline
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
@@ -665,7 +678,9 @@ installer/updater, published to **GitHub Releases**.
   `last_update_check`.
 - `main.py` — `--smoke` flag (waits for shells, exits 0/3) for the build script.
 - `packaging/` — `AgentDeck.spec` (onedir; `collect_all` winpty/sounddevice/
-  pywhispercpp, `collect_submodules('voice_capture')`, big Qt `excludes`),
+  pywhispercpp, `collect_submodules('voice_capture')`, `hiddenimports` names the
+  launcher's lazily-reached modules incl. `voice_models`/`voice_postprocess`,
+  big Qt `excludes`),
   `hooks/hook-pywhispercpp.py` (delvewheel root DLLs), `build.py` (freeze +
   bundle asserts + smoke + `vpk pack` + `checksums.py`), `checksums.py`
   (`SHA256SUMS.txt` over `packaging/Releases/`), `README.md` (runbook).

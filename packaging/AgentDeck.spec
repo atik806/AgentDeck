@@ -68,6 +68,10 @@ hiddenimports += ["tomlkit"] + collect_submodules("ruamel.yaml")
 # `pip install`ed into the build venv for this to find anything.
 hiddenimports += collect_submodules("voice_capture")
 
+# Voice-to-text helper modules (windows_launcher/*.py). Reached through a
+# top-level import from voice_engine, but named here defensively.
+hiddenimports += ["voice_models", "voice_postprocess"]
+
 # The one asset the app loads at runtime.
 datas += [(os.path.join(LAUNCHER, "assets", "icon.ico"), "assets")]
 
