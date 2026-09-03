@@ -617,6 +617,41 @@ def _():
     eng._listening = False
 
 
+@step
+def _():
+    print("== 28c. spoken commands dispatch (scratch / send / stop) ==")
+    pane = panel._active or panel._panes[0]
+    panel._set_active(pane)
+    spy = {"insert": [], "erase": [], "submit": 0}
+    v = pane.view
+    v.insert_text = lambda t: spy["insert"].append(t)
+    v.erase_text = lambda n: spy["erase"].append(n)
+    v.submit = lambda: spy.__setitem__("submit", spy["submit"] + 1)
+
+    panel._voice_engine.transcription.emit("git status")
+    check("plain phrase was typed",
+          bool(spy["insert"]) and "git status" in spy["insert"][-1], True)
+    typed_len = panel._last_voice_len
+
+    panel._voice_engine.transcription.emit("scratch that")
+    check("'scratch that' erased the last chunk", spy["erase"], [typed_len])
+
+    panel._voice_engine.transcription.emit("run that")
+    check("'run that' pressed Enter", spy["submit"], 1)
+
+    eng = panel._voice_engine
+    eng._listening = True
+    panel._voice_engine.transcription.emit("stop listening")
+    check("'stop listening' ended the session", eng.is_listening, False)
+    eng._listening = False
+
+    # auto-send
+    panel.config["voice_auto_send"] = True
+    panel._voice_engine.transcription.emit("echo hi")
+    check("auto-send ran the phrase", spy["submit"], 2)
+    panel.config["voice_auto_send"] = False
+
+
 # -- 7. wizard startup: working folder + agent command --------------------
 #
 # A second panel built the way main.py builds it after the setup wizard:

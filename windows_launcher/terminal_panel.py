@@ -11,6 +11,7 @@ test suite reach for are kept as thin proxies onto the active workspace.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -78,6 +79,8 @@ from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported
     Workspace,
 )
 from workspace_sidebar import WorkspaceSidebar
+import voice_commands
+import voice_postprocess
 from voice_engine import VoiceEngine
 from voice_overlay import VoiceOverlay, mic_icon
 from update_progress import UpdateProgressDialog
@@ -531,6 +534,10 @@ class TerminalPanel(QMainWindow):
         "voice_vad_aggressiveness", "voice_silence_ms", "voice_min_speech_ms",
         "voice_preroll_ms", "voice_post_processing",
     )
+    _HOTKEY_KEYS = (
+        "voice_hotkey", "voice_global_hotkey_enabled", "voice_global_target",
+        "voice_input_enabled",
+    )
 
     def _apply_voice_settings(self, before: dict) -> None:
         """Push changed voice knobs into the (already-built) engine + overlay."""
@@ -539,6 +546,8 @@ class TerminalPanel(QMainWindow):
             return
         if any(before.get(k) != self.config.get(k) for k in self._VOICE_KEYS):
             engine.apply_config(self.config)
+        if any(before.get(k) != self.config.get(k) for k in self._HOTKEY_KEYS):
+            self._rebind_global_hotkey()
         enabled = bool(self.config.get("voice_input_enabled", True))
         if enabled != bool(before.get("voice_input_enabled", True)):
             self._voice_btn.setEnabled(enabled)
@@ -1204,8 +1213,23 @@ class TerminalPanel(QMainWindow):
         self._voice_engine.state.connect(self._on_voice_state)
         self._voice_engine.level.connect(self._voice_overlay.set_level)
         self._voice_engine.transcription.connect(self._on_voice_text)
+        self._voice_engine.partial.connect(self._voice_overlay.set_partial)
         self._voice_engine.error.connect(self._on_voice_error)
         self._voice_engine.model_progress.connect(self._on_voice_progress)
+
+        # System-wide hotkey (fires even when AgentDeck isn't focused). Falls
+        # back silently to the focused QAction on non-Windows / a taken combo.
+        from global_hotkey import GlobalHotkey
+
+        self._global_hotkey = GlobalHotkey(self)
+        self._global_hotkey.activated.connect(self._on_global_voice_hotkey)
+        self._global_hotkey.failed.connect(
+            lambda msg: self.statusBar().showMessage(f"Voice hotkey: {msg}", 6000)
+        )
+        self._global_hotkey.install(QApplication.instance())
+        self._fg_hwnd = None
+        self._last_hotkey_ms = 0.0
+        self._rebind_global_hotkey()
 
         if not self._voice_engine.available:
             self._voice_overlay.set_available(False, self._voice_engine.import_error)
@@ -1298,6 +1322,77 @@ class TerminalPanel(QMainWindow):
             return
         self._set_overlay_visible(not self._voice_overlay.isVisible())
 
+    # -- global hotkey -----------------------------------------------------
+
+    def _rebind_global_hotkey(self) -> None:
+        """(Re)register the OS hotkey to match config + the current plan."""
+        gk = getattr(self, "_global_hotkey", None)
+        if gk is None:
+            return
+        want = (
+            self.config.get("voice_global_hotkey_enabled", True)
+            and self.config.get("voice_input_enabled", True)
+            and entitlements.voice_enabled(self._plan())
+        )
+        if want:
+            gk.bind(self.config.get("voice_hotkey", "Ctrl+Shift+X") or "Ctrl+Shift+X")
+        else:
+            gk.unbind()
+
+    def _on_global_voice_hotkey(self) -> None:
+        import time
+
+        now = time.monotonic() * 1000.0
+        if now - self._last_hotkey_ms < 250:      # de-dupe vs the focused QAction
+            return
+        self._last_hotkey_ms = now
+        if self._voice_gated():
+            return
+        if not self.config.get("voice_input_enabled", True):
+            return
+
+        target = self.config.get("voice_global_target", "agentdeck")
+        if target == "foreground" and sys.platform == "win32":
+            try:
+                import ctypes
+                self._fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            except Exception:  # noqa: BLE001
+                self._fg_hwnd = None
+        else:
+            self._fg_hwnd = None
+            win = self.window()
+            if win.isMinimized():
+                win.showNormal()
+            win.show()
+            win.raise_()
+            win.activateWindow()
+
+        if not self._voice_overlay.isVisible():
+            self._set_overlay_visible(True)
+        self._voice_engine.toggle()
+
+    def _paste_to_foreground(self, text: str) -> bool:
+        """Type ``text`` into the window that was in front when the hotkey fired."""
+        if not self._fg_hwnd or sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+
+            clip = QApplication.clipboard()
+            saved = clip.text()
+            clip.setText(text)
+            u32 = ctypes.windll.user32
+            u32.SetForegroundWindow(self._fg_hwnd)
+            # Ctrl+V via keybd_event (VK_CONTROL 0x11, 'V' 0x56; 0x0002 = keyup).
+            u32.keybd_event(0x11, 0, 0, 0)
+            u32.keybd_event(0x56, 0, 0, 0)
+            u32.keybd_event(0x56, 0, 2, 0)
+            u32.keybd_event(0x11, 0, 2, 0)
+            QTimer.singleShot(400, lambda: clip.setText(saved))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def _on_voice_state(self, state: str) -> None:
         self._voice_overlay.set_state(state)
         message = {
@@ -1309,10 +1404,42 @@ class TerminalPanel(QMainWindow):
             self.statusBar().showMessage(message, 3000)
 
     def _on_voice_text(self, text: str) -> None:
-        self._voice_overlay.flash_text(text)
+        self._voice_overlay.set_partial("")     # drop the interim view
+
+        action, rest = voice_commands.parse(text, self.config)
         pane = self._active
+
+        if action == "stop":
+            self._voice_overlay.flash_text("⏹ stopped")
+            self._voice_engine.stop_listening()
+            return
+        if action and pane is not None:
+            if action == "submit":
+                self._voice_overlay.flash_text("⏎ sent")
+                pane.view.submit()
+            elif action == "newline":
+                pane.view.insert_text("\n")
+            elif action == "scratch":
+                self._voice_overlay.flash_text("⌫ scratched")
+                pane.view.erase_text(getattr(self, "_last_voice_len", 0))
+            self._last_voice_len = 0
+            return
+
+        clean = voice_postprocess.apply(rest or text, self.config).strip()
+        self._voice_overlay.flash_text(clean or text)
+        if not clean:
+            return
+        payload = clean + " "
+        if getattr(self, "_fg_hwnd", None) and self._paste_to_foreground(payload):
+            self._last_voice_len = 0
+            return
         if pane is not None:
-            pane.view.insert_text(text.strip() + " ")
+            pane.view.insert_text(payload)
+            self._last_voice_len = len(payload)
+            if (self.config.get("voice_auto_send", False)
+                    and not clean.rstrip().endswith(("\\", "|", "&&", "&"))):
+                pane.view.submit()
+                self._last_voice_len = 0
 
     def _on_voice_progress(self, pct: int) -> None:
         self._voice_overlay.set_progress(pct)
@@ -1909,6 +2036,7 @@ class TerminalPanel(QMainWindow):
                 if pro else
                 "Voice-to-text input is a Pro feature"
             )
+        self._rebind_global_hotkey()
 
         # Background update check on launch is Pro; Free keeps the manual button.
         if pro:
@@ -2054,6 +2182,8 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "_trial_timer", None) is not None:
             self._trial_timer.stop()
         self._set_update_glow(False)
+        if getattr(self, "_global_hotkey", None) is not None:
+            self._global_hotkey.dispose(QApplication.instance())
         self._voice_engine.shutdown()
         self.account.shutdown()
         if getattr(self, "github", None) is not None:

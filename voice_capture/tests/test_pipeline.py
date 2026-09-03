@@ -52,8 +52,10 @@ class RecordingTranscriber:
     def __init__(self):
         self.calls = []
 
-    def transcribe(self, audio):
+    def transcribe(self, audio, on_partial=None):
         self.calls.append(np.asarray(audio))
+        if on_partial:
+            on_partial("hello")
         return "hello world"
 
 
@@ -142,6 +144,21 @@ cap._transcribe_thread.join(timeout=5)
 check("transcriber received audio", len(tr.calls) == 1)
 check("callback delivered text", out == ["hello world"])
 check("transcriber got 1-D float32", tr.calls[0].ndim == 1)
+
+# on_partial is forwarded to the transcriber
+vad2 = ScriptedVAD([True] * 5 + [False] * 12)
+tr2 = RecordingTranscriber()
+parts = []
+cap2 = AudioCapture(vad=vad2, transcriber=tr2, sample_rate=SR, blocksize=BLOCK,
+                    silence_blocks=10, min_speech_blocks=3, on_partial=parts.append)
+cap2.on_transcription = lambda _t: None
+cap2._transcribe_thread = threading.Thread(target=cap2._transcribe_loop, daemon=True)
+cap2._transcribe_thread.start()
+for _ in range(17):
+    cap2._process_block(noise())
+cap2._segment_queue.put(None)
+cap2._transcribe_thread.join(timeout=5)
+check("on_partial reached the transcriber", parts == ["hello"])
 
 
 # ---------------------------------------------------------------------------

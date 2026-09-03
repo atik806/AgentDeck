@@ -95,6 +95,14 @@ _DARK = {
     "term_fg": "#cdd6f4",
     "term_cursor": "#f5e0dc",
     "term_selection": "#89b4fa",        # blended with alpha at use sites
+    # voice capsule (voice_overlay.py)
+    "voice_bg": "#2b2b3f",
+    "voice_border": "#45455e",
+    "voice_border_rec": "#f38ba8",      # the "recording" ring
+    "voice_wave": "#94e2d5",            # bars while listening
+    "voice_wave_idle": "#7f849c",
+    "voice_partial_text": "#a6adc8",    # dim interim transcript
+    "voice_text": "#cdd6f4",            # a finished transcript
 }
 
 # Catppuccin Latte -- the same identity mapped for light mode, so it reads as
@@ -149,6 +157,14 @@ _LIGHT = {
     "term_fg": "#4c4f69",
     "term_cursor": "#dc8a78",
     "term_selection": "#1e66f5",
+    # voice capsule (voice_overlay.py)
+    "voice_bg": "#ffffff",
+    "voice_border": "#ccd0da",
+    "voice_border_rec": "#d20f39",
+    "voice_wave": "#179299",
+    "voice_wave_idle": "#8c8fa1",
+    "voice_partial_text": "#6c6f85",
+    "voice_text": "#4c4f69",
 }
 
 #: 16 ANSI slots per mode. Dark = Catppuccin Mocha; Light = Catppuccin Latte

@@ -73,8 +73,10 @@ class StubCapture:
 
     def start(self):
         self.started = True
-        # Simulate the worker thread pushing a level then an utterance.
+        # Simulate the worker thread pushing a level, an interim, an utterance.
         self.kw["on_level"](0.25)
+        if self.kw.get("on_partial"):
+            self.kw["on_partial"]("hello")
         self.kw["on_transcription"]("hello world")
 
     def stop(self):
@@ -119,10 +121,30 @@ eng.start()
 check("reaches listening", pump(lambda: eng.current_state == "listening"))
 check("state order was loading then listening",
       states[:2] == ["loading", "listening"])
-# _emit_transcription runs voice_postprocess.apply -> "hello world" is capitalised.
-check("utterance delivered on the GUI thread, post-processed", texts == ["Hello world"])
+# the engine now emits the RAW utterance; the panel does the clean-up.
+check("utterance delivered on the GUI thread", texts == ["hello world"])
 check("level delivered", levels == [0.25])
 check("is_listening true", eng.is_listening is True)
+
+# partial signal (voice_show_partial defaults on)
+_parts = []
+eng.partial.connect(_parts.append)
+install_stubs()
+StubCapture.instances.clear()
+eng_p = VoiceEngine({"voice_show_partial": True})
+gotp = []
+eng_p.partial.connect(gotp.append)
+eng_p.start()
+check("partial delivered on the GUI thread", pump(lambda: gotp == ["hello"]))
+eng_p.stop(); pump(lambda: eng_p.current_state == "idle")
+
+eng_off = VoiceEngine({"voice_show_partial": False})
+offp = []
+eng_off.partial.connect(offp.append)
+eng_off.start()
+check("no partials when voice_show_partial is off",
+      pump(lambda: eng_off.current_state == "listening") and offp == [])
+eng_off.stop(); pump(lambda: eng_off.current_state == "idle")
 check("capture actually started", StubCapture.instances[-1].started is True)
 
 
@@ -230,13 +252,15 @@ check("started on the configured custom device",
 eng4d._capture.lose("could not open microphone: Error -9999")
 check("error surfaced with a friendly hint",
       pump(lambda: any("Windows Settings" in e for e in errs4d)))
+check("retry built a second capture",
+      pump(lambda: len(StubCapture.instances) >= 2 and StubCapture.instances[-1].started,
+           timeout=8))
 check("auto-retry brings it back to listening",
       pump(lambda: eng4d.current_state == "listening", timeout=8))
-check("retry built a second capture", len(StubCapture.instances) >= 2)
 check("retry cleared the custom device", eng4d._config.get("voice_mic_device") is None)
 # a second loss must NOT retry again
 errs4d.clear()
-eng4d._capture.lose("could not open microphone: Error -9999")
+StubCapture.instances[-1].lose("could not open microphone: Error -9999")
 check("second loss ends in error, no further retry",
       pump(lambda: eng4d.current_state == "error", timeout=8))
 eng4d.stop(); pump(lambda: eng4d.current_state == "idle")

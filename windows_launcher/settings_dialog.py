@@ -17,12 +17,14 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -315,6 +317,46 @@ class SettingsDialog(QDialog):
             lambda v: self._set("voice_post_processing", bool(v))
         )
 
+        self._voice_partial = self._check(
+            outer, "Show words in the capsule as you speak",
+            self._config.get("voice_show_partial", True),
+        )
+        self._voice_partial.toggled.connect(
+            lambda v: self._set("voice_show_partial", bool(v))
+        )
+
+        self._voice_cmds = self._check(
+            outer, "Recognise voice commands (“scratch that”, “send”, “new line”)",
+            self._config.get("voice_commands_enabled", True),
+        )
+        self._voice_cmds.toggled.connect(
+            lambda v: self._set("voice_commands_enabled", bool(v))
+        )
+
+        self._voice_punct = self._check(
+            outer, "Spoken punctuation (“period” → “.”)",
+            self._config.get("voice_spoken_punctuation", True),
+        )
+        self._voice_punct.toggled.connect(
+            lambda v: self._set("voice_spoken_punctuation", bool(v))
+        )
+
+        self._voice_autosend = self._check(
+            outer, "Auto-send after each phrase (skips the review step)",
+            self._config.get("voice_auto_send", False),
+        )
+        self._voice_autosend.toggled.connect(
+            lambda v: self._set("voice_auto_send", bool(v))
+        )
+
+        self._voice_fixups = self._check(
+            outer, "Fix common command words — experimental (“get” → “git”)",
+            self._config.get("voice_command_fixups", False),
+        )
+        self._voice_fixups.toggled.connect(
+            lambda v: self._set("voice_command_fixups", bool(v))
+        )
+
         self._voice_fallback = self._check(
             outer, "If the mic drops out, switch to the default device",
             self._config.get("voice_mic_autofallback", True),
@@ -322,6 +364,40 @@ class SettingsDialog(QDialog):
         self._voice_fallback.toggled.connect(
             lambda v: self._set("voice_mic_autofallback", bool(v))
         )
+
+        # Global hotkey ------------------------------------------------
+        self._voice_global = self._check(
+            outer, "Global hotkey (works when AgentDeck isn't in front)",
+            self._config.get("voice_global_hotkey_enabled", True),
+        )
+        self._voice_global.toggled.connect(
+            lambda v: self._set("voice_global_hotkey_enabled", bool(v))
+        )
+
+        hk_row = QHBoxLayout()
+        hk_row.setSpacing(8)
+        hk_row.addWidget(QLabel("Hotkey"))
+        self._voice_hotkey = QKeySequenceEdit(
+            QKeySequence(self._config.get("voice_hotkey", "Ctrl+Shift+X"))
+        )
+        self._voice_hotkey.setMaximumSequenceLength(1)
+        self._voice_hotkey.editingFinished.connect(self._on_voice_hotkey_edited)
+        hk_row.addWidget(self._voice_hotkey, 1)
+        outer.addLayout(hk_row)
+
+        tgt_row = QHBoxLayout()
+        tgt_row.setSpacing(8)
+        tgt_row.addWidget(QLabel("When pressed"))
+        self._voice_target = QComboBox()
+        self._voice_target.addItem("Focus AgentDeck and dictate", "agentdeck")
+        self._voice_target.addItem("Dictate into the foreground app", "foreground")
+        ti = self._voice_target.findData(self._config.get("voice_global_target", "agentdeck"))
+        self._voice_target.setCurrentIndex(ti if ti >= 0 else 0)
+        self._voice_target.currentIndexChanged.connect(
+            lambda _i: self._set("voice_global_target", self._voice_target.currentData())
+        )
+        tgt_row.addWidget(self._voice_target, 1)
+        outer.addLayout(tgt_row)
 
         vhint = QLabel(
             "Press Ctrl+Shift+X anywhere in AgentDeck to dictate into the focused "
@@ -334,11 +410,18 @@ class SettingsDialog(QDialog):
         if not self._voice_pro:
             for w in (self._voice_enable, self._voice_mic, self._voice_model,
                       self._voice_lang, self._voice_vad, self._voice_post,
-                      self._voice_fallback):
+                      self._voice_partial, self._voice_cmds, self._voice_punct,
+                      self._voice_autosend, self._voice_fixups, self._voice_fallback,
+                      self._voice_global, self._voice_hotkey, self._voice_target):
                 w.setEnabled(False)
             pro = QLabel("Voice-to-text is part of AgentDeck Pro.")
             pro.setObjectName("hint")
             outer.addWidget(pro)
+
+    def _on_voice_hotkey_edited(self) -> None:
+        seq = self._voice_hotkey.keySequence().toString(QKeySequence.PortableText)
+        if seq:
+            self._set("voice_hotkey", seq)
 
     def _current_voice_model(self) -> str:
         return self._voice_model.currentData() or "auto"

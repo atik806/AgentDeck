@@ -48,6 +48,7 @@ class AudioCapture:
         on_error: Optional[Callable[[str], None]] = None,
         on_level: Optional[Callable[[float], None]] = None,
         on_lost: Optional[Callable[[str], None]] = None,
+        on_partial: Optional[Callable[[str], None]] = None,
         silence_blocks: int = 10,
         min_speech_blocks: int = 3,
         preroll_blocks: int = 5,
@@ -66,6 +67,7 @@ class AudioCapture:
         # to on_error's transient hiccups. The caller stops the session.
         self.on_lost = on_lost
         self.on_level = on_level
+        self.on_partial = on_partial
         self._starve_timeout = max(1.0, float(starve_timeout))
         self._lost_fired = False
 
@@ -250,6 +252,9 @@ class AudioCapture:
             if self.transcriber is None:
                 continue
             try:
+                text = self.transcriber.transcribe(audio, on_partial=self.on_partial) \
+                    if self.on_partial is not None else self.transcriber.transcribe(audio)
+            except TypeError:
                 text = self.transcriber.transcribe(audio)
             except Exception as e:
                 self._emit_error(f"transcription failed: {e}")
