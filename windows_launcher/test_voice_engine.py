@@ -110,7 +110,8 @@ eng.start()
 check("reaches listening", pump(lambda: eng.current_state == "listening"))
 check("state order was loading then listening",
       states[:2] == ["loading", "listening"])
-check("utterance delivered on the GUI thread", texts == ["hello world"])
+# _emit_transcription runs voice_postprocess.apply -> "hello world" is capitalised.
+check("utterance delivered on the GUI thread, post-processed", texts == ["Hello world"])
 check("level delivered", levels == [0.25])
 check("is_listening true", eng.is_listening is True)
 check("capture actually started", StubCapture.instances[-1].started is True)
@@ -167,6 +168,42 @@ eng3b.stop_listening()
 check("stop_listening reaches idle", pump(lambda: eng3b.current_state == "idle"))
 check("mic released", StubCapture.instances[-1].stopped is True)
 check("not listening", eng3b.is_listening is False)
+
+
+# ---------------------------------------------------------------------------
+print("[4c] tuning config reaches the pipeline constructors")
+install_stubs()
+StubCapture.instances.clear()
+eng4c = VoiceEngine({
+    "voice_model": "small.en",
+    "voice_language": "en",
+    "voice_n_threads": 6,
+    "voice_beam_size": 4,
+    "voice_vad_aggressiveness": 3,
+    "voice_silence_ms": 600,      # 600 / 30 = 20 blocks
+    "voice_min_speech_ms": 90,    # 90 / 30 = 3 blocks
+    "voice_preroll_ms": 150,      # 150 / 30 = 5 blocks
+    "voice_post_processing": False,
+})
+texts4c = []
+eng4c.transcription.connect(texts4c.append)
+eng4c.start()
+check("reaches listening", pump(lambda: eng4c.current_state == "listening"))
+tk = eng4c._engine.kw
+check("model_size resolved", tk.get("model_size") == "small.en")
+check("language forwarded", tk.get("language") == "en")
+check("n_threads forwarded", tk.get("n_threads") == 6)
+check("beam_size forwarded", tk.get("beam_size") == 4)
+check("no_context forced on", tk.get("no_context") is True)
+vk = eng4c._vad.kw
+check("vad aggressiveness forwarded", vk.get("aggressiveness") == 3)
+ck = eng4c._capture.kw
+check("silence_ms -> blocks", ck.get("silence_blocks") == 20)
+check("min_speech_ms -> blocks", ck.get("min_speech_blocks") == 3)
+check("preroll_ms -> blocks", ck.get("preroll_blocks") == 5)
+check("post-processing off -> raw text", texts4c == ["hello world"])
+eng4c.stop()
+pump(lambda: eng4c.current_state == "idle")
 
 
 # ---------------------------------------------------------------------------

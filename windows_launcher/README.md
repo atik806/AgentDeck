@@ -402,7 +402,7 @@ independent of the panel.
   was launched. Doing it before the panel (and its shells) start means the entry
   is in place well before the 300 ms-delayed `claude` launch reads it.
 
-Seven test suites, all plain scripts:
+Nine test suites, all plain scripts:
 
 ```cmd
 python test_vt_screen.py
@@ -410,6 +410,8 @@ python test_wheel.py
 python test_panel.py
 python test_voice_engine.py
 python test_voice_overlay.py
+python test_voice_models.py
+python test_voice_postprocess.py
 python test_agents.py
 python test_setup_wizard.py
 ```
@@ -426,9 +428,13 @@ Run it after touching `terminal_panel.py` or the geometry code in
 `terminal_view.py` — none of those bugs are visible to a screen-model test,
 because each is about *when* Qt shows and sizes a widget. `test_voice_engine.py`
 (stubs the mic + model — offline, no network) covers the engine state machine and
-its thread→signal plumbing; `test_voice_overlay.py` covers the widget alone
-(state → visuals, drag clamping, the preview fade, Ctrl+X). The panel suite's
-sections 25–28 cover the wiring between them, without ever starting audio.
+its thread→signal plumbing (including that the model/VAD/segmentation tuning
+config reaches the pipeline constructors); `test_voice_overlay.py` covers the
+widget alone (state → visuals, drag clamping, the preview fade, Ctrl+X).
+`test_voice_models.py` covers model recommendation + name resolution;
+`test_voice_postprocess.py` covers the finished-utterance clean-up (capitalise,
+drop whisper's trailing period). The panel suite's sections 25–28 cover the
+wiring between them, without ever starting audio.
 `test_agents.py` covers agent discovery; `test_setup_wizard.py` covers the
 wizard's pages, validation and the choices it returns (offscreen — stub
 `QFileDialog`); panel-suite section 29 checks `startup=` reaches every pane's

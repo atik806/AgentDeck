@@ -37,6 +37,9 @@ class TranscriptionEngine:
         print_realtime: bool = True,
         print_progress: bool = False,
         on_segment: Optional[Callable[[dict], None]] = None,
+        initial_prompt: Optional[str] = None,
+        beam_size: int = 1,
+        no_context: bool = False,
     ):
         """
         Initialize the transcription engine.
@@ -49,6 +52,10 @@ class TranscriptionEngine:
             print_realtime: Print segments as they are transcribed.
             print_progress: Print progress information.
             on_segment: Callback for each transcribed segment (receives dict).
+            initial_prompt: Text priming the decoder's vocabulary (None = off).
+            beam_size: Beam-search width. 1 keeps the fast greedy decoder.
+            no_context: Don't carry decoder state between transcribe() calls --
+                        reduces runaway hallucination on short, unrelated clips.
         """
         self.model_size = model_size
         self.model_path = model_path
@@ -57,6 +64,9 @@ class TranscriptionEngine:
         self.print_realtime = print_realtime
         self.print_progress = print_progress
         self.on_segment = on_segment
+        self.initial_prompt = initial_prompt
+        self.beam_size = int(beam_size) if beam_size else 1
+        self.no_context = bool(no_context)
 
         self._model = None
         self._load_lock = threading.Lock()
@@ -91,6 +101,12 @@ class TranscriptionEngine:
             params["language"] = self.language
         if self.n_threads:
             params["n_threads"] = self.n_threads
+        if self.initial_prompt:
+            params["initial_prompt"] = self.initial_prompt
+        if self.no_context:
+            params["no_context"] = True
+        if self.beam_size > 1:
+            params["beam_search"] = {"beam_size": self.beam_size}
 
         self._model = Model(model_input, **params)
         print("[INFO]  Model loaded successfully.")
