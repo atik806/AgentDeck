@@ -63,6 +63,7 @@ class _Bridge(QObject):
     level = Signal(float)
     transcription = Signal(str)
     error = Signal(str)
+    model_progress = Signal(int)
 
 
 class VoiceEngine(QObject):
@@ -72,6 +73,8 @@ class VoiceEngine(QObject):
     level = Signal(float)
     transcription = Signal(str)
     error = Signal(str)
+    #: 0..100 while a first-run model download is in progress.
+    model_progress = Signal(int)
 
     #: WebRTC VAD wants one of these; the pipeline is built around 16 kHz.
     SAMPLE_RATE = 16000
@@ -86,6 +89,7 @@ class VoiceEngine(QObject):
         self._bridge.level.connect(self.level)
         self._bridge.transcription.connect(self.transcription)
         self._bridge.error.connect(self.error)
+        self._bridge.model_progress.connect(self.model_progress)
 
         self.available = bool(_IMPORT_OK)
         self.import_error = _IMPORT_ERR
@@ -158,6 +162,18 @@ class VoiceEngine(QObject):
             except Exception:  # noqa: BLE001
                 pass
 
+    def apply_config(self, new_config: dict) -> None:
+        """Adopt changed settings. Rebuilds the pipeline lazily when idle.
+
+        Phase 2: drop the built pipeline while idle so the next ``start()``
+        picks up the new model / mic / tuning. A live rebuild-while-listening is
+        Phase 3.
+        """
+        self._config = new_config or {}
+        if self._listening or self._busy:
+            return
+        self._capture = self._engine = self._vad = None
+
     # -- pipeline ---------------------------------------------------------------
 
     def _cfg_int(self, key: str, default: int, lo: int, hi: int) -> int:
@@ -215,6 +231,47 @@ class VoiceEngine(QObject):
             preroll_blocks=self._ms_to_blocks("voice_preroll_ms", 300, 0, 1000),
         )
 
+    def _prefetch_model(self) -> None:
+        """Download the resolved model if it isn't cached, reporting 0..100.
+
+        Runs on the start thread (already off the GUI). No-op when the file is
+        present or when the helper / registry is unavailable -- pywhispercpp's
+        own downloader is the fallback inside ``ensure_loaded()``.
+        """
+        model = voice_models.resolve(self._config.get("voice_model"))
+        try:
+            import voice_download
+        except Exception:  # noqa: BLE001
+            return
+        if voice_download.model_is_downloaded(model):
+            return
+        url = voice_download._url_for(model)
+        if not url:
+            return  # let ensure_loaded() fall back to pywhispercpp's fetch
+        import urllib.request
+
+        dest = voice_download.cache_path(model)
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._bridge.model_progress.emit(0)
+
+        def hook(block_num: int, block_size: int, total: int) -> None:
+            if total > 0 and self._listening:
+                pct = max(0, min(100, int(block_num * block_size * 100 / total)))
+                self._bridge.model_progress.emit(pct)
+
+        try:
+            urllib.request.urlretrieve(url, tmp, reporthook=hook)
+            tmp.replace(dest)
+            self._bridge.model_progress.emit(100)
+        except Exception:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            raise
+
     def _start_pipeline(self) -> None:
         try:
             self._ensure_built()
@@ -224,8 +281,14 @@ class VoiceEngine(QObject):
 
         self._bridge.state.emit("loading")
         try:
-            # First run downloads the model (~75 MB for tiny.en); subsequent
-            # runs just map it. Either way we don't open the mic until it's up.
+            # First run downloads the model. Do it ourselves with a progress
+            # report when it's missing (pywhispercpp's own fetch is silent);
+            # then ensure_loaded() just maps the file.
+            self._prefetch_model()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"model download failed: {exc}")
+            return
+        try:
             self._engine.ensure_loaded()
         except Exception as exc:  # noqa: BLE001
             self._fail(f"model load failed: {exc}")

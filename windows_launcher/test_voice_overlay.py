@@ -87,6 +87,16 @@ overlay._revert(overlay._revert_token)
 check("reverting during loading restores the loading caption",
       overlay.caption_text() == "loading model…")
 
+# model-download progress
+overlay.set_state("loading")
+overlay.set_progress(42)
+check("progress shows a percentage in the caption", "42%" in overlay.caption_text())
+overlay.set_state("listening")
+check("changing state clears the progress caption", "42%" not in overlay.caption_text())
+overlay.set_state("idle")
+overlay.set_progress(80)
+check("progress is ignored when not loading", "80%" not in overlay.caption_text())
+
 
 # ---------------------------------------------------------------------------
 print("[4] mic button and Ctrl+X ask to toggle")

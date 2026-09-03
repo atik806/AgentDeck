@@ -418,6 +418,20 @@ class VoiceOverlay(QWidget):
     def set_level(self, rms: float) -> None:
         self._eq.set_level(rms)
 
+    def set_progress(self, pct: int) -> None:
+        """Show a first-run model-download percentage in the caption area.
+
+        Only meaningful while ``loading``; cleared by the next :meth:`set_state`.
+        """
+        if self._state != "loading":
+            return
+        pct = max(0, min(100, int(pct)))
+        self._eq.set_caption(f"model {pct}%", _cap_color("loading"))
+        if self._eq.capAlpha < 1.0:
+            self._cap_anim.stop()
+            self._eq.capAlpha = 1.0
+        self._eq.update()
+
     def flash_text(self, text: str) -> None:
         text = text.strip()
         if not text:

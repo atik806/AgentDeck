@@ -135,9 +135,21 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    `voice_capture/audio/capture.py` (`on_level` callback);
    `TranscriptionEngine` gained additive `initial_prompt`/`beam_size`/
    `no_context` args. Tests: `test_voice_engine.py`, `test_voice_overlay.py`,
-   `test_voice_models.py`, `test_voice_postprocess.py` (all offline), panel
-   suite §25–28. Needs `sounddevice webrtcvad-wheels pywhispercpp numpy` in
-   `windows_launcher/.venv` (added to requirements.txt).
+   `test_voice_models.py`, `test_voice_postprocess.py`, `test_voice_download.py`
+   (all offline), panel suite §25–28. Needs `sounddevice webrtcvad-wheels
+   pywhispercpp numpy` in `windows_launcher/.venv` (added to requirements.txt).
+   **Settings ▸ Voice input** (`settings_dialog._build_voice_section`, Pro-gated
+   via `voice_enabled=` kwarg) exposes the master on/off (`voice_input_enabled`),
+   mic device, model (with a "Download now" `voice_download.ModelDownloadController`
+   + progress bar), language, mic sensitivity, and post-processing. First-run of
+   a not-yet-cached model shows `model NN%` in the overlay caption
+   (`VoiceEngine._prefetch_model` → `model_progress` signal →
+   `overlay.set_progress`). `voice_model`/`voice_language`/`voice_beam_size`/
+   `voice_n_threads`/`voice_initial_prompt`/`voice_vad_aggressiveness`/
+   `voice_post_processing` are in `account.CLOUD_KEYS`; mic device, overlay
+   position, the master switch and segmentation ms are machine-local.
+   `terminal_panel._open_settings` diffs the voice keys and calls
+   `VoiceEngine.apply_config()` (rebuilds the pipeline lazily while idle).
 
 6. **Setup wizard** (2026-08-28) — `main.py` opens a 3-step `QDialog`
    (`setup_wizard.py`, amber accent) before the panel: **Start** (welcome +
@@ -599,6 +611,7 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_voice_overlay.py  # voice widget; offline
 .venv\Scripts\python.exe test_voice_models.py       # model pick + resolve; offline
 .venv\Scripts\python.exe test_voice_postprocess.py  # utterance clean-up; offline
+.venv\Scripts\python.exe test_voice_download.py     # model download ctrl; offline
 .venv\Scripts\python.exe test_agents.py         # agent discovery; offline
 .venv\Scripts\python.exe test_setup_wizard.py   # wizard pages/validation; offline
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline

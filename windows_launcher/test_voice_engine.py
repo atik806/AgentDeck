@@ -94,6 +94,9 @@ def install_stubs(transcriber=StubTranscriber):
         "D", (), {"resolve_device": staticmethod(lambda spec: None)}
     )
     voice_engine._IMPORT_OK = True
+    # Never touch the network from a test: the real _prefetch_model would try to
+    # download the GGML model when it's not already cached.
+    voice_engine.VoiceEngine._prefetch_model = lambda self: None
 
 
 # ---------------------------------------------------------------------------

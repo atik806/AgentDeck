@@ -402,7 +402,7 @@ independent of the panel.
   was launched. Doing it before the panel (and its shells) start means the entry
   is in place well before the 300 ms-delayed `claude` launch reads it.
 
-Nine test suites, all plain scripts:
+Ten test suites, all plain scripts:
 
 ```cmd
 python test_vt_screen.py
@@ -412,6 +412,7 @@ python test_voice_engine.py
 python test_voice_overlay.py
 python test_voice_models.py
 python test_voice_postprocess.py
+python test_voice_download.py
 python test_agents.py
 python test_setup_wizard.py
 ```

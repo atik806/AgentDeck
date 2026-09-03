@@ -49,6 +49,16 @@ CLOUD_KEYS = [
     "font_size",
     "default_shell",
     "theme",
+    # Voice preferences that are about *what* is transcribed, not the machine's
+    # hardware. Mic device, overlay position, hotkey and the on/off master
+    # switch stay machine-local.
+    "voice_model",
+    "voice_language",
+    "voice_vad_aggressiveness",
+    "voice_post_processing",
+    "voice_beam_size",
+    "voice_initial_prompt",
+    "voice_n_threads",
 ]
 
 #: Downloaded Google avatar, cached beside config.json so the chip has a picture
