@@ -694,6 +694,113 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     `test_settings_dialog.py` (39), `test_global_hotkey.py` (19),
     `test_panel*.py` green bar the lone pre-existing "drop focus" flake.
 
+25. **Voice: crash-on-native-fault + instant stop + Enter reliability
+    (2026-09-04, follow-up to v0.12.1 — not yet released/tagged)** — the
+    v0.12.1 `prewarm()` shipped three regressions; a 5-agent deep-dive fixed the
+    root causes across `voice_engine.py`,
+    `voice_capture/{audio/capture.py,transcription/engine.py}`,
+    `voice_overlay.py`, `terminal_panel.py`, `main.py`.
+    - **Crash (no `last-error.log`).** `prewarm()` never set `_busy`, so a
+      `start()` / `apply_config()` / `_on_capture_lost()` that landed mid-prewarm
+      nulled `_engine`/`_capture` from under it → **two `pywhispercpp.Model()`
+      constructions on two threads** → whisper.cpp/ggml backend init is not
+      reentrant → segfault, bypassing `sys.excepthook`. Fixes: (a) a
+      **process-wide `_MODEL_INIT_LOCK`** around every `Model(...)` build in
+      `TranscriptionEngine._load_model`; (b) `prewarm._work` now holds
+      `VoiceEngine._build_lock` (now an **RLock**) across the *whole* build +
+      model load, and `apply_config()` / `_on_capture_lost` teardown take that
+      lock (bounded 3 s in `apply_config` so a wedged prewarm can't freeze the
+      GUI) before nulling refs; (c) `_start_pipeline` opens the mic under the
+      lock and re-checks `_listening`/`_aborting`; (d) `shutdown()` sets
+      `_aborting` so a prewarm/start worker bails before the interpreter kills it
+      mid-`Model()`; (e) **`faulthandler.enable(…, all_threads=True)`** in
+      `main.py` → `%APPDATA%\multi-terminal\faulthandler.log` for the next
+      native fault; (f) per-engine `.part<id>` temp name in `_prefetch_model`
+      (was a shared name → prewarm + start clobbered each other's download).
+    - **Ctrl+Shift+X slow to stop (up to ~12 s).** `AudioCapture.stop()` was
+      synchronous: `_capture_thread.join(2s)` + a `_flush_segment()` + a
+      `_transcribe_thread.join(10s)` that waited out a whole extra whisper pass,
+      and `_busy` stayed set that whole time so re-pressing no-op'd. New
+      **`stop(discard_pending=False)`**: closes the mic `InputStream`
+      synchronously (`abort()`+`close()`, ~ms) and hands the worker joins to a
+      daemon `voice-capture-cleanup` thread. `discard_pending=True` (every
+      user/system stop — hotkey, Enter, "stop listening", mic-loss, shutdown)
+      **skips the flush, drains the segment queue, and aborts the in-flight
+      decode** via a real pywhispercpp **`abort_callback`** (verified working in
+      1.5.1) wired through `TranscriptionEngine.set_abort_check` +
+      `AudioCapture._abort_transcription`. A `_generation` counter drops any
+      result that slips past the abort. `_toggle_voice_engine()` flips the
+      overlay to idle immediately instead of waiting for the teardown signal.
+    - **"Press Enter to stop dictation" unreliable.** Three causes: (a) the
+      trailing flushed/queued utterance was transcribed and typed in *after*
+      Enter — now `VoiceEngine._emit_transcription` drops anything that resolves
+      once `_listening` is clear, plus the capture-level discard/generation
+      gate; (b) `_on_pane_submitted` only stopped a fully-listening session —
+      now also covers `_busy`/loading and sets the overlay idle at once;
+      (c) **the capsule steals keyboard focus on a click/drag** and its
+      `keyPressEvent` ignored Return — new `VoiceOverlay.submit_requested`
+      signal (bare Enter) routed to the active pane's `submit()`.
+    - **Double-fire hardening.** `_rebind_global_hotkey` now **disables the
+      focused-window `Ctrl+Shift+X` QAction** whenever the OS-wide `RegisterHotKey`
+      is live (it fires `WM_HOTKEY` even when focused), so one keypress can't
+      reach both handlers and cancel out. `_toggle_voice` / `_on_overlay_toggle`
+      clear a stale `_fg_hwnd` (was typing dictation into the last
+      "foreground"-target window). Overlay mic/Ctrl+X now go through
+      `_on_overlay_toggle` → same Pro + master-switch gating as the shortcut.
+    - Also: `AudioCapture._emit_lost` closes the dead stream itself (was leaking
+      an `InputStream` per mic unplug since `stop()` early-returns once
+      `_is_running` is clear); `VoiceOverlay.set_available(True)` un-sticks the
+      "unavailable" state.
+    Tests: `test_voice_engine.py` (54, +[4b2] late-utterance drop),
+    `test_voice_overlay.py` (64, +bare-Enter→submit_requested),
+    `voice_capture/tests/test_pipeline.py` (33, +[5b] fast discard stop +
+    [5c] default stop still flushes). `test_panel.py` green bar the same lone
+    pre-existing "drop focus" flake; full offline suite green.
+
+26. **Settings is now an embedded panel, not a popup dialog; prewarm never
+    auto-downloads (2026-09-04, uncommitted)** — two follow-ups from a live
+    user report ("it's opening a new window" / "why do I need to download the
+    voice model, I don't want that").
+    - **`settings_dialog.py` split into `SettingsPanel(QWidget)`** (the real
+      thing: the category-nav + content UI from the earlier redesign) **and a
+      thin `SettingsDialog(QDialog)`** wrapper (kept only for anything that
+      still wants a modal popup, and for the test suite — attribute access
+      not found on the dialog falls through to `self._panel` via
+      `__getattr__`). `terminal_panel.py` builds one `SettingsPanel` in
+      `_build_body()` and adds it to `_main_stack` alongside
+      `_plugins_panel`/`_notes_panel` — the gear button now calls
+      `_show_settings()`/`_leave_settings()` (mirrors `_show_plugins` /
+      `_leave_notes`, incl. `_settings_active` folded into
+      `_refresh_sidebar`'s `on_nav_view` and `_select_workspace`'s
+      leave-every-nav-view call), so Settings is a page of the app like
+      Plugins/Notes, not a separate OS window. Everything still saves live, no
+      "Done" step: `SettingsPanel.theme_changed`/`font_size_changed` signals
+      apply immediately (`theme.set_mode`/`self._set_font`);
+      `voice_settings_changed` is debounced 500 ms onto
+      `TerminalPanel._apply_voice_settings` (was the old dialog's
+      close-time diff-apply) so a run of toggles doesn't each blip a live
+      listen. `_apply_entitlements` calls `settings_panel.set_voice_pro(...)`
+      to re-gate the voice controls live when the plan resolves/changes
+      (the panel is built once and kept alive all session, unlike the old
+      per-open dialog).
+    - **`VoiceEngine.prewarm()` no longer ever triggers a first-run model
+      *download*.** It already loaded a resolved model into RAM 2.5 s after
+      launch (see §25/v0.12.1); the docstring said this could also silently
+      download it on first run, and a live user report confirmed that's a bad
+      surprise for a multi-hundred-MB background fetch nobody asked for. Fixed
+      with one early check: `voice_download.model_is_downloaded(resolved)` —
+      if the configured model isn't already on disk, `prewarm()` returns
+      untouched (no build, no thread, nothing). The first real `Ctrl+Shift+X`
+      (or Settings ▸ Voice input ▸ Download now) still downloads on demand,
+      with the overlay's visible progress bar, same as always — only the
+      *silent background* path is gone.
+    Tests: `test_settings_dialog.py` (49, unchanged surface via delegation),
+    `test_voice_engine.py` (57, +[4g] prewarm skips an uncached model / warms
+    a cached one), `test_panel.py` green (143-144 depending on run; two
+    unrelated timing flakes seen once each and not reproduced on rerun, on top
+    of the documented pre-existing "drop focus" flake) — confirmed identical
+    on a clean-HEAD throwaway `git worktree`, so not a regression.
+
 ## Running / testing
 
 ```cmd
