@@ -82,15 +82,18 @@ check("glow colour is red", panel._update_glow.color().name() == "#ff3b30")
 check("glow offset is zero (a halo, not a shadow)",
       panel._update_glow.offset().manhattanLength() == 0)
 check("settings tooltip starts plain", panel._settings_btn.toolTip() == "Settings")
+_plain_icon_key = panel._settings_btn.icon().cacheKey()
 
 
-print("[3] _set_update_glow toggles the halo + the settings tooltip")
+print("[3] _set_update_glow toggles the halo, the badge icon + the settings tooltip")
 panel._set_update_glow(True)
 check("effect enabled", panel._update_glow.isEnabled())
 check("pulse animation running",
       panel._update_pulse.state() == QAbstractAnimation.Running)
 check("pulse loops forever", panel._update_pulse.loopCount() == -1)
 check("settings tooltip flags the update", "available" in panel._settings_btn.toolTip())
+check("gear icon swaps to the badged variant",
+      panel._settings_btn.icon().cacheKey() != _plain_icon_key)
 panel._set_update_glow(False)
 check("effect disabled again", not panel._update_glow.isEnabled())
 check("pulse stopped", panel._update_pulse.state() != QAbstractAnimation.Running)

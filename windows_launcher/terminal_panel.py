@@ -490,7 +490,7 @@ class TerminalPanel(QMainWindow):
         self._style_brand()
         self._style_status_bar()
         self._refresh_theme_button()
-        self._settings_btn.setIcon(gear_icon(16))
+        self._refresh_settings_icon()
         self._voice_btn.setIcon(mic_icon(16))
         self._help_btn.apply_theme()
         self._account_chip.refresh()
@@ -1669,6 +1669,20 @@ class TerminalPanel(QMainWindow):
         self._update_pulse.setEasingCurve(QEasingCurve.InOutSine)
         self._update_pulse.setLoopCount(-1)
 
+    def _refresh_settings_icon(self) -> None:
+        """Redraw the gear for the current state.
+
+        While an update waits (``_update_glow`` enabled) it gets an accent tint
+        and a red notification dot -- a cue that survives even if the toolbar
+        clips the drop-shadow halo. Called on theme changes and whenever the
+        glow toggles.
+        """
+        waiting = bool(
+            getattr(self, "_update_glow", None)
+        ) and self._update_glow.isEnabled()
+        color = theme.color("accent") if waiting else None
+        self._settings_btn.setIcon(gear_icon(16, color=color, badge=waiting))
+
     def _set_update_glow(self, on: bool) -> None:
         glow = getattr(self, "_update_glow", None)
         if glow is None:
@@ -1685,6 +1699,7 @@ class TerminalPanel(QMainWindow):
             glow.setEnabled(False)
             glow.setBlurRadius(0)
             self._settings_btn.setToolTip("Settings")
+        self._refresh_settings_icon()
 
     def _on_update_available(self, version: str, notes: str) -> None:
         self._set_update_glow(True)

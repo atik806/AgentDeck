@@ -99,6 +99,16 @@ check("circular_avatar empty fallback text ok", not circular_avatar(None, 20, ""
 check("gear icon", not gear_icon(16).isNull())
 check("help icon", not help_icon(16).isNull())
 
+# The badged gear (the "an update is waiting" cue) must actually paint a red
+# dot in the top-right corner and differ from the plain gear.
+_plain = gear_icon(18).pixmap(18, 18).toImage()
+_badged = gear_icon(18, badge=True).pixmap(18, 18).toImage()
+check("badged gear differs from plain", _plain != _badged)
+_corner = _badged.pixelColor(14, 3)
+check("badged gear has a red corner dot",
+      _corner.alpha() > 200 and _corner.red() > 180
+      and _corner.green() < 120 and _corner.blue() < 120)
+
 
 # ---------------------------------------------------------------------------
 print("[2] AccountChip reflects sign-in state")

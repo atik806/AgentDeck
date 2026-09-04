@@ -136,8 +136,19 @@ def _icon_color(color: Optional[str]) -> QColor:
     return QColor(color) if color else QColor(theme.color("text_muted"))
 
 
-def gear_icon(px: int = 16, color: Optional[str] = None) -> QIcon:
-    """A drawn settings cog -- reliable where an emoji font isn't."""
+#: The "an update is waiting" notification dot -- matches the settings-button halo.
+_BADGE_COLOR = "#ff3b30"
+
+
+def gear_icon(
+    px: int = 16, color: Optional[str] = None, *, badge: bool = False
+) -> QIcon:
+    """A drawn settings cog -- reliable where an emoji font isn't.
+
+    ``badge`` adds a small notification dot at the top-right corner, punched
+    clear of the cog so it reads on any background -- the "a new AgentDeck is
+    waiting, open Settings" cue on the toolbar.
+    """
     px = max(8, int(px))
     pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
@@ -165,6 +176,17 @@ def gear_icon(px: int = 16, color: Optional[str] = None) -> QIcon:
     p.setCompositionMode(QPainter.CompositionMode_Clear)
     p.drawEllipse(QPointF(cx, cy), body_r * 0.42, body_r * 0.42)
     p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+    if badge:
+        r = px * 0.22
+        bx, by = px - r - 0.5, r + 0.5
+        # Clear a ring around the dot first so it never merges with a tooth.
+        p.setCompositionMode(QPainter.CompositionMode_Clear)
+        p.setBrush(QColor(Qt.black))
+        p.drawEllipse(QPointF(bx, by), r + px * 0.08, r + px * 0.08)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.setBrush(QColor(_BADGE_COLOR))
+        p.drawEllipse(QPointF(bx, by), r, r)
     p.end()
     return QIcon(pm)
 
