@@ -232,6 +232,28 @@ finally:
 d.close()
 
 
+# ---------------------------------------------------------------------------
+print("[10] category nav -- one page at a time, buttons stay in sync")
+c = new_cfg()
+d = SettingsDialog(c, current_version="1.2.3", voice_enabled=True)
+check("five categories", len(d._nav_buttons) == 5)
+check("opens on Appearance", d._stack.currentIndex() == 0)
+check("Appearance button starts checked", d._nav_buttons[0].isChecked())
+
+d._nav_buttons[4].click()
+check("clicking Voice input switches the page", d._stack.currentIndex() == 4)
+check("Voice input button now checked", d._nav_buttons[4].isChecked())
+check("Appearance button unchecked", not d._nav_buttons[0].isChecked())
+check("only one nav button checked", sum(b.isChecked() for b in d._nav_buttons) == 1)
+check("voice controls are on the visible page",
+      d._stack.currentWidget().isAncestorOf(d._voice_model))
+
+d._show_page(2)
+check("_show_page(2) lands on Updates", d._stack.currentIndex() == 2)
+check("Updates button checked", d._nav_buttons[2].isChecked())
+d.close()
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

@@ -64,7 +64,7 @@ from navbar import AccountChip, HelpButton, gear_icon, theme_icon
 from new_workspace_dialog import NewWorkspaceDialog
 from notes_panel import NotesPanel
 from plugins_panel import PluginsPanel
-from settings_dialog import SettingsDialog
+from settings_dialog import SettingsPanel
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
 from vt_screen import DEFAULT_SCROLLBACK
@@ -171,10 +171,11 @@ class TerminalPanel(QMainWindow):
         self._workspaces: list[Workspace] = []
         self._active_ws: Optional[Workspace] = None
         self._ws_seq = 0
-        # True while a sidebar nav view (PLUGINS / NOTES) is showing instead of
-        # a workspace.
+        # True while a nav view (PLUGINS / NOTES / SETTINGS) is showing instead
+        # of a workspace.
         self._plugins_active = False
         self._notes_active = False
+        self._settings_active = False
         # Set before anything can show the window: showEvent reads it.
         self._focus_primed = False
 
@@ -430,7 +431,7 @@ class TerminalPanel(QMainWindow):
         self._settings_btn.setCursor(Qt.PointingHandCursor)
         self._settings_btn.setFocusPolicy(Qt.NoFocus)
         self._settings_btn.setToolTip("Settings")
-        self._settings_btn.clicked.connect(self._open_settings)
+        self._settings_btn.clicked.connect(self._show_settings)
         bar.addWidget(self._settings_btn)
 
         self._help_btn = HelpButton(bar)
@@ -498,6 +499,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.apply_theme()
         self._plugins_panel.apply_theme()
         self._notes_panel.apply_theme()
+        self._settings_panel.apply_theme()
         if getattr(self, "_trial_banner", None) is not None:
             self._trial_banner.apply_theme()
         for workspace in self._workspaces:
@@ -507,49 +509,63 @@ class TerminalPanel(QMainWindow):
         self.config["theme"] = mode
         self._save_settings()
 
-    def _open_settings(self) -> None:
-        before = dict(self.config)
-        dialog = SettingsDialog(
-            self.config, self,
-            updater=getattr(self, "updater", None),
-            current_version=__version__,
-            voice_enabled=entitlements.voice_enabled(self._plan()),
-        )
-        dialog.exec()
-        # The dialog writes straight into self.config; apply anything with a
-        # live effect (only the theme has one -- splash / wizard / update knobs
-        # are read fresh where they're used).
-        new_theme = str(self.config.get("theme", "system"))
-        if new_theme != before.get("theme"):
-            theme.set_mode(theme.init(self.config))
-        new_size = int(self.config.get("font_size", self._font_size) or self._font_size)
-        if new_size != self._font_size:
-            self._set_font(new_size)
-        self._apply_voice_settings(before)
-        self._save_settings()
+    def _show_settings(self) -> None:
+        """Gear button -- swap the terminal area for the SETTINGS panel.
 
-    _VOICE_KEYS = (
-        "voice_input_enabled", "voice_model", "voice_mic_device", "voice_language",
-        "voice_n_threads", "voice_beam_size", "voice_initial_prompt",
-        "voice_vad_aggressiveness", "voice_silence_ms", "voice_min_speech_ms",
-        "voice_preroll_ms", "voice_post_processing",
-    )
-    _HOTKEY_KEYS = (
-        "voice_hotkey", "voice_global_hotkey_enabled", "voice_global_target",
-        "voice_input_enabled",
-    )
+        A page of the app (like Plugins / Notes), not a separate popup window:
+        the panel is built once in ``_build_body`` and writes straight into
+        ``self.config`` as the user changes anything, live -- there is no
+        "Done" step to apply on. Theme and font size take effect immediately
+        via signals; voice settings are debounced onto the already-built
+        engine by :meth:`_on_settings_voice_changed`.
+        """
+        self._notes_panel.flush()
+        self._notes_active = False
+        self._plugins_active = False
+        self._settings_active = True
+        self._settings_panel.reset_to_first_page()
+        self._main_stack.setCurrentWidget(self._settings_panel)
+        self._hide_voice_overlay()
+        self._refresh_sidebar()
 
-    def _apply_voice_settings(self, before: dict) -> None:
-        """Push changed voice knobs into the (already-built) engine + overlay."""
+    def _leave_settings(self) -> None:
+        """Back to the workspaces view. No-op when already there."""
+        if not self._settings_active:
+            return
+        self._settings_active = False
+        self._main_stack.setCurrentWidget(self._ws_stack)
+        self._restore_voice_overlay()
+
+    def _on_settings_theme_changed(self, _mode: str) -> None:
+        theme.set_mode(theme.init(self.config))
+
+    def _on_settings_voice_changed(self) -> None:
+        """A voice_* setting changed in the (always-live) Settings panel.
+
+        Debounced: rebuilding the pipeline / rebinding the hotkey on every
+        single keystroke or checkbox click (rather than once, the way the old
+        modal dialog applied everything together when "Done" was clicked)
+        would mean a rapid run of toggles each briefly interrupts a live
+        listen. 500 ms of quiet before it actually applies.
+        """
+        timer = getattr(self, "_voice_settings_debounce", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._apply_voice_settings)
+            self._voice_settings_debounce = timer
+        timer.start(500)
+
+    def _apply_voice_settings(self) -> None:
+        """Push the current voice_* config into the (already-built) engine,
+        global hotkey, and overlay."""
         engine = getattr(self, "_voice_engine", None)
         if engine is None:
             return
-        if any(before.get(k) != self.config.get(k) for k in self._VOICE_KEYS):
-            engine.apply_config(self.config)
-        if any(before.get(k) != self.config.get(k) for k in self._HOTKEY_KEYS):
-            self._rebind_global_hotkey()
+        engine.apply_config(self.config)
+        self._rebind_global_hotkey()
         enabled = bool(self.config.get("voice_input_enabled", True))
-        if enabled != bool(before.get("voice_input_enabled", True)):
+        if self._voice_btn.isEnabled() != enabled:
             self._voice_btn.setEnabled(enabled)
             if not enabled:
                 if engine.is_listening:
@@ -601,10 +617,20 @@ class TerminalPanel(QMainWindow):
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
         self._notes_panel = NotesPanel(central, config=self.config)
+        self._settings_panel = SettingsPanel(
+            self.config, central,
+            updater=getattr(self, "updater", None),
+            current_version=__version__,
+            voice_enabled=entitlements.voice_enabled(self._plan()),
+        )
+        self._settings_panel.theme_changed.connect(self._on_settings_theme_changed)
+        self._settings_panel.font_size_changed.connect(self._set_font)
+        self._settings_panel.voice_settings_changed.connect(self._on_settings_voice_changed)
         self._main_stack = QStackedWidget(central)
         self._main_stack.addWidget(self._ws_stack)
         self._main_stack.addWidget(self._plugins_panel)
         self._main_stack.addWidget(self._notes_panel)
+        self._main_stack.addWidget(self._settings_panel)
 
         row.addWidget(self._sidebar)
         row.addWidget(self._main_stack, 1)
@@ -1072,6 +1098,7 @@ class TerminalPanel(QMainWindow):
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""
         self._notes_panel.flush()
         self._notes_active = False
+        self._settings_active = False
         self._plugins_active = True
         self._main_stack.setCurrentWidget(self._plugins_panel)
         self._hide_voice_overlay()
@@ -1088,6 +1115,7 @@ class TerminalPanel(QMainWindow):
     def _show_notes(self) -> None:
         """Swap the terminal area for the NOTES panel (sidebar nav strip)."""
         self._plugins_active = False
+        self._settings_active = False
         self._notes_active = True
         self._notes_panel.reload()
         self._main_stack.setCurrentWidget(self._notes_panel)
@@ -1119,6 +1147,7 @@ class TerminalPanel(QMainWindow):
             return
         self._leave_plugins()
         self._leave_notes()
+        self._leave_settings()
         self._active_ws = workspace
         self._ws_stack.setCurrentWidget(workspace)
         self._refresh_sidebar()
@@ -1209,7 +1238,7 @@ class TerminalPanel(QMainWindow):
         self._refresh_status()
 
     def _refresh_sidebar(self) -> None:
-        on_nav_view = self._plugins_active or self._notes_active
+        on_nav_view = self._plugins_active or self._notes_active or self._settings_active
         active = None if on_nav_view else self._active_ws
         self._sidebar.refresh(self._workspaces, active)
         self._sidebar.set_plugins_active(self._plugins_active)
@@ -2157,6 +2186,9 @@ class TerminalPanel(QMainWindow):
                 if pro else
                 "Voice-to-text input is a Pro feature"
             )
+        settings_panel = getattr(self, "_settings_panel", None)
+        if settings_panel is not None:
+            settings_panel.set_voice_pro(entitlements.voice_enabled(plan))
         self._rebind_global_hotkey()
 
         # Background update check on launch is Pro; Free keeps the manual button.
