@@ -18,9 +18,10 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QDrag, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -72,6 +73,77 @@ _RESTORE_GLYPH = "⤡"
 #: Pane header "hand this conversation to another agent" button.
 _HANDOFF_GLYPH = "⤳"
 
+#: Drag payload for reordering panes: the dragged pane's current index, as bytes.
+_PANE_MIME = "application/x-agentdeck-pane"
+
+
+def _pane_drag_source(mime: QMimeData) -> Optional[int]:
+    """The dragged pane's index from a pane-reorder drag, or ``None``."""
+    if not mime.hasFormat(_PANE_MIME):
+        return None
+    try:
+        return int(bytes(mime.data(_PANE_MIME)).decode("ascii"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+class _PaneHeader(QWidget):
+    """The pane's title strip -- also the grab handle for reordering panes.
+
+    A press on empty header space (not on one of the header buttons -- those
+    are child widgets and eat their own clicks) that then moves past the
+    platform drag threshold starts a :class:`QDrag`. The pane owns the rest.
+    """
+
+    #: The header was dragged. Carries the press point, in header coordinates.
+    drag_started = Signal(QPoint)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._press: Optional[QPoint] = None
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.LeftButton:
+            self._press = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if (
+            self._press is not None
+            and event.buttons() & Qt.LeftButton
+            and (event.position().toPoint() - self._press).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            pos, self._press = self._press, None
+            self.drag_started.emit(pos)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self._press = None
+        super().mouseReleaseEvent(event)
+
+
+class _DropOverlay(QWidget):
+    """A translucent accent wash + outline shown over a pane that is a drop
+    target while another pane is being dragged. Click-through and hidden until
+    the pane lights it."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        accent = QColor(theme.color("accent"))
+        fill = QColor(accent)
+        fill.setAlpha(38)
+        p.setBrush(fill)
+        p.setPen(QPen(accent, 2))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 9, 9)
+        p.end()
+
 
 # ---------------------------------------------------------------------------
 # Pane
@@ -96,6 +168,10 @@ class TerminalPane(QFrame):
     #: Carries the pane.
     handoff_requested = Signal(object)
 
+    #: The user dropped another pane onto this one to reorder. Carries the
+    #: dragged pane's original index and this pane (the drop target).
+    reorder_requested = Signal(int, object)
+
     def __init__(
         self,
         index: int,
@@ -118,6 +194,9 @@ class TerminalPane(QFrame):
         self._expanded = False
 
         self.setFrameShape(QFrame.NoFrame)
+        # Accept another pane being dropped onto this one (header-drag reorder).
+        # The terminal canvas ignores this mime, so the drop bubbles up here.
+        self.setAcceptDrops(True)
 
         # A soft accent halo around whichever pane has focus -- Qt QSS has no
         # box-shadow, so the "selected" glow is a graphics effect. Dormant
@@ -134,13 +213,16 @@ class TerminalPane(QFrame):
         outer.setSpacing(0)
 
         # -- header --
-        self._header = QWidget(self)
+        self._header = _PaneHeader(self)
         # Named so the pane stylesheet can target it; must be set before the
         # first setStyleSheet or the QWidget#paneHeaderHost rule won't match.
         self._header.setObjectName("paneHeaderHost")
         # A plain QWidget ignores a stylesheet background inherited from an
         # ancestor unless it is told to draw a styled background.
         self._header.setAttribute(Qt.WA_StyledBackground, True)
+        self._header.setCursor(Qt.OpenHandCursor)
+        self._header.setToolTip("Drag to reorder this pane")
+        self._header.drag_started.connect(self._begin_reorder_drag)
         header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(8, 3, 4, 3)
         header_layout.setSpacing(6)
@@ -194,6 +276,10 @@ class TerminalPane(QFrame):
         # -- terminal --
         self.view = self._make_view()
         outer.addWidget(self.view, 1)
+
+        # Lit while another pane is being dragged over this one. Sits above the
+        # terminal canvas so the cue is visible over the whole pane.
+        self._drop_overlay = _DropOverlay(self)
 
         self._was_alive = self.view.is_alive()
         self._refresh_style()
@@ -418,6 +504,60 @@ class TerminalPane(QFrame):
     def close_session(self) -> None:
         self.view.close_session()
 
+    # -- drag-to-reorder --------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._drop_overlay.setGeometry(self.rect())
+
+    def _begin_reorder_drag(self, press_pos: QPoint) -> None:
+        """Header drag -- carry this pane's index and let a sibling catch it."""
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_PANE_MIME, str(self._index).encode("ascii"))
+        drag.setMimeData(mime)
+        strip = self._header.grab()
+        drag.setPixmap(strip)
+        drag.setHotSpot(QPoint(min(press_pos.x(), strip.width() - 1), press_pos.y()))
+        self._header.setCursor(Qt.ClosedHandCursor)
+        try:
+            drag.exec(Qt.MoveAction)
+        finally:
+            self._header.setCursor(Qt.OpenHandCursor)
+
+    def _show_drop_hint(self, on: bool) -> None:
+        self._drop_overlay.setGeometry(self.rect())
+        self._drop_overlay.setVisible(on)
+        if on:
+            self._drop_overlay.raise_()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        src = _pane_drag_source(event.mimeData())
+        if src is not None and src != self._index:
+            self._show_drop_hint(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if _pane_drag_source(event.mimeData()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self._show_drop_hint(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self._show_drop_hint(False)
+        src = _pane_drag_source(event.mimeData())
+        if src is None or src == self._index:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.reorder_requested.emit(src, self)
+
 
 # ---------------------------------------------------------------------------
 # Workspace
@@ -541,6 +681,7 @@ class Workspace(QWidget):
         pane.activated.connect(self.set_active)
         pane.submitted.connect(self.pane_submitted)
         pane.handoff_requested.connect(self.pane_handoff_requested)
+        pane.reorder_requested.connect(self._reorder_pane)
         self._panes.append(pane)
         return pane
 
@@ -619,6 +760,36 @@ class Workspace(QWidget):
         pane = self._active or (self._panes[0] if self._panes else None)
         if pane is not None:
             self.close_pane(pane)
+
+    # -- reordering ----------------------------------------------------------
+
+    def move_pane(self, src: int, dst: int) -> None:
+        """Move the pane at index ``src`` to index ``dst`` and relayout.
+
+        The panes are only reordered in the list; :meth:`_relayout` reparents
+        the existing pane widgets into a fresh splitter tree, so every shell
+        keeps running -- the same mechanism as add / close / expand.
+        """
+        n = len(self._panes)
+        if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
+            return
+        pane = self._panes.pop(src)
+        self._panes.insert(dst, pane)
+        self._relayout()
+
+    def _reorder_pane(self, src_index: int, target_pane: TerminalPane) -> None:
+        """A pane was dropped onto ``target_pane`` -- it takes the target's slot."""
+        if target_pane not in self._panes or not (0 <= src_index < len(self._panes)):
+            return
+        src_pane = self._panes[src_index]
+        if src_pane is target_pane:
+            return
+        self._panes.pop(src_index)
+        dst = self._panes.index(target_pane)
+        self._panes.insert(dst, src_pane)
+        self._relayout()
+        src_pane.focus_terminal()
+        self.notice.emit(f"Moved pane to position {dst + 1}")
 
     # -- focus / cycling ---------------------------------------------------
 

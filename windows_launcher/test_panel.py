@@ -509,6 +509,64 @@ def _():
     check("nav button unchecked", panel._sidebar._plugins_btn.isChecked(), False)
 
 
+# -- 6b. drag to reorder -------------------------------------------------
+
+@step
+def _():
+    print("== 24c. panes reorder when one is dragged onto another ==")
+    ws = panel._active_ws
+    while ws.pane_count < 3:
+        ws.add_pane(focus=False)
+    pre = list(ws.panes)
+    state["pane_pre"] = pre
+    # Drop pane 1 onto pane 3: the dragged pane takes the target's slot.
+    ws._reorder_pane(0, pre[2])
+
+
+@step
+def _():
+    ws = panel._active_ws
+    pre = state["pane_pre"]
+    check("dragged pane took the target's slot",
+          [id(p) for p in ws.panes[:3]],
+          [id(pre[1]), id(pre[0]), id(pre[2])])
+    check("badges renumbered from zero",
+          [p.index for p in ws.panes], list(range(ws.pane_count)))
+    check("no pane count change", ws.pane_count, len(pre))
+    check("every shell still running", ws.any_alive(), True)
+    check("a no-op drop (onto itself) is ignored",
+          (ws._reorder_pane(1, ws.panes[1]), [id(p) for p in ws.panes])[1],
+          [id(p) for p in ws.panes])
+
+
+@step
+def _():
+    print("== 24d. workspace rows reorder when a row is dragged ==")
+    while len(panel._workspaces) < 3:
+        panel._add_workspace(pane_count=1)
+    panel._select_workspace(panel._workspaces[0])
+    state["ws_pre"] = list(panel._workspaces)
+    # Drag the last row to the top (src=2 -> dst=0), the way the sidebar emits.
+    panel._sidebar.reordered.emit(2, 0)
+
+
+@step
+def _():
+    pre = state["ws_pre"]
+    want = [pre[2].name, pre[0].name, pre[1].name]
+    check("last workspace is now first",
+          [w.name for w in panel._workspaces], want)
+    check("sidebar rows follow the new order", ws_names(), want)
+    check("Ctrl+Tab cycling follows the list",
+          panel._workspaces[0] is pre[2], True)
+    check("every workspace still alive",
+          all(w.any_alive() for w in panel._workspaces), True)
+    # Back to a single workspace for the steps that follow.
+    for w in list(panel._workspaces)[1:]:
+        panel._close_workspace(w, force=True)
+    check("one workspace left", len(panel._workspaces), 1)
+
+
 # -- 6. the voice overlay --------------------------------------------------
 #
 # The engine itself is never started here -- that would open the mic and pull a

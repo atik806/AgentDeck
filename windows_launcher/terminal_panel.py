@@ -587,6 +587,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
+        self._sidebar.reordered.connect(self._reorder_workspaces)
 
         # The workspace pages live in _ws_stack; _main_stack flips the whole
         # terminal area over to the PLUGINS panel and back. Keeping _ws_stack a
@@ -1180,6 +1181,24 @@ class TerminalPanel(QMainWindow):
         workspace.set_name(name)
         self._refresh_sidebar()
         self._refresh_status()
+
+    def _reorder_workspaces(self, src: int, dst: int) -> None:
+        """A sidebar row was dragged from position ``src`` to ``dst``.
+
+        Order is in-memory only -- workspaces are not persisted across
+        restarts -- so this just reorders the list and repaints. Ctrl+Tab
+        cycling and the sidebar both read this list, so they follow along.
+        """
+        n = len(self._workspaces)
+        if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
+            return
+        workspace = self._workspaces.pop(src)
+        self._workspaces.insert(dst, workspace)
+        self._refresh_sidebar()
+        self._refresh_status()
+        self.statusBar().showMessage(
+            f"Moved “{workspace.name}” to position {dst + 1}", 2000
+        )
 
     def _on_workspace_changed(self) -> None:
         self._refresh_sidebar()

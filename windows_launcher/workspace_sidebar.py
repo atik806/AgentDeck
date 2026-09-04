@@ -7,9 +7,18 @@ it is handed and emits plain signals back -- it never touches a pane or a shell.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPointF, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QPainter, QRadialGradient
+from PySide6.QtCore import (
+    QEasingCurve,
+    QMimeData,
+    QPoint,
+    QPointF,
+    Qt,
+    QVariantAnimation,
+    Signal,
+)
+from PySide6.QtGui import QColor, QDrag, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,6 +35,9 @@ from notes_panel import note_icon
 from plugins_panel import plugin_icon
 
 __all__ = ["WorkspaceSidebar"]
+
+#: Drag payload for reordering workspace rows: the row's list position, as bytes.
+_WS_MIME = "application/x-agentdeck-workspace"
 
 
 def _sidebar_qss() -> str:
@@ -165,6 +177,7 @@ class _WorkspaceRow(QFrame):
         super().__init__(parent)
         self._ws = workspace
         self._active = active
+        self._press_pos: QPoint | None = None
 
         self.setObjectName("wsRow")
         self.setProperty("active", "true" if active else "false")
@@ -263,8 +276,40 @@ class _WorkspaceRow(QFrame):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton and self._name.isReadOnly():
+            self._press_pos = event.position().toPoint()
             self.clicked.emit(self._ws)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._press_pos is not None
+            and self._name.isReadOnly()
+            and event.buttons() & Qt.LeftButton
+            and (event.position().toPoint() - self._press_pos).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._start_drag()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _start_drag(self) -> None:
+        parent = self.parent()
+        if not isinstance(parent, _WorkspaceList):
+            return
+        rows = parent.rows()
+        if self not in rows or len(rows) < 2:
+            return
+        self._press_pos = None
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_WS_MIME, str(rows.index(self)).encode("ascii"))
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(QPoint(20, self.height() // 2))
+        drag.exec(Qt.MoveAction)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         self._begin_rename()
@@ -296,6 +341,102 @@ class _WorkspaceRow(QFrame):
             self._name.setText(self._ws.name)
 
 
+class _WorkspaceList(QWidget):
+    """The scrolling column of :class:`_WorkspaceRow` widgets.
+
+    Owns the drag-to-reorder drop handling: it reads the dragged row's start
+    position out of the mime data, works out the gap the cursor is over, paints
+    a thin accent line there, and emits :attr:`reordered` with the final
+    from/to list positions on drop.
+    """
+
+    #: A row was dragged to a new slot. Carries ``(from_index, to_index)``.
+    reordered = Signal(int, int)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self._drop_gap = -1  # gap the indicator line sits in; -1 = hidden
+
+    def rows(self) -> list["_WorkspaceRow"]:
+        lay = self.layout()
+        out = []
+        for i in range(lay.count()):
+            w = lay.itemAt(i).widget()
+            if isinstance(w, _WorkspaceRow):
+                out.append(w)
+        return out
+
+    # -- drop handling -------------------------------------------------------
+
+    @staticmethod
+    def _source(mime: QMimeData) -> int:
+        if not mime.hasFormat(_WS_MIME):
+            return -1
+        try:
+            return int(bytes(mime.data(_WS_MIME)).decode("ascii"))
+        except (ValueError, UnicodeDecodeError):
+            return -1
+
+    def _gap_at(self, y: int) -> int:
+        """The gap index (0..n) the cursor at ``y`` is hovering over."""
+        rows = self.rows()
+        for i, row in enumerate(rows):
+            if y < row.y() + row.height() / 2:
+                return i
+        return len(rows)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._source(event.mimeData()) >= 0:
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._source(event.mimeData()) < 0:
+            return
+        gap = self._gap_at(int(event.position().y()))
+        if gap != self._drop_gap:
+            self._drop_gap = gap
+            self.update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_gap = -1
+        self.update()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        src = self._source(event.mimeData())
+        gap = self._gap_at(int(event.position().y()))
+        self._drop_gap = -1
+        self.update()
+        n = len(self.rows())
+        if not (0 <= src < n):
+            event.ignore()
+            return
+        dst = gap - 1 if gap > src else gap
+        if dst == src or not (0 <= dst < n):
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.reordered.emit(src, dst)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._drop_gap < 0:
+            return
+        rows = self.rows()
+        if not rows:
+            return
+        if self._drop_gap < len(rows):
+            y = rows[self._drop_gap].y() - 1
+        else:
+            y = rows[-1].y() + rows[-1].height() + 1
+        painter = QPainter(self)
+        painter.setPen(QPen(QColor(theme.color("accent")), 2))
+        painter.drawLine(8, y, self.width() - 8, y)
+        painter.end()
+
+
 class WorkspaceSidebar(QWidget):
     """The column of workspaces plus the header that adds and counts them."""
 
@@ -311,6 +452,8 @@ class WorkspaceSidebar(QWidget):
     closed = Signal(object)
     #: A row was renamed inline. Carries the workspace and the new name.
     renamed = Signal(object, str)
+    #: Rows were reordered by dragging. Carries ``(from_index, to_index)``.
+    reordered = Signal(int, int)
 
     WIDTH = 232
 
@@ -390,7 +533,8 @@ class WorkspaceSidebar(QWidget):
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        inner = QWidget()
+        inner = _WorkspaceList()
+        inner.reordered.connect(self.reordered)
         self._list = QVBoxLayout(inner)
         self._list.setContentsMargins(6, 4, 6, 6)
         self._list.setSpacing(2)
