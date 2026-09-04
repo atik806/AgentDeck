@@ -19,16 +19,19 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -61,10 +64,29 @@ class SettingsDialog(QDialog):
 
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self._apply_style()
 
-        outer = QVBoxLayout(self)
+        # The dialog has a lot of sections -- more than fits on a small screen.
+        # A scroll area keeps every control reachable and the "Done" button
+        # pinned in view no matter the window height.
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        root.addWidget(scroll, 1)
+
+        page = QWidget()
+        page.setObjectName("settingsPage")
+        scroll.setWidget(page)
+        self._scroll_page = page
+
+        outer = QVBoxLayout(page)
         outer.setContentsMargins(22, 20, 22, 18)
         outer.setSpacing(6)
 
@@ -198,15 +220,34 @@ class SettingsDialog(QDialog):
 
         # -- Voice input --------------------------------------------------
         self._build_voice_section(outer)
+        outer.addStretch(1)
 
-        outer.addSpacing(14)
-        btn_row = QHBoxLayout()
+        # Persistent footer -- outside the scroll area so "Done" is always in
+        # view.
+        foot = QWidget(self)
+        foot.setObjectName("settingsFoot")
+        btn_row = QHBoxLayout(foot)
+        btn_row.setContentsMargins(22, 10, 22, 14)
         btn_row.addStretch(1)
         done = QPushButton("Done")
         done.setObjectName("primary")
         done.clicked.connect(self.accept)
         btn_row.addWidget(done)
-        outer.addLayout(btn_row)
+        root.addWidget(foot)
+
+        self._fit_to_screen()
+
+    def _fit_to_screen(self) -> None:
+        """Open tall enough to show the content, but never taller than the
+        screen (so the footer and title bar stay on-screen). A QScrollArea's
+        own sizeHint is tiny, so measure the inner page instead."""
+        screen = self.screen() or QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else None
+        avail_h = geo.height() if geo else 900
+        avail_w = geo.width() if geo else 1200
+        content = self._scroll_page.sizeHint().height() + 64  # + footer
+        width = min(560, max(self.minimumWidth(), avail_w - 120))
+        self.resize(width, min(content, max(360, avail_h - 120)))
 
     # -- voice ------------------------------------------------------------
 
@@ -634,6 +675,21 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(
             f"""
             QDialog {{ background: {t('card_bg')}; }}
+            QScrollArea#settingsScroll {{ background: transparent; border: none; }}
+            QWidget#settingsPage {{ background: {t('card_bg')}; }}
+            QWidget#settingsFoot {{
+                background: {t('card_bg')};
+                border-top: 1px solid {t('card_border')};
+            }}
+            QScrollBar:vertical {{
+                background: transparent; width: 10px; margin: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {t('card_border')}; border-radius: 5px; min-height: 28px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {t('text_muted')}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
             QLabel {{ color: {t('dialog_text')}; font-size: 12px; }}
             QLabel#h1 {{ font-size: 16px; font-weight: 700; }}
             QLabel#section {{

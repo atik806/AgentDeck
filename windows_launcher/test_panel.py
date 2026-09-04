@@ -18,6 +18,8 @@ about *when* Qt shows and sizes a widget:
 import os
 import sys
 
+os.environ.setdefault("ADK_NO_VOICE_PREWARM", "1")
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 

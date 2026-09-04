@@ -23,6 +23,7 @@ Signals (all delivered on the GUI thread):
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time as _time
@@ -101,11 +102,19 @@ class VoiceEngine(QObject):
         self._state = "idle" if self.available else "unavailable"
         self._listening = False
         self._busy = False
+        self._busy_since = 0.0   # monotonic time _busy last went True
+
+        #: If a start/stop worker thread wedges (e.g. whisper.cpp or PortAudio
+        #: hangs), _busy would stay True forever and every later toggle() would
+        #: silently no-op -- "the hotkey stopped working". After this long a
+        #: still-set _busy is treated as stale and a fresh start is allowed.
+        self._BUSY_STALE_S = 25.0
 
         self._vad: Any = None
         self._engine: Any = None       # TranscriptionEngine
         self._capture: Any = None      # AudioCapture
         self._mic_retry_done = False   # one auto-fallback to the default device
+        self._build_lock = threading.Lock()  # guards _ensure_built vs prewarm
 
     # -- introspection -------------------------------------------------------
 
@@ -119,6 +128,13 @@ class VoiceEngine(QObject):
 
     # -- control -----------------------------------------------------------
 
+    def _busy_is_stale(self) -> bool:
+        return (
+            self._busy
+            and self._busy_since > 0.0
+            and (_time.monotonic() - self._busy_since) > self._BUSY_STALE_S
+        )
+
     def toggle(self) -> None:
         if not self.available:
             self._bridge.state.emit("unavailable")
@@ -127,7 +143,11 @@ class VoiceEngine(QObject):
             # Works mid-load too: the loader thread sees _listening go False
             # and bails before opening the mic.
             self.stop()
-        elif not self._busy:
+        elif not self._busy or self._busy_is_stale():
+            if self._busy_is_stale():
+                # A previous worker wedged; abandon it and start clean.
+                self._capture = self._engine = self._vad = None
+                self._busy = False
             self.start()
 
     def start(self, *, _keep_retry_flag: bool = False) -> None:
@@ -137,6 +157,7 @@ class VoiceEngine(QObject):
             return
         self._listening = True
         self._busy = True
+        self._busy_since = _time.monotonic()
         if not _keep_retry_flag:
             self._mic_retry_done = False
         threading.Thread(target=self._start_pipeline, name="voice-start", daemon=True).start()
@@ -147,6 +168,7 @@ class VoiceEngine(QObject):
             return
         self._listening = False
         self._busy = True
+        self._busy_since = _time.monotonic()
         threading.Thread(target=self._stop_pipeline, name="voice-stop", daemon=True).start()
 
     def stop_listening(self) -> None:
@@ -168,6 +190,40 @@ class VoiceEngine(QObject):
                 cap.stop()
             except Exception:  # noqa: BLE001
                 pass
+
+    def prewarm(self) -> None:
+        """Build the pipeline and load the whisper model in the background.
+
+        Called once shortly after the window is up so the first
+        ``Ctrl+Shift+X`` doesn't pay the model-load (and, first run, the
+        model-download) cost. A no-op when the feature is unavailable, already
+        built, or a listen is in progress; failures are swallowed here and
+        surfaced properly by ``start()`` when the user actually toggles.
+        """
+        if not self.available or self._busy or self._engine is not None:
+            return
+        # Opt-out for the test harness: building a panel shouldn't pull a
+        # ~150 MB whisper model off disk (or the network) into RAM.
+        if os.environ.get("ADK_NO_VOICE_PREWARM"):
+            return
+
+        def _work() -> None:
+            try:
+                self._ensure_built()
+                try:
+                    self._prefetch_model()
+                except Exception:  # noqa: BLE001 - fall back to lazy fetch
+                    pass
+                eng = self._engine
+                if eng is not None:
+                    eng.ensure_loaded()
+            except Exception:  # noqa: BLE001 - a failed prewarm stays silent;
+                # start() will rebuild and surface the real error when the user
+                # actually toggles. Don't null shared state here -- a concurrent
+                # start() may be mid-flight.
+                pass
+
+        threading.Thread(target=_work, name="voice-prewarm", daemon=True).start()
 
     def apply_config(self, new_config: dict) -> None:
         """Adopt changed settings, rebuilding the pipeline to match.
@@ -246,6 +302,7 @@ class VoiceEngine(QObject):
 
         self._listening = False
         self._busy = True
+        self._busy_since = _time.monotonic()
         self._mic_retry_done = True
 
         def teardown_then(next_state: str) -> None:
@@ -271,9 +328,18 @@ class VoiceEngine(QObject):
             name="voice-lost", daemon=True,
         ).start()
 
+    def _resolve_threads(self) -> Optional[int]:
+        """Config ``voice_n_threads`` if the user pinned one, else an auto value
+        tuned for this machine (``0`` means auto)."""
+        pinned = self._cfg_int("voice_n_threads", 0, 0, 32)
+        return pinned if pinned > 0 else voice_models.recommend_threads()
+
     def _ensure_built(self) -> None:
-        if self._capture is not None:
-            return
+        with self._build_lock:
+            if self._capture is None:
+                self._build_pipeline()
+
+    def _build_pipeline(self) -> None:
         cfg = self._config
         model = voice_models.resolve(cfg.get("voice_model"))
         lang = None if (cfg.get("voice_language") or "auto") == "auto" else "en"
@@ -286,7 +352,7 @@ class VoiceEngine(QObject):
         self._engine = TranscriptionEngine(
             model_size=model,
             language=lang,
-            n_threads=(self._cfg_int("voice_n_threads", 0, 0, 32) or None),
+            n_threads=self._resolve_threads(),
             initial_prompt=(cfg.get("voice_initial_prompt") or voice_models.DEFAULT_PROMPT),
             beam_size=self._cfg_int("voice_beam_size", 1, 1, 8),
             no_context=True,

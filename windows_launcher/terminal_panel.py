@@ -1263,6 +1263,16 @@ class TerminalPanel(QMainWindow):
         self._position_overlay()
         self._voice_overlay.raise_()
 
+        # Warm the speech model in the background so the first Ctrl+Shift+X is
+        # instant instead of a multi-second "loading model…". Pro-only (the
+        # feature is), and only when voice is switched on.
+        if (
+            enabled
+            and self._voice_engine.available
+            and entitlements.voice_enabled(self._plan())
+        ):
+            QTimer.singleShot(2500, self._voice_engine.prewarm)
+
         # First-run nudge: shown once, only while the feature is on.
         if enabled and not self.config.get("voice_hint_seen", False):
             self.config["voice_hint_seen"] = True
@@ -1312,8 +1322,29 @@ class TerminalPanel(QMainWindow):
         )
         return True
 
+    def _voice_hotkey_dedupe(self) -> bool:
+        """True when a voice-hotkey activation already fired in the last 250 ms.
+
+        The OS ``RegisterHotKey`` posts ``WM_HOTKEY`` even while an AgentDeck
+        window is focused, and the in-app ``Ctrl+Shift+X`` ``QAction`` fires in
+        that case too -- so a single keypress reaches *both*
+        ``_on_global_voice_hotkey`` and ``_toggle_voice``. Left alone they call
+        ``engine.toggle()`` twice and cancel out, which is the "the hotkey
+        stops working after a while" report (it breaks the moment AgentDeck has
+        focus). Both handlers funnel through here so the second one is dropped.
+        """
+        import time
+
+        now = time.monotonic() * 1000.0
+        if now - getattr(self, "_last_hotkey_ms", 0.0) < 250:
+            return True
+        self._last_hotkey_ms = now
+        return False
+
     def _toggle_voice(self) -> None:
         """Ctrl+Shift+X -- reveal the widget if hidden, then start/stop listening."""
+        if self._voice_hotkey_dedupe():
+            return
         if self._voice_gated():
             return
         if not self.config.get("voice_input_enabled", True):
@@ -1359,12 +1390,8 @@ class TerminalPanel(QMainWindow):
             gk.unbind()
 
     def _on_global_voice_hotkey(self) -> None:
-        import time
-
-        now = time.monotonic() * 1000.0
-        if now - self._last_hotkey_ms < 250:      # de-dupe vs the focused QAction
+        if self._voice_hotkey_dedupe():           # de-dupe vs the focused QAction
             return
-        self._last_hotkey_ms = now
         if self._voice_gated():
             return
         if not self.config.get("voice_input_enabled", True):
@@ -2075,6 +2102,16 @@ class TerminalPanel(QMainWindow):
         # Background update check on launch is Pro; Free keeps the manual button.
         if pro:
             self._auto_check_updates()
+            # Plan resolved to Pro after the window came up: warm the speech
+            # model now (the launch-time prewarm in _build_voice was skipped
+            # because the plan wasn't known yet).
+            engine = getattr(self, "_voice_engine", None)
+            if (
+                engine is not None
+                and engine.available
+                and self.config.get("voice_input_enabled", True)
+            ):
+                engine.prewarm()
 
         # Re-arm the "expire at plan_expires_at" timer for whatever we now know.
         self._arm_plan_expiry_timer()

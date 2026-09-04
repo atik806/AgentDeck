@@ -16,7 +16,10 @@ import ctypes
 import os
 from typing import Dict, Tuple
 
-__all__ = ["recommend_model", "resolve", "MODEL_LABELS", "DEFAULT_PROMPT"]
+__all__ = [
+    "recommend_model", "recommend_threads", "resolve",
+    "MODEL_LABELS", "DEFAULT_PROMPT",
+]
 
 # whisper.cpp does better on command dictation when it knows roughly what
 # vocabulary to expect. Passed as ``initial_prompt`` unless the user set their
@@ -76,16 +79,33 @@ def _total_ram_gb() -> float:
 def recommend_model() -> str:
     """Pick an English whisper.cpp model that suits this machine.
 
-    ``medium.en`` is intentionally never chosen -- it is far too slow on CPU
-    for interactive, review-before-Enter dictation.
+    Tuned for *interactive, review-before-Enter* dictation: the model has to
+    load fast and transcribe a short phrase in well under a second on CPU, so
+    ``base.en`` is the default for almost every machine. ``small.en`` is far
+    slower to load (~450 MB) and to run, so it is only chosen on a genuinely
+    roomy box; ``tiny.en`` catches the weakest ones. ``medium.en`` is never
+    chosen -- unusable on CPU for this workflow.
     """
     ram = _total_ram_gb()
     cores = os.cpu_count() or 2
     if ram <= 0.0:
         return _FALLBACK
-    if ram < 6 or cores <= 2:
-        return "base.en"
-    return "small.en"
+    if ram < 4 or cores <= 2:
+        return "tiny.en"
+    if ram >= 16 and cores >= 12:
+        return "small.en"
+    return "base.en"
+
+
+def recommend_threads() -> int:
+    """A sensible whisper.cpp ``n_threads`` when the user hasn't pinned one.
+
+    whisper.cpp gains almost nothing past ~8 threads, and oversubscribing the
+    CPU hurts when AgentDeck and the coding agent are also busy -- so leave a
+    couple of cores free and cap at 8.
+    """
+    cores = os.cpu_count() or 4
+    return max(2, min(8, cores - 2))
 
 
 def _registry() -> Dict[str, dict]:

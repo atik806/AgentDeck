@@ -27,22 +27,37 @@ print("[1] recommend_model picks a real English model per tier")
 orig_ram = voice_models._total_ram_gb
 orig_cpu = voice_models.os.cpu_count
 try:
-    voice_models._total_ram_gb = lambda: 4.0
+    voice_models._total_ram_gb = lambda: 8.0
     voice_models.os.cpu_count = lambda: 8
-    check("4 GB -> base.en", voice_models.recommend_model() == "base.en")
+    check("8 GB / 8 cores -> base.en", voice_models.recommend_model() == "base.en")
+
+    voice_models._total_ram_gb = lambda: 3.0
+    voice_models.os.cpu_count = lambda: 4
+    check("< 4 GB -> tiny.en", voice_models.recommend_model() == "tiny.en")
 
     voice_models._total_ram_gb = lambda: 32.0
     voice_models.os.cpu_count = lambda: 2
-    check("2 cores -> base.en", voice_models.recommend_model() == "base.en")
+    check("2 cores -> tiny.en", voice_models.recommend_model() == "tiny.en")
 
     voice_models._total_ram_gb = lambda: 16.0
     voice_models.os.cpu_count = lambda: 8
-    check("16 GB / 8 cores -> small.en", voice_models.recommend_model() == "small.en")
+    check("16 GB / 8 cores -> base.en (small needs a roomier box)",
+          voice_models.recommend_model() == "base.en")
+
+    voice_models._total_ram_gb = lambda: 32.0
+    voice_models.os.cpu_count = lambda: 16
+    check("32 GB / 16 cores -> small.en", voice_models.recommend_model() == "small.en")
 
     voice_models._total_ram_gb = lambda: 0.0
     check("unknown RAM -> fallback base.en", voice_models.recommend_model() == "base.en")
     check("recommendation is always a registry name",
           voice_models.recommend_model() in _REGISTRY)
+
+    voice_models.os.cpu_count = lambda: 16
+    check("recommend_threads leaves headroom + caps at 8",
+          voice_models.recommend_threads() == 8)
+    voice_models.os.cpu_count = lambda: 4
+    check("recommend_threads on a small box", voice_models.recommend_threads() == 2)
 finally:
     voice_models._total_ram_gb = orig_ram
     voice_models.os.cpu_count = orig_cpu

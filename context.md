@@ -653,6 +653,47 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       concurrent claude windows, claude→(installed target) transcript,
       opencode→opencode fork, plain-shell source, Free-plan upsell.
 
+24. **Voice perf + Ctrl+Shift+X reliability + Settings scroll (2026-09-04,
+    v0.12.1)** — three user-reported issues:
+    - **Model too slow to load / transcribe.** `voice_models.recommend_model()`
+      re-tiered: `"auto"` now resolves to **`base.en`** for almost every
+      machine (was `small.en` for anything with ≥6 GB / >2 cores — ~450 MB,
+      slow to load *and* to decode on CPU). `small.en` now needs ≥16 GB **and**
+      ≥12 cores; `tiny.en` catches <4 GB / ≤2 cores. New
+      `voice_models.recommend_threads()` = `min(8, cores-2)` (whisper.cpp
+      barely scales past 8 and oversubscribing hurts while the agent runs);
+      `voice_engine._resolve_threads()` uses it whenever `voice_n_threads` is 0
+      (the default) instead of leaving whisper.cpp on its 4-thread default.
+    - **First Ctrl+Shift+X pays the whole model load.** `VoiceEngine.prewarm()`
+      (new) builds the pipeline + `ensure_loaded()`s the model on a daemon
+      thread; `terminal_panel._build_voice` fires it 2.5 s after launch (and
+      `_apply_entitlements` fires it when the plan resolves to Pro later).
+      Pro-gated, honours `voice_input_enabled`, no-op if already built.
+      Env opt-out `ADK_NO_VOICE_PREWARM=1` (set by the 4 panel-building test
+      files) so a test never pulls 150 MB into RAM.
+    - **"Ctrl+Shift+X stops working after a while."** Root cause: the OS
+      `RegisterHotKey` posts `WM_HOTKEY` *even while AgentDeck is focused*, and
+      the in-app `Ctrl+Shift+X` `QAction` (`ApplicationShortcut`) fires then
+      too — so one keypress reached **both** `_on_global_voice_hotkey` **and**
+      `_toggle_voice`, calling `engine.toggle()` twice = net no-op (it broke
+      the instant the window had focus). The old 250 ms dedupe was one-sided
+      (only guarded a second *global* activation; the QAction never stamped the
+      clock). Fix: both handlers funnel through
+      `TerminalPanel._voice_hotkey_dedupe()`. Plus a safety net in
+      `VoiceEngine`: a `_busy` flag still set `> 25 s` (a wedged start/stop
+      worker) is treated as stale so `toggle()` can recover instead of
+      silently no-opping forever (`_busy_since` / `_busy_is_stale`).
+    - **Settings dialog overflowed the screen** (the "Done" button off the
+      bottom on a 1080p display). `settings_dialog.py`: all sections now live
+      in a `QScrollArea` (`#settingsScroll` / `#settingsPage`), the button row
+      moved to a pinned `#settingsFoot` outside it, `_fit_to_screen()` sizes
+      the dialog to the content clamped to the screen (measures the inner page,
+      since a scroll area's own sizeHint is tiny). Width 520–560. Styled thin
+      scrollbar.
+    Tests: `test_voice_models.py` retiered (16), `test_voice_engine.py` (50),
+    `test_settings_dialog.py` (39), `test_global_hotkey.py` (19),
+    `test_panel*.py` green bar the lone pre-existing "drop focus" flake.
+
 ## Running / testing
 
 ```cmd
