@@ -1187,6 +1187,12 @@ class TerminalView(QWidget):
         scrolled -- moves every row relative to the viewport, so those still
         force a full repaint. Everything else (a spinner, streamed text landing
         mid-screen, one edited line) touches a handful of rows.
+
+        A held text selection also forces the full path: invalidate_rows()
+        repaints only the bounding box of the rows pyte marked dirty, so a
+        row inside the selected band that isn't itself dirty this frame keeps
+        whatever pixels were already there instead of being re-tinted -- a
+        gap in the highlight while the shell keeps streaming under a drag.
         """
         screen = self._screen
         dirty = screen.dirty
@@ -1196,7 +1202,7 @@ class TerminalView(QWidget):
             or self.canvas.scroll_top() != scroll_before
         )
         cursor_row = screen.history_length + screen.cursor.y
-        if structural or len(dirty) >= screen.lines:
+        if structural or len(dirty) >= screen.lines or self.canvas.has_selection():
             self.canvas.invalidate_all()
         else:
             offset = screen.history_length
