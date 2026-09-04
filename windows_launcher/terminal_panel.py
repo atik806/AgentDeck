@@ -617,12 +617,13 @@ class TerminalPanel(QMainWindow):
         self._style_status_bar()
 
     def _build_shortcuts(self) -> None:
-        def add(sequence: str, slot) -> None:
+        def add(sequence: str, slot) -> QAction:
             action = QAction(self)
             action.setShortcut(QKeySequence(sequence))
             action.setShortcutContext(Qt.ApplicationShortcut)
             action.triggered.connect(slot)
             self.addAction(action)
+            return action
 
         add("Ctrl+Shift+T", lambda: self._active_ws and self._active_ws.add_pane())
         add("Ctrl+Shift+D", lambda: self._active_ws and self._active_ws.add_pane())
@@ -637,7 +638,10 @@ class TerminalPanel(QMainWindow):
         add("Ctrl+0", lambda: self._set_font(11))
 
         add("Ctrl+Shift+N", lambda: self._new_workspace_interactive())
-        add("Ctrl+Shift+X", self._toggle_voice)
+        # Kept as the focused-window fallback; disabled by _rebind_global_hotkey
+        # while the OS-wide hotkey is registered, so one keypress never reaches
+        # both handlers and cancels itself out.
+        self._voice_action = add("Ctrl+Shift+X", self._toggle_voice)
         add("Ctrl+Shift+P", self._toggle_perf_hud)
         add("Ctrl+B", lambda: self._toggle_sidebar())
         add("Ctrl+Shift+PgDown", lambda: self._cycle_workspace(1))
@@ -1227,7 +1231,8 @@ class TerminalPanel(QMainWindow):
         # overlay is kept over the terminal area by set_bounds() instead.
         self._voice_overlay = VoiceOverlay(self)
 
-        self._voice_overlay.toggle_requested.connect(self._voice_engine.toggle)
+        self._voice_overlay.toggle_requested.connect(self._on_overlay_toggle)
+        self._voice_overlay.submit_requested.connect(self._on_overlay_submit)
         self._voice_overlay.moved.connect(self._on_voice_moved)
         self._voice_engine.state.connect(self._on_voice_state)
         self._voice_engine.level.connect(self._voice_overlay.set_level)
@@ -1352,9 +1357,39 @@ class TerminalPanel(QMainWindow):
                 "Voice input is switched off in Settings ▸ Voice input.", 4000
             )
             return
+        # Focused toggle -> dictate into the active pane, not into whatever
+        # window a previous "foreground"-target global hotkey remembered.
+        self._fg_hwnd = None
         if not self._voice_overlay.isVisible():
             self._set_overlay_visible(True)
+        self._toggle_voice_engine()
+
+    def _on_overlay_toggle(self) -> None:
+        """The capsule's mic button / its Ctrl+X -- same gating as the shortcut."""
+        if self._voice_gated():
+            return
+        if not self.config.get("voice_input_enabled", True):
+            self.statusBar().showMessage(
+                "Voice input is switched off in Settings ▸ Voice input.", 4000
+            )
+            return
+        self._fg_hwnd = None
+        self._toggle_voice_engine()
+
+    def _toggle_voice_engine(self) -> None:
+        """Flip the engine, and reflect a stop on the overlay at once rather than
+        waiting for the (now quick) teardown to emit ``idle``."""
+        was_listening = self._voice_engine.is_listening
         self._voice_engine.toggle()
+        if was_listening:
+            self._voice_overlay.set_state("idle")
+
+    def _on_overlay_submit(self) -> None:
+        """A bare Enter while the capsule held focus -- run the active pane's line
+        (which also ends the dictation session via ``_on_pane_submitted``)."""
+        pane = self._active
+        if pane is not None:
+            pane.view.submit()
 
     def _set_overlay_visible(self, show: bool) -> None:
         self._voice_overlay.setVisible(show)
@@ -1375,7 +1410,14 @@ class TerminalPanel(QMainWindow):
     # -- global hotkey -----------------------------------------------------
 
     def _rebind_global_hotkey(self) -> None:
-        """(Re)register the OS hotkey to match config + the current plan."""
+        """(Re)register the OS hotkey to match config + the current plan.
+
+        When the OS-wide hotkey is live, the focused-window ``QAction`` copy is
+        disabled: ``RegisterHotKey`` still posts ``WM_HOTKEY`` while AgentDeck is
+        focused, so leaving both enabled meant one keypress fired
+        ``_on_global_voice_hotkey`` *and* ``_toggle_voice`` -> ``engine.toggle()``
+        twice -> net no-op ("the hotkey stopped working").
+        """
         gk = getattr(self, "_global_hotkey", None)
         if gk is None:
             return
@@ -1384,10 +1426,17 @@ class TerminalPanel(QMainWindow):
             and self.config.get("voice_input_enabled", True)
             and entitlements.voice_enabled(self._plan())
         )
+        bound = False
         if want:
-            gk.bind(self.config.get("voice_hotkey", "Ctrl+Shift+X") or "Ctrl+Shift+X")
+            bound = gk.bind(
+                self.config.get("voice_hotkey", "Ctrl+Shift+X") or "Ctrl+Shift+X"
+            )
         else:
             gk.unbind()
+        action = getattr(self, "_voice_action", None)
+        if action is not None:
+            # Only the OS hotkey when it took; the QAction otherwise.
+            action.setEnabled(not bound)
 
     def _on_global_voice_hotkey(self) -> None:
         if self._voice_hotkey_dedupe():           # de-dupe vs the focused QAction
@@ -1415,7 +1464,7 @@ class TerminalPanel(QMainWindow):
 
         if not self._voice_overlay.isVisible():
             self._set_overlay_visible(True)
-        self._voice_engine.toggle()
+        self._toggle_voice_engine()
 
     def _paste_to_foreground(self, text: str) -> bool:
         """Type ``text`` into the window that was in front when the hotkey fired."""
@@ -1498,10 +1547,21 @@ class TerminalPanel(QMainWindow):
             self._voice_overlay.flash_text(message)
 
     def _on_pane_submitted(self, _pane=None) -> None:
-        """Running a command ends a dictation session -- stop listening."""
+        """Running a command ends a dictation session -- stop listening.
+
+        Covers a still-loading session too (``_busy`` set, ``_listening`` not yet
+        cleared/loaded), and gives the overlay instant feedback rather than
+        waiting for the engine's teardown to emit ``idle``.
+        """
         engine = getattr(self, "_voice_engine", None)
-        if engine is not None and engine.is_listening:
-            engine.stop_listening()
+        if engine is None:
+            return
+        if engine.is_listening or getattr(engine, "_busy", False) \
+                or engine.current_state in ("listening", "loading"):
+            engine.stop()
+            overlay = getattr(self, "_voice_overlay", None)
+            if overlay is not None:
+                overlay.set_state("idle")   # stop the animation now, don't wait
             self.statusBar().showMessage("Voice: stopped", 2000)
 
     def _on_voice_moved(self, pos: QPoint) -> None:

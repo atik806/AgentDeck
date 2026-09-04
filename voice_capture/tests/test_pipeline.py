@@ -174,6 +174,74 @@ check("stop() flushes the pending utterance", cap._segment_queue.qsize() == 1)
 
 
 # ---------------------------------------------------------------------------
+print("[5b] stop(discard_pending=True) is fast, drops queued audio, aborts decode")
+
+
+class SlowAbortableTranscriber:
+    def __init__(self):
+        self.calls = 0
+        self._abort = None
+
+    def set_abort_check(self, fn):
+        self._abort = fn
+
+    def transcribe(self, audio, on_partial=None):
+        self.calls += 1
+        for _ in range(300):
+            if self._abort and self._abort():
+                return ""
+            time.sleep(0.01)
+        return "late text"
+
+
+tr = SlowAbortableTranscriber()
+cap = AudioCapture(vad=ScriptedVAD([]), transcriber=tr, sample_rate=SR,
+                   blocksize=BLOCK, silence_blocks=3, min_speech_blocks=1)
+delivered = []
+cap.on_transcription = delivered.append
+# Stand up the worker threads without a real mic.
+cap._is_running = True
+cap._generation += 1
+cap.transcriber.set_abort_check(lambda: cap._abort_transcription)
+cap._transcribe_thread = threading.Thread(
+    target=cap._transcribe_loop, args=(cap._generation,), daemon=True)
+cap._transcribe_thread.start()
+cap._segment_queue.put(np.zeros(SR, dtype=np.float32))   # a "decoding" segment
+cap._segment_queue.put(np.zeros(SR, dtype=np.float32))   # a queued-behind segment
+time.sleep(0.15)
+t0 = time.time()
+cap.stop(discard_pending=True)
+dt = time.time() - t0
+check("stop(discard_pending=True) returned in well under 100 ms", dt < 0.1)
+time.sleep(0.4)
+check("in-flight decode was aborted (returned no text)", tr.calls == 1)
+check("nothing stale reached on_transcription", delivered == [])
+
+
+# ---------------------------------------------------------------------------
+print("[5c] stop() (default) still lets the queue finish in the background")
+tr = RecordingTranscriber()
+cap = AudioCapture(vad=ScriptedVAD([True] * 5 + [False] * 12), transcriber=tr,
+                   sample_rate=SR, blocksize=BLOCK, silence_blocks=10,
+                   min_speech_blocks=3)
+done = []
+cap.on_transcription = done.append
+cap._is_running = True
+cap._generation += 1
+cap._transcribe_thread = threading.Thread(
+    target=cap._transcribe_loop, args=(cap._generation,), daemon=True)
+cap._transcribe_thread.start()
+for _ in range(6):
+    cap._process_block(noise())          # mid-utterance, not yet flushed
+cap.stop()                               # default -> flush + finish in background
+for _ in range(50):
+    if done:
+        break
+    time.sleep(0.02)
+check("default stop still delivers the last utterance", done == ["hello world"])
+
+
+# ---------------------------------------------------------------------------
 print("[6] non-speech token filter")
 for tok in ["[BLANK_AUDIO]", "(music)", "  [ Silence ]  ", "[typing]"]:
     check(f"{tok!r} filtered", bool(_NON_SPEECH_RE.match(tok)))

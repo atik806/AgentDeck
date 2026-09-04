@@ -360,6 +360,11 @@ class VoiceOverlay(QWidget):
     #: The user clicked the mic, or pressed Ctrl+X while the widget had focus.
     toggle_requested = Signal()
 
+    #: A bare Enter was pressed while the capsule held keyboard focus (it steals
+    #: focus on a click/drag). The panel routes this to the active pane so
+    #: "press Enter to stop dictation" still works from here.
+    submit_requested = Signal()
+
     #: The widget was dragged; carries its new top-left in parent coordinates.
     moved = Signal(QPoint)
 
@@ -472,6 +477,8 @@ class VoiceOverlay(QWidget):
             self.set_state("unavailable")
             if reason:
                 self._mic.setToolTip(f"Voice input unavailable: {reason}")
+        elif self._state == "unavailable":
+            self.set_state("idle")
 
     def caption_text(self) -> str:
         """The caption currently shown (or the pending one). Empty = just bars."""
@@ -575,6 +582,16 @@ class VoiceOverlay(QWidget):
             and not (event.modifiers() & Qt.ShiftModifier)
         ):
             self.toggle_requested.emit()
+            event.accept()
+            return
+        if (
+            event.key() in (Qt.Key_Return, Qt.Key_Enter)
+            and not (event.modifiers() & (
+                Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier))
+        ):
+            # The capsule grabbed focus on a click/drag; a bare Enter here still
+            # means "run the line / stop dictating".
+            self.submit_requested.emit()
             event.accept()
             return
         super().keyPressEvent(event)

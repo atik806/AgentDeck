@@ -79,8 +79,9 @@ class StubCapture:
             self.kw["on_partial"]("hello")
         self.kw["on_transcription"]("hello world")
 
-    def stop(self):
+    def stop(self, discard_pending=False):
         self.stopped = True
+        self.discard_pending = discard_pending
 
     def lose(self, message="could not open microphone: boom"):
         """Fire the on_lost callback like a real mid-session mic failure."""
@@ -199,6 +200,29 @@ eng3b.stop_listening()
 check("stop_listening reaches idle", pump(lambda: eng3b.current_state == "idle"))
 check("mic released", StubCapture.instances[-1].stopped is True)
 check("not listening", eng3b.is_listening is False)
+check("a user stop discards the pending utterance",
+      getattr(StubCapture.instances[-1], "discard_pending", None) is True)
+
+
+# ---------------------------------------------------------------------------
+print("[4b2] a transcription that resolves after a stop is dropped")
+install_stubs()
+StubCapture.instances.clear()
+eng3c = VoiceEngine({})
+seen = []
+eng3c.transcription.connect(seen.append)
+eng3c.start()
+check("listening", pump(lambda: eng3c.current_state == "listening"))
+seen.clear()
+eng3c._listening = False          # a stop just landed; teardown still running
+eng3c._emit_transcription("late words")   # what the capture worker would call
+app.processEvents()
+check("late utterance did not reach the prompt", seen == [])
+eng3c._listening = True
+eng3c._emit_transcription("live words")
+app.processEvents()
+check("a live utterance still gets through", seen == ["live words"])
+eng3c.stop(); pump(lambda: eng3c.current_state == "idle")
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +313,36 @@ eng4f.stop(); pump(lambda: eng4f.current_state == "idle")
 eng4f.apply_config({"voice_model": "small.en"})
 check("pipeline dropped while idle", eng4f._capture is None and eng4f._engine is None)
 check("still idle (no restart)", eng4f.current_state == "idle")
+
+
+# ---------------------------------------------------------------------------
+print("[4g] prewarm never triggers a background download -- only warms a cached model")
+install_stubs()
+StubCapture.instances.clear()
+import voice_download as _vd
+
+_orig_downloaded = _vd.model_is_downloaded
+checked = []
+_vd.model_is_downloaded = lambda name: checked.append(name) or False
+try:
+    eng4g = VoiceEngine({"voice_model": "small.en"})
+    eng4g.prewarm()
+    time.sleep(0.2)
+    app.processEvents()
+    check("asked whether the model is already cached before touching it",
+          len(checked) >= 1)
+    check("did NOT build/download an uncached model", eng4g._engine is None)
+finally:
+    _vd.model_is_downloaded = _orig_downloaded
+
+_vd.model_is_downloaded = lambda name: True  # already on disk -> safe to warm
+try:
+    eng4g2 = VoiceEngine({"voice_model": "small.en"})
+    eng4g2.prewarm()
+    check("warms (builds) it when it IS already cached",
+          pump(lambda: eng4g2._engine is not None))
+finally:
+    _vd.model_is_downloaded = _orig_downloaded
 
 
 # ---------------------------------------------------------------------------

@@ -144,6 +144,29 @@ def _report_fatal(exc_type, exc, tb) -> None:
 _ensure_streams()
 sys.excepthook = _report_fatal
 
+
+def _enable_faulthandler() -> None:
+    """Dump C-level + all-thread state on a native crash.
+
+    ``sys.excepthook`` only sees main-thread Python exceptions. A segfault or
+    abort inside whisper.cpp / PortAudio on a worker thread leaves no
+    ``last-error.log`` at all -- this at least writes a stack to
+    ``faulthandler.log`` beside it.
+    """
+    try:
+        import faulthandler
+
+        path = _log_path().with_name("faulthandler.log")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Keep the handle alive for the process lifetime.
+        globals()["_FAULT_LOG"] = open(path, "w", encoding="utf-8")
+        faulthandler.enable(globals()["_FAULT_LOG"], all_threads=True)
+    except Exception:
+        pass
+
+
+_enable_faulthandler()
+
 # Velopack's startup hook -- run before any heavy init. Right after an update it
 # finalises the install and may relaunch the process, so it must come first. A
 # no-op unless this is a Velopack-installed build. (Pulls in PySide6.QtCore via

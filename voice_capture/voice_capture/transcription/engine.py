@@ -19,6 +19,14 @@ import numpy as np
 # "(music)", "[ Silence ]". Drop segments that are nothing but such a marker.
 _NON_SPEECH_RE = re.compile(r"^\s*[\[(][^\])]*[\])]\s*$")
 
+# whisper.cpp / ggml backend initialisation is **not** reentrant: two
+# ``pywhispercpp.model.Model(...)`` constructions running on different threads at
+# the same time can segfault the process with no Python traceback. This app can
+# legitimately try to build a second engine while a background "prewarm" is still
+# loading the first (settings change, mic-loss retry, plan resolving to Pro).
+# Serialise every model construction process-wide.
+_MODEL_INIT_LOCK = threading.Lock()
+
 
 class TranscriptionEngine:
     """
@@ -40,6 +48,7 @@ class TranscriptionEngine:
         initial_prompt: Optional[str] = None,
         beam_size: int = 1,
         no_context: bool = False,
+        abort_check: Optional[Callable[[], bool]] = None,
     ):
         """
         Initialize the transcription engine.
@@ -67,9 +76,16 @@ class TranscriptionEngine:
         self.initial_prompt = initial_prompt
         self.beam_size = int(beam_size) if beam_size else 1
         self.no_context = bool(no_context)
+        #: Predicate consulted by whisper.cpp's abort_callback -- return True to
+        #: bail out of an in-flight decode ASAP (a user pressed stop).
+        self.abort_check = abort_check
 
         self._model = None
         self._load_lock = threading.Lock()
+
+    def set_abort_check(self, fn: Optional[Callable[[], bool]]) -> None:
+        """Install/replace the predicate whisper.cpp polls to abort a decode."""
+        self.abort_check = fn
 
     def ensure_loaded(self) -> None:
         """Load the model if it isn't already (idempotent, thread-safe)."""
@@ -108,7 +124,8 @@ class TranscriptionEngine:
         if self.beam_size > 1:
             params["beam_search"] = {"beam_size": self.beam_size}
 
-        self._model = Model(model_input, **params)
+        with _MODEL_INIT_LOCK:
+            self._model = Model(model_input, **params)
         print("[INFO]  Model loaded successfully.")
 
     def transcribe(self, audio: np.ndarray, on_partial=None) -> str:
@@ -141,14 +158,27 @@ class TranscriptionEngine:
                 except Exception:
                     pass
 
+        abort_cb = None
+        if self.abort_check is not None:
+            def abort_cb(*_args):  # pywhispercpp 1.5.x calls with no args;
+                try:               # tolerate a user_data arg on other builds
+                    return bool(self.abort_check())
+                except Exception:
+                    return False
+
+        kwargs: dict = {}
+        if seg_cb is not None:
+            kwargs["new_segment_callback"] = seg_cb
+        if abort_cb is not None:
+            kwargs["abort_callback"] = abort_cb
         try:
-            segments = (
-                self._model.transcribe(audio, new_segment_callback=seg_cb)
-                if seg_cb is not None else self._model.transcribe(audio)
-            )
+            segments = self._model.transcribe(audio, **kwargs)
         except TypeError:
-            # Older pywhispercpp without new_segment_callback on transcribe().
+            # Older pywhispercpp without new_segment_callback / abort_callback.
             segments = self._model.transcribe(audio)
+
+        if abort_cb is not None and abort_cb():
+            return ""  # decode was aborted mid-flight -- no usable result
 
         parts = []
         for segment in segments:

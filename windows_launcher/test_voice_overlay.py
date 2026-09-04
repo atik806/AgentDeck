@@ -135,6 +135,16 @@ overlay.keyPressEvent(QKeyEvent(
     QEvent.KeyPress, Qt.Key_X, Qt.ControlModifier | Qt.ShiftModifier, ""))
 check("Ctrl+Shift+X is left for the panel", len(toggles) == 2)
 
+submits = []
+overlay.submit_requested.connect(lambda: submits.append(1))
+overlay.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier, "\r"))
+check("bare Enter -> submit_requested (Enter still stops dictation from here)",
+      submits == [1])
+overlay.keyPressEvent(QKeyEvent(
+    QEvent.KeyPress, Qt.Key_Return, Qt.ShiftModifier, "\r"))
+check("Shift+Enter is not a submit", submits == [1])
+check("Enter did not also toggle", len(toggles) == 2)
+
 
 # ---------------------------------------------------------------------------
 print("[5] clamps itself inside its bounds")

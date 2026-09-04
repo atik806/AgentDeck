@@ -114,7 +114,12 @@ class VoiceEngine(QObject):
         self._engine: Any = None       # TranscriptionEngine
         self._capture: Any = None      # AudioCapture
         self._mic_retry_done = False   # one auto-fallback to the default device
-        self._build_lock = threading.Lock()  # guards _ensure_built vs prewarm
+        #: Held across the whole build+model-load, and by anyone about to null
+        #: the pipeline refs -- so a background prewarm can never race a start()
+        #: or apply_config() into two concurrent whisper.cpp model loads (a
+        #: native crash). Re-entrant: _ensure_built() may be called under it.
+        self._build_lock = threading.RLock()
+        self._aborting = False         # shutdown() in progress -- workers bail
 
     # -- introspection -------------------------------------------------------
 
@@ -145,7 +150,10 @@ class VoiceEngine(QObject):
             self.stop()
         elif not self._busy or self._busy_is_stale():
             if self._busy_is_stale():
-                # A previous worker wedged; abandon it and start clean.
+                # A previous worker wedged; abandon it and start clean. No lock
+                # here on purpose -- the wedged worker may be holding it; the
+                # process-wide _MODEL_INIT_LOCK still stops a torn ref from
+                # causing two concurrent model loads.
                 self._capture = self._engine = self._vad = None
                 self._busy = False
             self.start()
@@ -162,14 +170,17 @@ class VoiceEngine(QObject):
             self._mic_retry_done = False
         threading.Thread(target=self._start_pipeline, name="voice-start", daemon=True).start()
 
-    def stop(self) -> None:
+    def stop(self, discard_pending: bool = True) -> None:
         if not self._listening and not self._busy:
             self._bridge.state.emit("idle")
             return
         self._listening = False
         self._busy = True
         self._busy_since = _time.monotonic()
-        threading.Thread(target=self._stop_pipeline, name="voice-stop", daemon=True).start()
+        threading.Thread(
+            target=self._stop_pipeline, args=(discard_pending,),
+            name="voice-stop", daemon=True,
+        ).start()
 
     def stop_listening(self) -> None:
         """Stop a listen already in progress; a no-op when idle.
@@ -182,41 +193,73 @@ class VoiceEngine(QObject):
             self.stop()
 
     def shutdown(self) -> None:
-        """Best-effort synchronous teardown for the window's closeEvent."""
+        """Best-effort synchronous teardown for the window's closeEvent.
+
+        Sets ``_aborting`` so a prewarm / start worker still inside a native
+        model load bails at its next check instead of being torn down by
+        interpreter exit mid-``Model()`` (a no-traceback crash-on-quit).
+        """
+        self._aborting = True
         self._listening = False
         cap = self._capture
         if cap is not None:
             try:
-                cap.stop()
+                cap.stop(discard_pending=True)
+            except TypeError:  # older voice_capture without the parameter
+                try:
+                    cap.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001
                 pass
 
     def prewarm(self) -> None:
-        """Build the pipeline and load the whisper model in the background.
+        """Load an already-downloaded whisper model into RAM in the background.
 
         Called once shortly after the window is up so the first
-        ``Ctrl+Shift+X`` doesn't pay the model-load (and, first run, the
-        model-download) cost. A no-op when the feature is unavailable, already
-        built, or a listen is in progress; failures are swallowed here and
-        surfaced properly by ``start()`` when the user actually toggles.
+        ``Ctrl+Shift+X`` doesn't pay the model-*load* cost. Deliberately never
+        triggers the model *download*: a multi-hundred-MB background fetch the
+        user never asked for is a bad surprise, so this bails out untouched
+        when the configured model isn't already on disk -- the first real
+        ``Ctrl+Shift+X`` (or Settings ▸ Voice input ▸ Download now) still
+        downloads it on demand, with visible progress in the overlay. Also a
+        no-op when the feature is unavailable, already built, or a listen is
+        in progress; failures are swallowed here and surfaced properly by
+        ``start()`` when the user actually toggles.
         """
-        if not self.available or self._busy or self._engine is not None:
+        if not self.available or self._busy or self._aborting or self._engine is not None:
             return
         # Opt-out for the test harness: building a panel shouldn't pull a
         # ~150 MB whisper model off disk (or the network) into RAM.
         if os.environ.get("ADK_NO_VOICE_PREWARM"):
             return
+        try:
+            import voice_download
+            import voice_models
+
+            model = voice_models.resolve(self._config.get("voice_model"))
+            if not voice_download.model_is_downloaded(model):
+                return  # nothing cached to warm -- stay fully lazy
+        except Exception:  # noqa: BLE001 - can't tell -> don't risk a surprise download
+            return
 
         def _work() -> None:
             try:
-                self._ensure_built()
-                try:
-                    self._prefetch_model()
-                except Exception:  # noqa: BLE001 - fall back to lazy fetch
-                    pass
-                eng = self._engine
-                if eng is not None:
-                    eng.ensure_loaded()
+                # Hold the build lock across the *whole* build + model load, so a
+                # start() / apply_config() that lands mid-prewarm blocks here
+                # rather than spinning up a second whisper.cpp model load in
+                # parallel (a native, no-traceback crash).
+                with self._build_lock:
+                    if self._aborting or self._engine is not None:
+                        return
+                    self._ensure_built()
+                    try:
+                        self._prefetch_model()
+                    except Exception:  # noqa: BLE001 - fall back to lazy fetch
+                        pass
+                    eng = self._engine
+                    if eng is not None and not self._aborting:
+                        eng.ensure_loaded()
             except Exception:  # noqa: BLE001 - a failed prewarm stays silent;
                 # start() will rebuild and surface the real error when the user
                 # actually toggles. Don't null shared state here -- a concurrent
@@ -239,7 +282,16 @@ class VoiceEngine(QObject):
             return
         if was_listening:
             self.stop()
-        self._capture = self._engine = self._vad = None
+        # Take the build lock before nulling the pipeline refs: a background
+        # prewarm may be mid model-load holding it, and nulling from under it is
+        # how two concurrent whisper.cpp loads (a native crash) used to happen.
+        # Bounded wait so a wedged prewarm can't freeze the GUI thread forever.
+        got = self._build_lock.acquire(timeout=3.0)
+        try:
+            self._capture = self._engine = self._vad = None
+        finally:
+            if got:
+                self._build_lock.release()
         if was_listening:
             threading.Thread(
                 target=self._restart_after_stop, name="voice-reload", daemon=True
@@ -268,6 +320,13 @@ class VoiceEngine(QObject):
         # The raw utterance -- clean-up (capitalisation, spoken punctuation,
         # command parsing) is the panel's job so it can act on phrases like
         # "scratch that" before the text is reshaped.
+        #
+        # Drop anything that resolves *after* the user stopped: a natural
+        # end-of-utterance keeps _listening True, but Ctrl+Shift+X / Enter /
+        # "stop listening" clear it at once, and a trailing decode landing at
+        # the prompt then is exactly the "it didn't turn off" complaint.
+        if not self._listening:
+            return
         text = (text or "").strip()
         if text:
             self._bridge.transcription.emit(text)
@@ -309,10 +368,16 @@ class VoiceEngine(QObject):
             cap = self._capture
             if cap is not None:
                 try:
-                    cap.stop()
+                    cap.stop(discard_pending=True)
+                except TypeError:
+                    try:
+                        cap.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception:  # noqa: BLE001
                     pass
-            self._capture = self._engine = self._vad = None
+            with self._build_lock:  # never null the refs from under a builder
+                self._capture = self._engine = self._vad = None
             self._busy = False
             if next_state == "retry":
                 cfg = dict(self._config)
@@ -396,7 +461,10 @@ class VoiceEngine(QObject):
         import urllib.request
 
         dest = voice_download.cache_path(model)
-        tmp = dest.with_suffix(dest.suffix + ".part")
+        # Per-engine temp name: a background prewarm and a user start() can both
+        # reach here on first run before either has the file -- a shared ".part"
+        # would let them clobber each other's download.
+        tmp = dest.with_suffix(dest.suffix + f".part{id(self) & 0xffff:04x}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         self._bridge.model_progress.emit(0)
 
@@ -418,13 +486,15 @@ class VoiceEngine(QObject):
             raise
 
     def _start_pipeline(self) -> None:
+        # Show "loading" up front: _ensure_built() can block for seconds behind a
+        # background prewarm that's still loading the model.
+        self._bridge.state.emit("loading")
         try:
             self._ensure_built()
         except Exception as exc:  # noqa: BLE001
             self._fail(f"voice setup failed: {exc}")
             return
 
-        self._bridge.state.emit("loading")
         try:
             # First run downloads the model. Do it ourselves with a progress
             # report when it's missing (pywhispercpp's own fetch is silent);
@@ -433,31 +503,47 @@ class VoiceEngine(QObject):
         except Exception as exc:  # noqa: BLE001
             self._fail(f"model download failed: {exc}")
             return
+        if not self._listening or self._aborting:  # stopped / quitting during the download
+            self._busy = False
+            self._bridge.state.emit("idle")
+            return
         try:
             self._engine.ensure_loaded()
         except Exception as exc:  # noqa: BLE001
             self._fail(f"model load failed: {exc}")
             return
 
-        if not self._listening:  # user hit stop during the load
-            self._busy = False
-            self._bridge.state.emit("idle")
-            return
-
-        try:
-            self._capture.start()
-        except Exception as exc:  # noqa: BLE001
-            self._fail(f"microphone failed: {exc}")
-            return
+        # Re-check under the build lock: a stop() / shutdown() that lands here
+        # must win the race against the mic actually opening.
+        with self._build_lock:
+            if not self._listening or self._aborting:  # user hit stop during the load
+                self._busy = False
+                self._bridge.state.emit("idle")
+                return
+            cap = self._capture
+            if cap is None:
+                self._busy = False
+                self._bridge.state.emit("idle")
+                return
+            try:
+                cap.start()
+            except Exception as exc:  # noqa: BLE001
+                self._fail(f"microphone failed: {exc}")
+                return
 
         self._busy = False
         self._bridge.state.emit("listening")
 
-    def _stop_pipeline(self) -> None:
+    def _stop_pipeline(self, discard: bool = True) -> None:
         cap = self._capture
         if cap is not None:
             try:
-                cap.stop()
+                cap.stop(discard_pending=discard)
+            except TypeError:  # older voice_capture without the parameter
+                try:
+                    cap.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001
                 pass
         self._busy = False
