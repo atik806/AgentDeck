@@ -278,7 +278,6 @@ class _WorkspaceRow(QFrame):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton and self._name.isReadOnly():
             self._press_pos = event.position().toPoint()
-            self.clicked.emit(self._ws)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
@@ -293,6 +292,16 @@ class _WorkspaceRow(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        # Select on release, not press: selecting rebuilds every row in the
+        # sidebar (see WorkspaceSidebar.refresh), and doing that on press would
+        # delete this very widget out from under the drag gesture before
+        # mouseMoveEvent ever sees enough motion to call _start_drag().
+        if (
+            event.button() == Qt.LeftButton
+            and self._press_pos is not None
+            and self._name.isReadOnly()
+        ):
+            self.clicked.emit(self._ws)
         self._press_pos = None
         super().mouseReleaseEvent(event)
 

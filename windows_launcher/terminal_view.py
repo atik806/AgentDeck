@@ -85,6 +85,9 @@ _MOUSE_TRACKING_MODES = frozenset({9 << 5, 1000 << 5, 1002 << 5, 1003 << 5})
 #: instead of the legacy three-bytes-offset-by-32 form that caps at column 223.
 _MODE_MOUSE_SGR = 1006 << 5
 
+#: Qt button -> xterm mouse-report button number (0/1/2 = left/middle/right).
+_MOUSE_BUTTON_CODES = {Qt.LeftButton: 0, Qt.MiddleButton: 1, Qt.RightButton: 2}
+
 #: One wheel notch scrolls this many lines -- both for our own scrollback and
 #: for the cursor keys we synthesise on the alternate screen.
 _WHEEL_LINES = 3
@@ -704,9 +707,34 @@ class TerminalCanvas(QWidget):
             return False
         return True
 
+    def _forward_click(self, event, *, release: bool) -> bool:
+        """Send a click to the program if it's reading the mouse (Claude
+        Code, a TUI file picker, ``fzf --preview``...), the same convention
+        as :meth:`wheelEvent`: Shift forces our local selection instead.
+
+        Without this, every left click was captured for local text-selection
+        no matter what the program asked for, so any mouse-clickable element
+        a TUI drew (a button, a list row) was inert -- clickable pixels that
+        did nothing.
+        """
+        if not self._mouse_tracking() or event.modifiers() & Qt.ShiftModifier:
+            return False
+        code = _MOUSE_BUTTON_CODES.get(event.button())
+        if code is None:
+            return False
+        seq = self._encode_mouse(code, event.position().toPoint(), release=release)
+        if not seq:
+            return False
+        self.input_requested.emit(seq)
+        return True
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
             self.setFocus(Qt.MouseFocusReason)
+        if self._forward_click(event, release=False):
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton:
             self._sel_anchor = self._cell_at(event.position().toPoint())
             self._sel_head = self._sel_anchor
             self._selecting = True
@@ -723,6 +751,9 @@ class TerminalCanvas(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._forward_click(event, release=True):
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             self._selecting = False
             if self._sel_anchor == self._sel_head:
