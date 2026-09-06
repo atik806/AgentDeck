@@ -801,6 +801,76 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     of the documented pre-existing "drop focus" flake) — confirmed identical
     on a clean-HEAD throwaway `git worktree`, so not a regression.
 
+27. **Routines — schedule an agent prompt to fire at a set time (2026-09-05,
+    v0.13.0)** — a new sidebar nav view (below "Notes"). A routine is a saved
+    `{prompt, agent, workspace target, weekdays, time}`; while AgentDeck is open
+    and the wall clock hits that time, it opens (or reuses) a pane running the
+    chosen agent and types the prompt in.
+    - `routines_store.py` — Qt-free, same rules as `notes_store.py`: one
+      atomic JSON file `%APPDATA%\multi-terminal\routines.json`, tolerant load
+      (missing/corrupt → empty list, never raises), `Routine` dataclass with
+      `from_dict` sanitising every field (days clamped to 0-6 Mon-first,
+      `HH:MM` shape-checked). `RoutinesStore` = `all/get/create/update/
+      mark_run/delete`; `_EDITABLE_FIELDS` whitelists what the editor may
+      write, `mark_run` (scheduler-only) never bumps `updated`. Helpers
+      `format_time_12h` / `schedule_summary` ("Mon, Wed, Fri 8:00 AM" /
+      "Daily 8:00 AM"). **Field-order gotcha:** `created`/`updated`'s
+      `default_factory=time.time` must be declared *before* the `time: str`
+      field or the dataclass body shadows the `time` module.
+    - `routine_scheduler.py` — Qt-free, stateless-per-call. `due(routines,
+      now=None)` returns the routines whose `time`/`days` match this minute,
+      deduped by `id → "YYYY-MM-DD HH:MM"` so `TerminalPanel`'s existing 1 s
+      watchdog fires each one exactly once. **Session-local only**: no
+      catch-up for a time missed while closed, no OS wake-up.
+    - `routines_panel.py` — the list + editor UI (`RoutinesPanel`,
+      `routine_icon`). List rows show schedule summary + last-run status;
+      editor is prompt / agent picker (reuses `agents`) / workspace target
+      ("new" or an existing name via `workspaces_provider`) / weekday chips /
+      time. `flush()` on nav-away, `reload()` on nav-in — mirrors NotesPanel.
+    - `terminal_panel.py` — `_routine_scheduler` + `_routines_store` +
+      `_routines_panel` in `_main_stack`; `_show_routines` / `_leave_routines`
+      / `_routines_active` folded into every nav-view switch and
+      `_refresh_sidebar`. `_refresh_status` (the 1 s watchdog) calls
+      `scheduler.due(...)` → `_run_routine`, which pretrust + MCP-wires the
+      routine's own agent pick (the once-per-session flag only covers the
+      launch agent), picks/creates a workspace honouring the Free plan cap,
+      then seeds the prompt on a `QTimer` retry ladder (3.5/7/12 s, give up at
+      20 s) once the pane has produced output. `mark_run` records
+      `ok` / `skipped: <reason>`.
+    - `entitlements.routines_enabled(plan)` = `is_pro` (same tier as
+      `handoff_enabled` / `plugins_enabled`). Nav button stays visible for
+      Free (discoverability); the click and `_run_routine` are both gated, so
+      a routine created while Pro simply stops firing — quietly, no popup from
+      a background timer — if the plan later lapses. **Not cloud-synced** —
+      routines reference machine-local workspaces/agents.
+    Tests: `test_routines_store.py` (36), `test_routine_scheduler.py` (14),
+    `test_routines_panel.py` (37), `test_entitlements.py` (+routines gate).
+
+28. **Terminal mouse clicks now reach programs that read the mouse (2026-09-05,
+    v0.13.0)** — closes the caveat noted in feature §4. `terminal_view.py`
+    `TerminalCanvas._forward_click` mirrors `wheelEvent`'s convention: if the
+    program set a mouse-tracking mode (`1000`/`1002`/`1003`) and `Shift` is
+    not held, a left/middle/right press+release is encoded (`_encode_mouse`,
+    SGR when `1006`) and sent via `input_requested` instead of starting a
+    local text selection. So a TUI's clickable buttons / list rows (Claude
+    Code, `fzf --preview`, file pickers) actually respond; `Shift`-click still
+    forces local selection. Covered by the existing `test_wheel.py` mode
+    plumbing.
+
+29. **Voice overlay visual polish + sidebar drag fix (2026-09-05, v0.13.0)** —
+    `voice_overlay.py`: capsule `208x34 → 222x38`, nine thin equaliser bars →
+    seven thicker rods with a vertical tint gradient, the bar timer now runs
+    even at idle (a slow `sin` "breathing" arch so it reads as alive, not a
+    dead graphic), bigger mic button (`22 → 25 px`) with a two-copy staggered
+    pulse ring and a gradient disc while listening, a soft outer glow on the
+    capsule edge while listening/error. `test_voice_overlay.py` updated (idle
+    timer now expected active; footprint bound `220 → 230`).
+    `workspace_sidebar.py`: `_WorkspaceRow` now emits `clicked` on
+    mouse-**release**, not press — selecting rebuilds every row (see
+    `WorkspaceSidebar.refresh`), which on press deleted the row out from under
+    the in-progress drag gesture before `_start_drag()` could see enough
+    motion.
+
 ## Running / testing
 
 ```cmd
