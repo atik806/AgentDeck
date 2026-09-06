@@ -43,7 +43,7 @@ overlay.toggle_requested.connect(lambda: toggles.append(1))
 
 # ---------------------------------------------------------------------------
 print("[1] compact fixed size")
-check("small footprint", overlay.width() <= 220 and overlay.height() <= 42)
+check("small footprint", overlay.width() <= 230 and overlay.height() <= 42)
 check("mic icon renders", not mic_icon(16).isNull())
 
 
@@ -62,9 +62,9 @@ for state, eq_mode, enabled, has_cap in [
     check(f"{state}: caption {'set' if has_cap else 'empty'}",
           bool(overlay.caption_text()) is has_cap)
 
-check("bar timer runs only while animated",
+check("bar timer always runs (idle breathes, listening/loading animate)",
       (overlay.set_state("listening") or overlay._eq._timer.isActive())
-      and (overlay.set_state("idle") or not overlay._eq._timer.isActive()))
+      and (overlay.set_state("idle") or overlay._eq._timer.isActive()))
 check("mic pulse timer runs only while active",
       (overlay.set_state("loading") or overlay._mic._pulse_timer.isActive())
       and (overlay.set_state("idle") or not overlay._mic._pulse_timer.isActive()))

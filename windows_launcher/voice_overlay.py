@@ -53,11 +53,15 @@ __all__ = ["VoiceOverlay", "mic_icon"]
 
 # The capsule footprint. Kept deliberately small -- it floats over live
 # terminal output, so it should read as a control chip, not a panel. A touch
-# wider/taller than the original 168x30 to fit a line of interim transcript.
-_W, _H = 208, 34
+# wider/taller than the original 168x30 to fit a line of interim transcript,
+# and roomier still (208x34) to give the thicker bars and bigger mic button
+# some breathing space.
+_W, _H = 222, 38
 
-#: A calm, symmetric "resting" equaliser arch (0..1 per bar).
-_REST = [0.30, 0.46, 0.64, 0.82, 0.92, 0.82, 0.64, 0.46, 0.30]
+#: A calm, symmetric "resting" equaliser arch (0..1 per bar). Fewer, taller
+#: bars than the original nine-bar arch read as a chip; seven reads as a
+#: waveform.
+_REST = [0.26, 0.48, 0.74, 0.92, 0.74, 0.48, 0.26]
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +127,13 @@ def _paint_mic(p: QPainter, cx: float, cy: float, s: float, c: QColor) -> None:
 class _MicButton(QPushButton):
     """A small round button; glyph + colour follow the state."""
 
-    _R = 10.0
+    _R = 11.5
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("voiceMic")
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(22, 22)
+        self.setFixedSize(25, 25)
         self.setFocusPolicy(Qt.NoFocus)
         self._state = "idle"
         self._pulse = 0.0
@@ -169,43 +173,51 @@ class _MicButton(QPushButton):
         r = self._R
         cx, cy = self.width() / 2.0, self.height() / 2.0
 
-        # A soft expanding ring while listening / loading.
+        # A soft expanding ring while listening / loading -- two staggered
+        # copies read as a "pulse" rather than a single flat wash.
         if self._pulse_timer.isActive():
-            grow = 4.0 * math.sin(self._pulse * math.pi)
-            ring = QColor(_c("voice_border_rec") if self._state == "listening" else _c("pro"))
-            ring.setAlphaF(0.22 * (1.0 - self._pulse))
-            p.setPen(Qt.NoPen)
-            p.setBrush(ring)
-            p.drawEllipse(QRectF(cx - r - grow, cy - r - grow,
-                                 2 * (r + grow), 2 * (r + grow)))
+            ring_c = _c("voice_border_rec") if self._state == "listening" else _c("pro")
+            for offset in (0.0, 0.5):
+                phase = (self._pulse + offset) % 1.0
+                grow = 5.5 * phase
+                ring = QColor(ring_c)
+                ring.setAlphaF(0.20 * (1.0 - phase))
+                p.setPen(Qt.NoPen)
+                p.setBrush(ring)
+                p.drawEllipse(QRectF(cx - r - grow, cy - r - grow,
+                                     2 * (r + grow), 2 * (r + grow)))
 
         if self._state == "listening":
-            disc = _c("voice_border_rec")
-            edge = _c("voice_border_rec")
+            disc_grad = QLinearGradient(cx, cy - r, cx, cy + r)
+            base = _c("voice_border_rec")
+            disc_grad.setColorAt(0.0, base.lighter(112))
+            disc_grad.setColorAt(1.0, base.darker(108))
+            disc = disc_grad
+            edge = base
         elif self.underMouse() and self.isEnabled():
             disc = _c("surface_hover")
             edge = _c("border_hover")
         else:
             disc = _c("surface")
             edge = _c("border")
-        p.setPen(QPen(edge, 1))
+        p.setPen(QPen(edge, 1.2))
         p.setBrush(disc)
         p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
 
         fg = self._fg()
         if self._state == "loading":
-            pen = QPen(fg, 2.0)
+            pen = QPen(fg, 2.2)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
-            p.drawArc(QRectF(cx - 5.0, cy - 5.0, 10, 10),
+            p.drawArc(QRectF(cx - 5.6, cy - 5.6, 11.2, 11.2),
                       int(-self._pulse * 360 * 16), 250 * 16)
         elif self._state == "listening":
             p.setPen(Qt.NoPen)
             p.setBrush(fg)
-            p.drawRoundedRect(QRectF(cx - 4.1, cy - 4.1, 8.2, 8.2), 2, 2)
+            p.drawRoundedRect(QRectF(cx - 4.6, cy - 4.6, 9.2, 9.2), 2.4, 2.4)
         else:
-            _paint_mic(p, cx, cy, 0.74, fg)
+            _paint_mic(p, cx, cy, 0.84, fg)
 
 
 # ---------------------------------------------------------------------------
@@ -232,16 +244,15 @@ class _Equalizer(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(28)
         self._timer.timeout.connect(self._tick)
+        # Always running, even idle -- a gentle "breathing" arch reads as alive
+        # rather than a dead, static graphic (see _tick's idle branch).
+        self._timer.start()
 
     # -- bar animation -----------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
-        if mode in ("listening", "loading"):
-            if not self._timer.isActive():
-                self._timer.start()
-        else:
-            self._timer.stop()
+        if mode != "listening":
             self._level = self._target = 0.0
         self.update()
 
@@ -263,7 +274,8 @@ class _Equalizer(QWidget):
                 d = min((i - lead) % n, (lead - i) % n)
                 goal = 0.20 + 0.70 * max(0.0, 1.0 - d / 2.2)
             else:
-                goal = 0.22 + _REST[i] * 0.5
+                breathe = 0.5 + 0.5 * math.sin(self._phase * 0.12 + i * 0.5)
+                goal = 0.20 + _REST[i] * (0.40 + 0.16 * breathe)
             self._heights[i] += (goal - self._heights[i]) * 0.34
         self.update()
 
@@ -294,31 +306,35 @@ class _Equalizer(QWidget):
         bar_dim = 1.0 - 0.85 * self._cap_alpha
 
         n = self._BARS
-        bw = 2.6
+        bw = 3.6
         gap = (w - n * bw) / (n - 1) if n > 1 else 0.0
         mid = h / 2.0
-        cap = h - 4.0
+        cap = h - 3.0
         col = _bar_color(self._mode)
 
         if bar_dim > 0.03:
             for i in range(n):
-                frac = self._heights[i] if self._timer.isActive() \
-                    else 0.22 + _REST[i] * 0.5
-                bh = max(bw, min(cap, frac * h))
+                bh = max(bw, min(cap, self._heights[i] * h))
                 x = i * (bw + gap)
                 r = QRectF(x, mid - bh / 2.0, bw, bh)
 
                 if self._mode == "listening" and bar_dim > 0.4:
                     glow = QColor(col)
-                    glow.setAlphaF(0.24 * bar_dim)
+                    glow.setAlphaF(0.22 * bar_dim)
                     p.setPen(Qt.NoPen)
                     p.setBrush(glow)
-                    p.drawRoundedRect(r.adjusted(-1.3, -1.3, 1.3, 1.3), bw, bw)
+                    p.drawRoundedRect(r.adjusted(-1.6, -1.6, 1.6, 1.6), bw, bw)
 
-                c = QColor(col)
-                c.setAlphaF(bar_dim)
+                # A vertical tint gradient (lighter tip, deeper base) so each
+                # bar reads as a rounded rod rather than a flat rectangle.
+                grad = QLinearGradient(x, r.top(), x, r.bottom())
+                top_c, bot_c = QColor(col).lighter(122), QColor(col).darker(112)
+                top_c.setAlphaF(bar_dim)
+                bot_c.setAlphaF(bar_dim)
+                grad.setColorAt(0.0, top_c)
+                grad.setColorAt(1.0, bot_c)
                 p.setPen(Qt.NoPen)
-                p.setBrush(c)
+                p.setBrush(grad)
                 p.drawRoundedRect(r, bw / 2.0, bw / 2.0)
 
         if self._cap_alpha > 0.02 and self._caption:
@@ -383,8 +399,8 @@ class VoiceOverlay(QWidget):
         self._bounds: Optional[QRect] = None
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(14, 4, 12, 4)
-        row.setSpacing(8)
+        row.setContentsMargins(15, 5, 13, 5)
+        row.setSpacing(9)
 
         self._mic = _MicButton(self)
         # Wrap rather than chaining clicked(bool) straight into the 0-arg signal:
@@ -619,7 +635,14 @@ class VoiceOverlay(QWidget):
         p.setPen(QPen(hi, 1))
         p.drawLine(QPointF(rad, 1.4), QPointF(self.width() - rad, 1.4))
 
-        p.setPen(QPen(_edge_color(self._state), 1.3))
+        edge = _edge_color(self._state)
+        if self._state in ("listening", "error"):
+            glow = QColor(edge)
+            glow.setAlphaF(0.16)
+            p.setPen(QPen(glow, 3.2))
+            p.drawPath(path)
+
+        p.setPen(QPen(edge, 1.4))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
 
