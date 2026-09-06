@@ -44,6 +44,7 @@ __all__ = [
     "plugins_enabled",
     "github_automation_enabled",
     "handoff_enabled",
+    "routines_enabled",
     "upgrade_hint",
 ]
 
@@ -230,6 +231,18 @@ def handoff_enabled(plan: str | None) -> bool:
     Pro only -- mirrors :func:`plugins_enabled` / :func:`github_automation_enabled`.
     The pane's handoff button stays visible for Free (discoverability); the click
     is gated with the standard :func:`upgrade_hint`.
+    """
+    return is_pro(plan)
+
+
+def routines_enabled(plan: str | None) -> bool:
+    """Scheduling an agent prompt to fire at a set time -- Pro only.
+
+    Unattended automation is the same tier as :func:`handoff_enabled` /
+    :func:`plugins_enabled`. The Routines nav item stays visible for Free
+    (discoverability); creating/editing is gated with the standard
+    :func:`upgrade_hint`, and a routine created while Pro simply stops firing
+    (quietly, no popup from a background timer) if the plan later lapses.
     """
     return is_pro(plan)
 

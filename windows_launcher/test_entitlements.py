@@ -50,6 +50,8 @@ check("github automation: pro only",
       e.github_automation_enabled("pro") and not e.github_automation_enabled("free"))
 check("conversation handoff: pro only",
       e.handoff_enabled("pro") and not e.handoff_enabled("free"))
+check("routines: pro only",
+      e.routines_enabled("pro") and not e.routines_enabled("free"))
 
 print("[4] upgrade hint carries the pricing URL")
 check("hint mentions the feature", "Voice" in e.upgrade_hint("Voice"))

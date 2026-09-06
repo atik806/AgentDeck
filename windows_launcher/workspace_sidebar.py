@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 import theme
 from notes_panel import note_icon
 from plugins_panel import plugin_icon
+from routines_panel import routine_icon
 
 __all__ = ["WorkspaceSidebar"]
 
@@ -446,6 +447,8 @@ class WorkspaceSidebar(QWidget):
     plugins_selected = Signal()
     #: The "Notes" nav button was pressed.
     notes_selected = Signal()
+    #: The "Routines" nav button was pressed.
+    routines_selected = Signal()
     #: The "+" button was pressed.
     created = Signal()
     #: A row's close button was pressed. Carries the workspace.
@@ -494,6 +497,9 @@ class WorkspaceSidebar(QWidget):
         )
         self._notes_btn = _nav_button(
             "Notes", note_icon(16), lambda: self.notes_selected.emit()
+        )
+        self._routines_btn = _nav_button(
+            "Routines", routine_icon(16), lambda: self.routines_selected.emit()
         )
 
         # The nav strip is pinned to the top of the sidebar, above the
@@ -589,3 +595,7 @@ class WorkspaceSidebar(QWidget):
     def set_notes_active(self, active: bool) -> None:
         """Reflect whether the NOTES view (not a workspace) is on screen."""
         self._notes_btn.setChecked(bool(active))
+
+    def set_routines_active(self, active: bool) -> None:
+        """Reflect whether the ROUTINES view (not a workspace) is on screen."""
+        self._routines_btn.setChecked(bool(active))

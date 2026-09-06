@@ -64,6 +64,9 @@ from navbar import AccountChip, HelpButton, gear_icon, theme_icon
 from new_workspace_dialog import NewWorkspaceDialog
 from notes_panel import NotesPanel
 from plugins_panel import PluginsPanel
+from routine_scheduler import RoutineScheduler
+from routines_panel import RoutinesPanel
+from routines_store import RoutinesStore
 from settings_dialog import SettingsPanel
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
@@ -171,11 +174,13 @@ class TerminalPanel(QMainWindow):
         self._workspaces: list[Workspace] = []
         self._active_ws: Optional[Workspace] = None
         self._ws_seq = 0
-        # True while a nav view (PLUGINS / NOTES / SETTINGS) is showing instead
-        # of a workspace.
+        # True while a nav view (PLUGINS / NOTES / ROUTINES / SETTINGS) is
+        # showing instead of a workspace.
         self._plugins_active = False
         self._notes_active = False
+        self._routines_active = False
         self._settings_active = False
+        self._routine_scheduler = RoutineScheduler()
         # Set before anything can show the window: showEvent reads it.
         self._focus_primed = False
 
@@ -499,6 +504,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.apply_theme()
         self._plugins_panel.apply_theme()
         self._notes_panel.apply_theme()
+        self._routines_panel.apply_theme()
         self._settings_panel.apply_theme()
         if getattr(self, "_trial_banner", None) is not None:
             self._trial_banner.apply_theme()
@@ -520,8 +526,10 @@ class TerminalPanel(QMainWindow):
         engine by :meth:`_on_settings_voice_changed`.
         """
         self._notes_panel.flush()
+        self._routines_panel.flush()
         self._notes_active = False
         self._plugins_active = False
+        self._routines_active = False
         self._settings_active = True
         self._settings_panel.reset_to_first_page()
         self._main_stack.setCurrentWidget(self._settings_panel)
@@ -600,6 +608,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.selected.connect(self._select_workspace)
         self._sidebar.plugins_selected.connect(self._show_plugins)
         self._sidebar.notes_selected.connect(self._show_notes)
+        self._sidebar.routines_selected.connect(self._show_routines)
         self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
@@ -617,6 +626,11 @@ class TerminalPanel(QMainWindow):
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
         self._notes_panel = NotesPanel(central, config=self.config)
+        self._routines_store = RoutinesStore()
+        self._routines_panel = RoutinesPanel(
+            central, store=self._routines_store, config=self.config,
+            workspaces_provider=lambda: [w.name for w in self._workspaces],
+        )
         self._settings_panel = SettingsPanel(
             self.config, central,
             updater=getattr(self, "updater", None),
@@ -630,6 +644,7 @@ class TerminalPanel(QMainWindow):
         self._main_stack.addWidget(self._ws_stack)
         self._main_stack.addWidget(self._plugins_panel)
         self._main_stack.addWidget(self._notes_panel)
+        self._main_stack.addWidget(self._routines_panel)
         self._main_stack.addWidget(self._settings_panel)
 
         row.addWidget(self._sidebar)
@@ -1094,10 +1109,110 @@ class TerminalPanel(QMainWindow):
                 8000,
             )
 
+    # -- routines --------------------------------------------------------
+
+    def _refresh_routines_panel(self) -> None:
+        panel = getattr(self, "_routines_panel", None)
+        if panel is not None:
+            panel.refresh_list()
+
+    def _run_routine(self, routine) -> None:
+        """A Routine's scheduled time arrived (``RoutineScheduler.due``):
+        open (or reuse) a pane running its agent and send its prompt.
+
+        Free/Pro-gated the same as clicking into the Routines view -- a
+        routine created while Pro simply stops firing, quietly, if the plan
+        later lapses (no popup from a background timer).
+        """
+        if not entitlements.routines_enabled(self._plan()):
+            return
+
+        import agents
+
+        name = routine.display_name
+        command = agents.resolve_agent(routine.agent_key, routine.agent_custom)
+        if routine.agent_key != agents.PLAIN_KEY and not command:
+            self._routines_store.mark_run(
+                routine.id, f"skipped: {agents.agent_label(routine.agent_key)} not installed"
+            )
+            self.statusBar().showMessage(
+                f"Routine “{name}” skipped — "
+                f"{agents.agent_label(routine.agent_key)} isn't installed", 6000,
+            )
+            self._refresh_routines_panel()
+            return
+
+        # Pre-trust + plugin-wire this agent the same way _add_workspace /
+        # _do_handoff do -- the once-per-session flag inside _add_workspace
+        # only covers the launch agent, not a routine's own pick.
+        if command and self.config.get("pretrust_agent_folder", False):
+            pretrust_folder(command, self._working_folder)
+        self._wire_github_for(self._working_folder, command)
+        self._wire_vercel_for(self._working_folder, command)
+        self._wire_jira_for(self._working_folder, command)
+
+        ws = None
+        if routine.workspace_target != "new":
+            ws = next((w for w in self._workspaces if w.name == routine.workspace_target), None)
+            if ws is None:
+                self.statusBar().showMessage(
+                    f"Routine “{name}”: workspace “{routine.workspace_target}” "
+                    f"is gone — opening a new one", 6000,
+                )
+
+        if ws is not None:
+            new_pane = ws.add_pane_with_command(command) if command else ws.add_pane()
+        elif len(self._workspaces) < entitlements.max_workspaces(self.account.plan):
+            ws = self._add_workspace(pane_count=1, startup_command=command or None)
+            new_pane = ws.panes[-1] if ws.panes else None
+        else:
+            # Free plan, already at the workspace cap -- use the current one
+            # rather than silently doing nothing.
+            ws = self._active_ws or (self._workspaces[0] if self._workspaces else None)
+            new_pane = (ws.add_pane_with_command(command) if command else ws.add_pane()) if ws else None
+
+        if ws is None or new_pane is None:
+            self._routines_store.mark_run(routine.id, "skipped: no pane available")
+            self.statusBar().showMessage(f"Routine “{name}” skipped — no pane available", 6000)
+            self._refresh_routines_panel()
+            return
+
+        prompt = routine.prompt.strip()
+        if not prompt:
+            self._routines_store.mark_run(routine.id, "ok")
+            self._refresh_routines_panel()
+            return
+
+        done: list = []
+
+        def _seed(p=new_pane, ws=ws, t=prompt, rid=routine.id, name=name):
+            if done or p not in ws.panes:
+                return
+            # Only once the pane has produced output (shell/agent is up).
+            if getattr(p.view, "_last_output_at", 0.0):
+                p.view.insert_text(t)
+                p.view.submit()
+                done.append(True)
+                self._routines_store.mark_run(rid, "ok")
+                self._refresh_routines_panel()
+                self.statusBar().showMessage(f"Routine “{name}” started in {ws.name}.", 5000)
+
+        def _give_up(rid=routine.id):
+            if not done:
+                self._routines_store.mark_run(rid, "skipped: pane produced no output")
+                self._refresh_routines_panel()
+
+        QTimer.singleShot(3500, _seed)
+        QTimer.singleShot(7000, _seed)
+        QTimer.singleShot(12000, _seed)
+        QTimer.singleShot(20000, _give_up)
+
     def _show_plugins(self) -> None:
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""
         self._notes_panel.flush()
+        self._routines_panel.flush()
         self._notes_active = False
+        self._routines_active = False
         self._settings_active = False
         self._plugins_active = True
         self._main_stack.setCurrentWidget(self._plugins_panel)
@@ -1114,7 +1229,9 @@ class TerminalPanel(QMainWindow):
 
     def _show_notes(self) -> None:
         """Swap the terminal area for the NOTES panel (sidebar nav strip)."""
+        self._routines_panel.flush()
         self._plugins_active = False
+        self._routines_active = False
         self._settings_active = False
         self._notes_active = True
         self._notes_panel.reload()
@@ -1128,6 +1245,39 @@ class TerminalPanel(QMainWindow):
             return
         self._notes_active = False
         self._notes_panel.flush()
+        self._main_stack.setCurrentWidget(self._ws_stack)
+        self._restore_voice_overlay()
+
+    def _show_routines(self) -> None:
+        """Swap the terminal area for the ROUTINES panel (sidebar nav strip).
+
+        Pro-gated (same tier as conversation handoff) -- the nav button stays
+        visible for discoverability, the click is gated. See
+        :func:`entitlements.routines_enabled`.
+        """
+        if not entitlements.routines_enabled(self._plan()):
+            self._prompt_upgrade(
+                "Routines",
+                "Schedule an agent prompt to fire at a set time — daily or on "
+                "chosen weekdays — on AgentDeck Pro.",
+            )
+            return
+        self._notes_panel.flush()
+        self._plugins_active = False
+        self._notes_active = False
+        self._settings_active = False
+        self._routines_active = True
+        self._routines_panel.reload()
+        self._main_stack.setCurrentWidget(self._routines_panel)
+        self._hide_voice_overlay()
+        self._refresh_sidebar()
+
+    def _leave_routines(self) -> None:
+        """Back to the workspaces view. No-op when already there."""
+        if not self._routines_active:
+            return
+        self._routines_active = False
+        self._routines_panel.flush()
         self._main_stack.setCurrentWidget(self._ws_stack)
         self._restore_voice_overlay()
 
@@ -1147,6 +1297,7 @@ class TerminalPanel(QMainWindow):
             return
         self._leave_plugins()
         self._leave_notes()
+        self._leave_routines()
         self._leave_settings()
         self._active_ws = workspace
         self._ws_stack.setCurrentWidget(workspace)
@@ -1238,11 +1389,15 @@ class TerminalPanel(QMainWindow):
         self._refresh_status()
 
     def _refresh_sidebar(self) -> None:
-        on_nav_view = self._plugins_active or self._notes_active or self._settings_active
+        on_nav_view = (
+            self._plugins_active or self._notes_active
+            or self._routines_active or self._settings_active
+        )
         active = None if on_nav_view else self._active_ws
         self._sidebar.refresh(self._workspaces, active)
         self._sidebar.set_plugins_active(self._plugins_active)
         self._sidebar.set_notes_active(self._notes_active)
+        self._sidebar.set_routines_active(self._routines_active)
 
     def _toggle_sidebar(self, show: Optional[bool] = None) -> None:
         if show is None:
@@ -1668,6 +1823,9 @@ class TerminalPanel(QMainWindow):
     # -- status ------------------------------------------------------------
 
     def _refresh_status(self) -> None:
+        for routine in self._routine_scheduler.due(self._routines_store.all()):
+            self._run_routine(routine)
+
         for workspace in self._workspaces:
             workspace.poll()
 
@@ -2338,6 +2496,8 @@ class TerminalPanel(QMainWindow):
         self._watchdog.stop()
         if getattr(self, "_notes_panel", None) is not None:
             self._notes_panel.flush()
+        if getattr(self, "_routines_panel", None) is not None:
+            self._routines_panel.flush()
         if getattr(self, "_plan_watch", None) is not None:
             self._plan_watch.stop()
         if getattr(self, "_plan_expiry_timer", None) is not None:
