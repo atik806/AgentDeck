@@ -887,6 +887,45 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     middle/right clicks still forward straight through. New
     `test_mouse_select.py` (7 checks); `test_wheel.py` unchanged and green.
 
+31. **Voice overlay redesigned as a waveform strip (2026-09-06, v0.14.0)** — the old
+    mic + seven-rod equaliser capsule now reads as a voice-memo recorder:
+    `voice_overlay.py` `_Equalizer → _Waveform` (`self._eq` attr kept), **40
+    dense rounded-cap bars mirrored about the centreline** inside a smooth
+    taper envelope `_ENV` (low ends, full middle). While `listening` the wave
+    swells **centre-out** to the eased mic level with light per-bar wobble;
+    `idle` is a slim breathing resting trace; `loading` a soft sweep. The wave
+    is **monochrome grey in every state** — the "on air" cue is the strip's
+    **red edge + a slow breathing pulse** (`_edge_timer`), not a coloured wave.
+    Strip is now a **rounded rectangle** (`_RADIUS = 12`, was a full pill),
+    `230x42`, near-black `voice_bg`. `_MicButton` slimmed to 22 px, flat/
+    borderless, one faint pulse ring, a filled-red disc + stop square while
+    live. New **× dismiss affordance** at the right edge — `_close_rect()` is
+    hit-tested in `mousePressEvent` before the drag branch and emits the new
+    **`dismiss_requested`** signal (`terminal_panel._build_voice` wires it to
+    `_set_overlay_visible(False)`). Caption / partial / model-% behaviour
+    unchanged (faint line over a dimmed wave). `theme.py` voice tokens retuned
+    (near-black bg + grey wave ramp, Mocha + Latte). Tests:
+    `test_voice_overlay.py` 68 (added `_BARS >= 24`, `[6b]` × dismisses without
+    dragging); `test_theme.py` / `test_panel.py` green.
+
+32. **Notes panel — functionality + look pass (2026-09-06, v0.14.0)** — the
+    plain title/body notebook (feature #20) gained real tools. `notes_store.py`
+    `STORE_VERSION 1 → 2`: `Note` grew `pinned` + `color` (`NOTE_COLORS`, "" =
+    none) plus `word_count` / `char_count` / `matches()`; `NotesStore` grew
+    `search()`, `duplicate()`, and `update(pinned=, color=)` — **a pin/colour
+    flag never bumps `updated`**; `_sorted` is now pinned-first then newest.
+    **v1 files still load** (fields default). `notes_panel.py`: a search box
+    (`Ctrl+F`) filtering the list, an editor action bar **Pin / Copy / Send to
+    terminal / Duplicate** (drawn icons via `_draw_icon`), a colour-label
+    swatch row (stripe + pin glyph on `_NoteRow`), a `N words · M chars`
+    footer, a per-minute relative-time tick, `Ctrl+N` = new. New
+    **`send_to_terminal`** signal → `terminal_panel._send_note_to_terminal`
+    leaves the Notes view and `insert_text()`s the body at the active pane (no
+    Enter). List is re-sorted only on `reload()` / pin toggle — never from
+    `flush()` (it runs inside `currentItemChanged`; rebuilding a QListWidget
+    from its own signal crashes). Tests: `test_notes_store.py` 47,
+    `test_notes_panel.py` 39, both green.
+
 ## Running / testing
 
 ```cmd

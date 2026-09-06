@@ -150,12 +150,13 @@ Rows, and steps the font. A pane whose shell exits turns red and grows a
 
 ## Voice input
 
-A small **voice widget** floats over the terminal area (the `🎤` toolbar button
-shows/hides it; drag it anywhere inside the panes). `Ctrl+Shift+X` starts and
-stops listening — the equaliser reacts to your voice while it does. Each finished
-sentence is **typed at the active pane's prompt with no Enter**, exactly like a
-file drop, so you read it before running it. It also flashes in the widget as it
-lands.
+A small **voice strip** floats over the terminal area — a mic button and a
+waveform, styled like a voice-memo recorder (the `🎤` toolbar button shows/hides
+it; drag it anywhere inside the panes; the `×` at its right edge dismisses it).
+`Ctrl+Shift+X` starts and stops listening — the waveform swells to your voice
+and the strip's edge glows red while it's live. Each finished sentence is
+**typed at the active pane's prompt with no Enter**, exactly like a file drop,
+so you read it before running it. It also flashes in the strip as it lands.
 
 Transcription is local (whisper.cpp via `pywhispercpp`, WebRTC VAD, the
 `voice_capture` sibling project's pipeline). The first `Ctrl+Shift+X` downloads
@@ -258,7 +259,7 @@ Layered bottom-up:
 | `setup_wizard.py` | The 3-step `QDialog` shown before the panel (amber accent). Returns `{folder, count, agent_key, agent_command}`. |
 | `agents.py` | Agent discovery — `available_agents()` (installed) / `known_agents()` (all) / `resolve_agent()`, same shape as `pty_backend`'s shell discovery. `install_hint(key)` → install command + docs URL for the wizard's guide. `pretrust_folder()`: for a Claude Code command, pre-accepts the folder-trust prompt in `~/.claude.json`. Qt-free. |
 | `voice_engine.py` | Qt bridge over the `voice_capture` sibling project's capture / VAD / transcription pipeline. Worker threads behind `state` / `level` / `transcription` / `error` signals. All deps optional — a failed import just sets `available = False`. |
-| `voice_overlay.py` | The floating, draggable voice widget: mic button, level-reactive equaliser (custom `paintEvent` + one 33 ms timer), fading transcript preview. Parented to the window, kept over the panes by `set_bounds()`. |
+| `voice_overlay.py` | The floating, draggable voice strip: mic button, a 40-bar mirrored waveform (`_Waveform`, custom `paintEvent` + one 28 ms timer) that swells centre-out to the mic level, a fading transcript line, and a `×` dismiss affordance. Monochrome grey wave; the red strip edge is the "on air" cue. Parented to the window, kept over the panes by `set_bounds()`. |
 
 `config.py` handles settings. `launcher.py` and `main_window.py` are a separate,
 older feature that tiles *external* terminal windows with the Win32 API; they are

@@ -95,12 +95,13 @@ _DARK = {
     "term_fg": "#cdd6f4",
     "term_cursor": "#f5e0dc",
     "term_selection": "#89b4fa",        # blended with alpha at use sites
-    # voice capsule (voice_overlay.py)
-    "voice_bg": "#2b2b3f",
-    "voice_border": "#45455e",
+    # voice strip (voice_overlay.py) -- a near-black voice-memo recorder;
+    # the wave is monochrome grey, the "on air" cue is the red edge.
+    "voice_bg": "#16161e",
+    "voice_border": "#33333f",
     "voice_border_rec": "#f38ba8",      # the "recording" ring
-    "voice_wave": "#94e2d5",            # bars while listening
-    "voice_wave_idle": "#7f849c",
+    "voice_wave": "#b8bcc8",            # brighter grey while listening
+    "voice_wave_idle": "#6c7086",       # a quiet grey at rest
     "voice_partial_text": "#a6adc8",    # dim interim transcript
     "voice_text": "#cdd6f4",            # a finished transcript
 }
@@ -157,12 +158,13 @@ _LIGHT = {
     "term_fg": "#4c4f69",
     "term_cursor": "#dc8a78",
     "term_selection": "#1e66f5",
-    # voice capsule (voice_overlay.py)
-    "voice_bg": "#ffffff",
-    "voice_border": "#ccd0da",
+    # voice strip (voice_overlay.py) -- inverted for Latte: a pale card with a
+    # monochrome grey wave, red edge for "on air".
+    "voice_bg": "#e6e9ef",
+    "voice_border": "#bcc0cc",
     "voice_border_rec": "#d20f39",
-    "voice_wave": "#179299",
-    "voice_wave_idle": "#8c8fa1",
+    "voice_wave": "#5c5f77",
+    "voice_wave_idle": "#9ca0b0",
     "voice_partial_text": "#6c6f85",
     "voice_text": "#4c4f69",
 }

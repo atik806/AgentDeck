@@ -4,10 +4,11 @@ One JSON file, ``%APPDATA%\\multi-terminal\\notes.json`` (sits next to
 ``config.json``)::
 
     {
-      "version": 1,
+      "version": 2,
       "notes": [
         {"id": "n_ab12cd34", "title": "Deploy checklist",
          "body": "1. bump version.py\\n2. push tag",
+         "pinned": true, "color": "green",
          "created": 1725200000.0, "updated": 1725200450.0}
       ]
     }
@@ -22,19 +23,40 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["Note", "NotesStore", "default_notes_path", "derive_title"]
+__all__ = [
+    "Note",
+    "NotesStore",
+    "NOTE_COLORS",
+    "default_notes_path",
+    "derive_title",
+]
 
-#: Bumped only if the on-disk shape changes meaning.
-STORE_VERSION = 1
+#: Bumped only if the on-disk shape changes meaning. v2 added pinned + color.
+STORE_VERSION = 2
 
 #: Shown in the list when a note has no usable first line.
 UNTITLED = "Untitled note"
+
+#: The label colours a note can carry ("" = none). Keys are stored on disk;
+#: the panel maps them to theme-ish hex for the swatch + row stripe.
+NOTE_COLORS: dict[str, str] = {
+    "": "",
+    "blue": "#89b4fa",
+    "green": "#a6e3a1",
+    "yellow": "#f9e2af",
+    "peach": "#fab387",
+    "mauve": "#cba6f7",
+    "red": "#f38ba8",
+}
+
+_WORD_RE = re.compile(r"\S+")
 
 
 def default_notes_path() -> Path:
@@ -72,6 +94,8 @@ class Note:
     id: str
     title: str = ""
     body: str = ""
+    pinned: bool = False
+    color: str = ""
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
 
@@ -90,6 +114,22 @@ class Note:
             body_lines = lines[1:]  # first line is the title
         return (body_lines[0][:120] if body_lines else "")
 
+    @property
+    def word_count(self) -> int:
+        return len(_WORD_RE.findall(self.body or ""))
+
+    @property
+    def char_count(self) -> int:
+        return len(self.body or "")
+
+    def matches(self, needle: str) -> bool:
+        """Case-insensitive substring test over the title + body -- the search
+        box uses this."""
+        needle = (needle or "").strip().lower()
+        if not needle:
+            return True
+        return needle in self.display_title.lower() or needle in (self.body or "").lower()
+
     @classmethod
     def from_dict(cls, data: dict) -> "Note":
         now = time.time()
@@ -102,10 +142,15 @@ class Note:
             updated = float(data.get("updated", created))
         except (TypeError, ValueError):
             updated = created
+        color = str(data.get("color") or "")
+        if color not in NOTE_COLORS:
+            color = ""
         return cls(
             id=nid,
             title=str(data.get("title") or ""),
             body=str(data.get("body") or ""),
+            pinned=bool(data.get("pinned", False)),
+            color=color,
             created=created,
             updated=updated,
         )
@@ -116,7 +161,8 @@ def _new_id() -> str:
 
 
 class NotesStore:
-    """The notebook: an ordered list of :class:`Note`, newest-updated first.
+    """The notebook: an ordered list of :class:`Note`, pinned first then
+    newest-updated.
 
     Construct with no argument for the real file; pass ``path=`` in tests. The
     file is read once on construction (or first access) and every mutating call
@@ -184,6 +230,12 @@ class NotesStore:
         self._ensure()
         return list(self._notes)
 
+    def search(self, needle: str) -> list[Note]:
+        """The notes matching ``needle`` (all of them for an empty string),
+        keeping the store order."""
+        self._ensure()
+        return [n for n in self._notes if n.matches(needle)]
+
     def get(self, note_id: str) -> Optional[Note]:
         self._ensure()
         return next((n for n in self._notes if n.id == note_id), None)
@@ -194,13 +246,29 @@ class NotesStore:
 
     # -- mutations -------------------------------------------------------
 
-    def create(self, body: str = "", title: str = "") -> Note:
+    def create(self, body: str = "", title: str = "", *, pinned: bool = False,
+               color: str = "") -> Note:
         self._ensure()
-        note = Note(id=_new_id(), title=title, body=body)
+        note = Note(
+            id=_new_id(), title=title, body=body, pinned=pinned,
+            color=color if color in NOTE_COLORS else "",
+        )
         self._notes.append(note)
         self._notes = _sorted(self._notes)
         self.save()
         return note
+
+    def duplicate(self, note_id: str) -> Optional[Note]:
+        """Copy an existing note (body + colour, title gets a " (copy)" tag)."""
+        src = self.get(note_id)
+        if src is None:
+            return None
+        title = src.title.strip()
+        return self.create(
+            body=src.body,
+            title=f"{title} (copy)" if title else "",
+            color=src.color,
+        )
 
     def update(
         self,
@@ -208,20 +276,30 @@ class NotesStore:
         *,
         body: Optional[str] = None,
         title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        color: Optional[str] = None,
     ) -> Optional[Note]:
         self._ensure()
         note = self.get(note_id)
         if note is None:
             return None
         changed = False
+        touched = False  # a content edit bumps `updated`; a pin/colour flag doesn't
         if body is not None and body != note.body:
             note.body = body
-            changed = True
+            changed = touched = True
         if title is not None and title != note.title:
             note.title = title
+            changed = touched = True
+        if pinned is not None and bool(pinned) != note.pinned:
+            note.pinned = bool(pinned)
+            changed = True
+        if color is not None and color in NOTE_COLORS and color != note.color:
+            note.color = color
             changed = True
         if changed:
-            note.updated = time.time()
+            if touched:
+                note.updated = time.time()
             self._notes = _sorted(self._notes)
             self.save()
         return note
@@ -237,5 +315,5 @@ class NotesStore:
 
 
 def _sorted(notes: list[Note]) -> list[Note]:
-    """Newest-updated first; stable for equal timestamps."""
-    return sorted(notes, key=lambda n: n.updated, reverse=True)
+    """Pinned notes first, then newest-updated; stable for equal keys."""
+    return sorted(notes, key=lambda n: (not n.pinned, -n.updated))

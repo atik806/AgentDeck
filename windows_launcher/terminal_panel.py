@@ -626,6 +626,7 @@ class TerminalPanel(QMainWindow):
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
         self._notes_panel = NotesPanel(central, config=self.config)
+        self._notes_panel.send_to_terminal.connect(self._send_note_to_terminal)
         self._routines_store = RoutinesStore()
         self._routines_panel = RoutinesPanel(
             central, store=self._routines_store, config=self.config,
@@ -1281,6 +1282,21 @@ class TerminalPanel(QMainWindow):
         self._main_stack.setCurrentWidget(self._ws_stack)
         self._restore_voice_overlay()
 
+    def _send_note_to_terminal(self, text: str) -> None:
+        """Leave the Notes view and drop a note's body at the active pane's
+        prompt -- no Enter, same as a file drop / voice insert."""
+        self._leave_notes()
+        pane = self._active
+        if pane is None:
+            self.statusBar().showMessage("No terminal pane to send the note to", 4000)
+            return
+        pane.view.insert_text(text)
+        try:
+            pane.view.setFocus(Qt.OtherFocusReason)
+        except Exception:  # noqa: BLE001 - focus is best-effort
+            pass
+        self.statusBar().showMessage("Note sent to the active terminal", 3000)
+
     def _hide_voice_overlay(self) -> None:
         overlay = getattr(self, "_voice_overlay", None)
         if overlay is not None:
@@ -1416,6 +1432,8 @@ class TerminalPanel(QMainWindow):
         self._voice_overlay = VoiceOverlay(self)
 
         self._voice_overlay.toggle_requested.connect(self._on_overlay_toggle)
+        self._voice_overlay.dismiss_requested.connect(
+            lambda: self._set_overlay_visible(False))
         self._voice_overlay.submit_requested.connect(self._on_overlay_submit)
         self._voice_overlay.moved.connect(self._on_voice_moved)
         self._voice_engine.state.connect(self._on_voice_state)

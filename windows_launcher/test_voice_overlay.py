@@ -45,6 +45,7 @@ overlay.toggle_requested.connect(lambda: toggles.append(1))
 print("[1] compact fixed size")
 check("small footprint", overlay.width() <= 230 and overlay.height() <= 42)
 check("mic icon renders", not mic_icon(16).isNull())
+check("waveform is dense", overlay._eq._BARS >= 24)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +165,31 @@ overlay.set_available(False, "pywhispercpp not installed")
 check("state is unavailable", overlay._state == "unavailable")
 check("mic disabled", overlay._mic.isEnabled() is False)
 check("reason in the tooltip", "pywhispercpp" in overlay._mic.toolTip())
+
+
+# ---------------------------------------------------------------------------
+print("[6b] the × dismisses without starting a drag")
+dismissed = []
+overlay.set_available(True)
+overlay.move(QPoint(40, 40))
+overlay.dismiss_requested.connect(lambda: dismissed.append(1))
+cr = overlay._close_rect()
+pt = QPointF(cr.center())
+overlay.mousePressEvent(QMouseEvent(
+    QEvent.MouseButtonPress, pt, QPointF(0, 0),
+    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+check("clicking the × emits dismiss_requested", dismissed == [1])
+check("the × press did not start a drag", overlay._dragging is False)
+
+before = overlay.pos()
+inside = QPointF(overlay.width() / 2.0, overlay.height() / 2.0)
+overlay.mousePressEvent(QMouseEvent(
+    QEvent.MouseButtonPress, inside, QPointF(0, 0),
+    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+check("pressing the body still starts a drag", overlay._dragging is True)
+overlay.mouseReleaseEvent(QMouseEvent(
+    QEvent.MouseButtonRelease, inside, QPointF(0, 0),
+    Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
 
 
 # ---------------------------------------------------------------------------

@@ -141,6 +141,77 @@ sb.set_notes_active(False)
 check("plugins on, notes off", sb._plugins_btn.isChecked() and not sb._notes_btn.isChecked())
 
 
+# ---------------------------------------------------------------------------
+print("[6] search filters the list")
+store = fresh_store()
+panel = NotesPanel(store=store)
+panel._on_new(); panel._body_edit.setPlainText("deploy checklist"); panel.flush()
+panel._on_new(); panel._body_edit.setPlainText("grocery run"); panel.flush()
+panel._search.setText("deploy")
+hidden = [panel._list.item(i).isHidden() for i in range(panel._list.count())]
+check("one row hidden by the filter", hidden.count(True) == 1)
+check("selection followed the filter to the visible note",
+      panel._body_edit.toPlainText() == "deploy checklist")
+panel._search.clear()
+check("clearing the search shows everything again",
+      not any(panel._list.item(i).isHidden() for i in range(panel._list.count())))
+
+
+# ---------------------------------------------------------------------------
+print("[7] pin float + colour label")
+store = fresh_store()
+panel = NotesPanel(store=store)
+panel._on_new(); panel._body_edit.setPlainText("first"); panel.flush()
+first_id = panel._current_id
+panel._on_new(); panel._body_edit.setPlainText("second"); panel.flush()
+check("newest note is on top", panel._list.item(0).data(0x0100) == panel._current_id)
+
+# select + pin the older note
+panel._select_id(first_id)
+panel._pin_btn.setChecked(True)
+check("store recorded the pin", store.get(first_id).pinned is True)
+check("pinned note moved to row 0", panel._list.item(0).data(0x0100) == first_id)
+check("pin button relabelled", panel._pin_btn.text().strip() == "Pinned")
+
+panel._on_color_pick("green")
+check("colour stored", store.get(first_id).color == "green")
+panel._on_color_pick("green")  # click again clears
+check("re-picking the colour clears it", store.get(first_id).color == "")
+
+
+# ---------------------------------------------------------------------------
+print("[8] copy + send-to-terminal")
+store = fresh_store()
+panel = NotesPanel(store=store)
+panel._on_new()
+panel._body_edit.setPlainText("run the thing")
+panel.flush()
+
+sent = []
+panel.send_to_terminal.connect(sent.append)
+panel._on_send()
+check("send_to_terminal carries the body", sent == ["run the thing"])
+
+app.clipboard().clear()
+panel._on_copy()
+check("copy puts the body on the clipboard", app.clipboard().text() == "run the thing")
+
+
+# ---------------------------------------------------------------------------
+print("[9] duplicate")
+store = fresh_store()
+panel = NotesPanel(store=store)
+panel._on_new()
+panel._body_edit.setPlainText("template prompt")
+panel._title_edit.setText("Prompt")
+panel._title_edit.textEdited.emit("Prompt")
+panel.flush()
+panel._on_duplicate()
+check("duplicate added a second note", len(store) == 2)
+check("editor moved to the copy", panel._body_edit.toPlainText() == "template prompt")
+check("copy title tagged", panel._title_edit.text() == "Prompt (copy)")
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
