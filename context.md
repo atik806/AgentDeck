@@ -871,6 +871,22 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     the in-progress drag gesture before `_start_drag()` could see enough
     motion.
 
+30. **Terminal text selection works again inside mouse-tracking programs
+    (2026-09-06)** — feature §28 forwarded *every* left click to a program
+    that set a tracking mode, so in a pane running Claude Code you could no
+    longer drag-select or copy any text (the only escape was the
+    undiscoverable `Shift`-drag). `terminal_view.py` now defers the
+    click-vs-drag decision the way iTerm2 / Windows Terminal do: a left press
+    over a tracking program is held (`_pending_press`), then `mouseMoveEvent`
+    turns it into a local selection once it travels past
+    `QStyleHints.startDragDistance()`, while `mouseReleaseEvent` forwards a
+    press that stayed put as a click (press+release emitted as one pair).
+    `_forward_click` now also refuses to send a release whose press it never
+    forwarded (no stray reports after a `Shift`-drag or a selection dragged
+    out of the program). `Shift` still forces an immediate local selection;
+    middle/right clicks still forward straight through. New
+    `test_mouse_select.py` (7 checks); `test_wheel.py` unchanged and green.
+
 ## Running / testing
 
 ```cmd
@@ -878,6 +894,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe main.py            # run the app
 .venv\Scripts\python.exe test_panel.py      # real window + real shells; ALL PASS
 .venv\Scripts\python.exe test_vt_screen.py  # screen model; ALL PASS
+.venv\Scripts\python.exe test_wheel.py         # wheel routing; offline
+.venv\Scripts\python.exe test_mouse_select.py  # click-vs-drag selection; offline
 .venv\Scripts\python.exe test_voice_engine.py   # voice pipeline, stubbed; offline
 .venv\Scripts\python.exe test_voice_overlay.py  # voice widget; offline
 .venv\Scripts\python.exe test_voice_models.py       # model pick + resolve; offline

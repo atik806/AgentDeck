@@ -300,6 +300,17 @@ class TerminalCanvas(QWidget):
         self._sel_head: Optional[tuple[int, int]] = None
         self._selecting = False
 
+        # A left press over a program that is reading the mouse is ambiguous:
+        # the program wants the click, but the user may be starting a
+        # drag-select to copy text. The press is held here (pixel position)
+        # until mouseMove resolves it into a selection or mouseRelease
+        # forwards it as a click. See mousePressEvent.
+        self._pending_press: Optional[QPoint] = None
+        # Mouse buttons whose press we forwarded to the program, so the
+        # matching release is forwarded too -- and, just as importantly, a
+        # release whose press we did *not* forward is never sent on its own.
+        self._forwarded_buttons: set = set()
+
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.IBeamCursor)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
@@ -712,25 +723,60 @@ class TerminalCanvas(QWidget):
         Code, a TUI file picker, ``fzf --preview``...), the same convention
         as :meth:`wheelEvent`: Shift forces our local selection instead.
 
-        Without this, every left click was captured for local text-selection
-        no matter what the program asked for, so any mouse-clickable element
-        a TUI drew (a button, a list row) was inert -- clickable pixels that
-        did nothing.
+        Without this, every click was captured for local text-selection no
+        matter what the program asked for, so any mouse-clickable element a
+        TUI drew (a button, a list row) was inert -- clickable pixels that did
+        nothing. The left button is routed through the click-vs-drag deferral
+        in :meth:`mousePressEvent` rather than here; this path carries the
+        middle and right buttons, and every button's release.
+
+        A release is only forwarded when the matching press was: a lone
+        release (Shift held for the press, or the press began a local
+        selection) would be an unpaired event the program can't make sense of.
         """
         if not self._mouse_tracking() or event.modifiers() & Qt.ShiftModifier:
             return False
-        code = _MOUSE_BUTTON_CODES.get(event.button())
+        button = event.button()
+        code = _MOUSE_BUTTON_CODES.get(button)
         if code is None:
+            return False
+        if release and button not in self._forwarded_buttons:
             return False
         seq = self._encode_mouse(code, event.position().toPoint(), release=release)
         if not seq:
             return False
         self.input_requested.emit(seq)
+        if release:
+            self._forwarded_buttons.discard(button)
+        else:
+            self._forwarded_buttons.add(button)
         return True
+
+    def _drag_threshold(self) -> int:
+        """Pixels a press must travel before it counts as a drag, not a click."""
+        return QGuiApplication.styleHints().startDragDistance()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
             self.setFocus(Qt.MouseFocusReason)
+
+        self._pending_press = None
+
+        # A program reading the mouse (Claude Code, a TUI picker, fzf) wants
+        # the click -- but the user still has to be able to drag-select text to
+        # copy it. Hold the left press without committing either way: a drag
+        # turns it into a local selection (mouseMoveEvent), a press that stays
+        # put is forwarded as a click on release (mouseReleaseEvent). Shift
+        # forces local selection immediately, as it does for the wheel.
+        if (
+            event.button() == Qt.LeftButton
+            and self._mouse_tracking()
+            and not (event.modifiers() & Qt.ShiftModifier)
+        ):
+            self._pending_press = event.position().toPoint()
+            event.accept()
+            return
+
         if self._forward_click(event, release=False):
             event.accept()
             return
@@ -745,12 +791,46 @@ class TerminalCanvas(QWidget):
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pending_press is not None:
+            moved = (event.position().toPoint() - self._pending_press).manhattanLength()
+            if moved >= self._drag_threshold():
+                # The held press is a drag: start a local selection from where
+                # it began. The program never hears about this click.
+                self._sel_anchor = self._cell_at(self._pending_press)
+                self._sel_head = self._cell_at(event.position().toPoint())
+                self._selecting = True
+                self._pending_press = None
+                self.update()
+            event.accept()
+            return
         if self._selecting:
             self._sel_head = self._cell_at(event.position().toPoint())
             self.update()
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton and self._pending_press is not None:
+            # Pressed and released without a drag: a click for the program.
+            # Emit the press and release together, so the pair is never split.
+            code = _MOUSE_BUTTON_CODES[Qt.LeftButton]
+            press = self._encode_mouse(code, self._pending_press, release=False)
+            rel = self._encode_mouse(code, self._pending_press, release=True)
+            self._pending_press = None
+            if press and rel:
+                self.input_requested.emit(press + rel)
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton and self._selecting:
+            # A local selection (possibly dragged out of a mouse-tracking
+            # program): finish it, and don't forward a release the program
+            # never saw the press for.
+            self._selecting = False
+            if self._sel_anchor == self._sel_head:
+                self.clear_selection()
+            event.accept()
+            return
+
         if self._forward_click(event, release=True):
             event.accept()
             return
