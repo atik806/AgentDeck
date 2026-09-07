@@ -16,6 +16,7 @@ Keep :func:`skill_icon` -- the sidebar's "Skills" nav button reuses it.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional
 
@@ -562,14 +563,13 @@ class SkillsPanel(QWidget):
         created = 0
         for path in paths:
             try:
-                text = open(path, "r", encoding="utf-8").read()
+                with open(path, "r", encoding="utf-8") as fh:
+                    text = fh.read()
             except OSError:
                 continue
-            import os as _os
-
-            fallback = _os.path.splitext(_os.path.basename(path))[0]
+            fallback = os.path.splitext(os.path.basename(path))[0]
             if fallback.lower() in ("skill", "readme"):
-                fallback = _os.path.basename(_os.path.dirname(path)) or fallback
+                fallback = os.path.basename(os.path.dirname(path)) or fallback
             skill = self._store.import_markdown(text, fallback_name=fallback)
             self._current_id = skill.id
             created += 1
