@@ -1077,6 +1077,52 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       re-import). Full offline suite green; `test_panel.py` green bar the lone
       pre-existing offscreen "drop focus" flake.
 
+37. **Isolated git worktree per pane + Review/Merge panel (2026-09-07,
+    `feat/isolated-worktrees`)** — a workspace can now run each of its panes in
+    its own `git worktree` on a scratch branch, so several agents work the same
+    repo in parallel without colliding, and there's one place to triage what
+    they produced. Solves the "parallel agents step on each other" problem the
+    whole Conductor / Vibe-Kanban category exists for. Open-source: needs only
+    `git`.
+    - **New modules:** `git_worktree.py` (Qt-free `git` subprocess wrapper —
+      `detect_repo` / `add_worktree` / `status` / `diff_stat` / `diff_text` /
+      `merge_to_base` / `push_branch`; every call passes `CREATE_NO_WINDOW` +
+      `GIT_TERMINAL_PROMPT=0`), `worktree_store.py` (Qt-free JSON store at
+      `%APPDATA%\multi-terminal\worktrees.json`, mirrors `routines_store`;
+      scratch trees under `%LOCALAPPDATA%\multi-terminal\worktrees\<key>\`,
+      machine-local), `worktree_panel.py` (`WorktreePanel` — list ∥ file list ∥
+      coloured read-only diff + Merge / Open PR / Open in pane / Discard;
+      mutations go out as signals, `TerminalPanel` does them).
+    - **New-workspace dialog:** "Isolate each terminal in its own git worktree"
+      checkbox, enabled only when the folder is a git repo *and* the plan is Pro
+      (`entitlements.worktrees_enabled`). Last state remembered in
+      `config["worktree_isolate_default"]`.
+    - **Panes:** `TerminalPane.pane_id` (stable across relayout reparents — the
+      store keys off it, not the shifting list index); `Workspace.initialize(
+      count, pane_cwds=)` + per-pane `cwd`; a `pane_close_requested` signal that
+      `Workspace._intercept_pane_close` routes to the panel so it can prompt
+      **Merge / Keep / Discard** for the pane's worktree before the shell dies
+      and the cwd lock releases.
+    - **Merge never touches the user's checkout:** `merge_to_base` merges in an
+      ephemeral `--detach` worktree, then advances `refs/heads/<base>` with a
+      compare-and-swap `update-ref`. The main checkout just shows "behind" —
+      clean, expected.
+    - **Crash recovery:** `_reconcile_worktrees_on_startup` → `store.reconcile()`
+      marks vanished worktrees `orphaned`, adopts stray `agentdeck/*` trees,
+      and sweeps `pending_delete` rows (a dir git had locked at close time).
+    - **Open PR** reuses the GitHub plugin — `github_api.create_pull_request` /
+      `find_pr_for_branch` + `github_controller.create_pull_request` (new,
+      blocking). Disabled unless GitHub is connected and `origin` is a GitHub
+      remote.
+    - Sidebar gets a 4th nav item ("Worktrees", below Routines).
+    - Tests: `test_git_worktree.py` (real temp repo — add/status/diff/merge/
+      conflict/remove), `test_worktree_store.py` (CRUD + reconcile),
+      `test_worktree_panel.py` (`offscreen` — rows, diff, signals, empty
+      states); `test_entitlements.py` + `test_new_workspace_dialog.py` extended.
+    - **Not done here:** handoff / routines don't create worktrees yet (v2);
+      version.py not bumped (release sequencing vs `feat/skills` / v0.16.0 is
+      the user's call).
+
 ## Running / testing
 
 ```cmd

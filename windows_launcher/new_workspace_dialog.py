@@ -7,8 +7,8 @@ workspace's terminals and how many terminals to open. It is deliberately small
 setup wizard's amber, because it is an in-app action rather than the front door.
 
 :meth:`result_choice` returns ``{agent_key, agent_custom, agent_command,
-count}``; ``exec()`` is ``Accepted`` only when the user clicks *Create
-workspace*.
+count, isolate_panes}``; ``exec()`` is ``Accepted`` only when the user clicks
+*Create workspace*.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -61,10 +62,15 @@ class NewWorkspaceDialog(QDialog):
         default_agent: str = PLAIN_KEY,
         default_custom: str = "",
         default_count: int = 4,
+        allow_isolation: bool = False,
+        isolation_reason: str = "",
+        default_isolate: bool = False,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self._result: Optional[dict] = None
+        self._allow_isolation = bool(allow_isolation)
+        self._isolation_reason = isolation_reason or ""
 
         self.setWindowTitle("New workspace")
         self.setModal(True)
@@ -95,6 +101,8 @@ class NewWorkspaceDialog(QDialog):
                 padding: 8px 16px; font-size: 12px;
             }}
             QPushButton:hover {{ border-color: {_BLUE()}; }}
+            QCheckBox {{ color: {_TEXT()}; font-size: 12px; spacing: 8px; }}
+            QCheckBox:disabled {{ color: {theme.color('text_faint')}; }}
             QPushButton#primary {{
                 background: {_BLUE()}; color: {theme.color('on_accent')}; border-color: {_BLUE()};
                 font-weight: 700;
@@ -173,6 +181,18 @@ class NewWorkspaceDialog(QDialog):
         row.addStretch(1)
         outer.addLayout(row)
 
+        # -- isolate each pane in its own git worktree --
+        self._isolate = QCheckBox("Isolate each terminal in its own git worktree", self)
+        self._isolate.setChecked(bool(default_isolate) and self._allow_isolation)
+        self._isolate.setEnabled(self._allow_isolation)
+        self._isolate.setToolTip(
+            "Each terminal gets its own scratch branch + working copy under "
+            "%LOCALAPPDATA%, so several agents can work this repo in parallel "
+            "without colliding. Review and merge them from the Worktrees panel."
+        )
+        self._isolate.toggled.connect(self._sync)
+        outer.addWidget(self._isolate)
+
         self._note = QLabel("")
         self._note.setObjectName("note")
         self._note.setWordWrap(True)
@@ -247,6 +267,13 @@ class NewWorkspaceDialog(QDialog):
                 f"{agent_label(key)} isn't installed — follow the steps above, "
                 f"then Re-check."
             )
+        elif not self._allow_isolation and self._isolation_reason:
+            self._note.setText(self._isolation_reason)
+        elif self._isolate.isChecked():
+            self._note.setText(
+                f"Creates {n} isolated worktree{plural} — one scratch branch per "
+                f"terminal — then runs the agent in each."
+            )
         elif command:
             self._note.setText(f"Runs  {command}  in {n} terminal{plural}.")
         else:
@@ -266,6 +293,7 @@ class NewWorkspaceDialog(QDialog):
             "agent_custom": custom,
             "agent_command": resolve_agent(key, custom),
             "count": self._count.value(),
+            "isolate_panes": bool(self._isolate.isChecked() and self._allow_isolation),
         }
         self.accept()
 

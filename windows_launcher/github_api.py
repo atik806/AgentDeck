@@ -14,7 +14,14 @@ import requests
 
 from github_auth import GitHubAuthError
 
-__all__ = ["whoami", "list_repos", "list_open_prs", "parse_pr_url"]
+__all__ = [
+    "whoami",
+    "list_repos",
+    "list_open_prs",
+    "parse_pr_url",
+    "create_pull_request",
+    "find_pr_for_branch",
+]
 
 _API = "https://api.github.com"
 _TIMEOUT = 20
@@ -132,6 +139,79 @@ def list_open_prs(token: str, repo: str, *, limit: int = 50) -> List[dict]:
             }
         )
     return out[:limit]
+
+
+def _post(token: str, path: str, payload: dict) -> object:
+    try:
+        resp = requests.post(
+            f"{_API}{path}", headers=_headers(token), json=payload, timeout=_TIMEOUT
+        )
+    except requests.RequestException as exc:
+        raise GitHubAuthError(f"Couldn't reach GitHub: {exc}") from exc
+    if resp.status_code in (401, 403) and "rate limit" not in resp.text.lower():
+        raise GitHubAuthError("GitHub rejected the token — reconnect the plugin.")
+    if not resp.ok:
+        detail = ""
+        try:
+            body = resp.json()
+            detail = body.get("message", "")
+            errs = body.get("errors") or []
+            if errs:
+                detail += " — " + "; ".join(
+                    e.get("message", "") for e in errs if isinstance(e, dict)
+                )
+        except ValueError:
+            detail = resp.text[:200]
+        raise GitHubAuthError(f"GitHub API error {resp.status_code} on {path}: {detail}")
+    try:
+        return resp.json()
+    except ValueError:
+        return {}
+
+
+def find_pr_for_branch(token: str, repo: str, head: str) -> Optional[dict]:
+    """The open PR whose head is ``head`` on ``owner/name``, or ``None``."""
+    owner = repo.split("/", 1)[0]
+    data = _get(
+        token, f"/repos/{repo}/pulls",
+        {"state": "open", "head": f"{owner}:{head}", "per_page": 1},
+    )
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        pr = data[0]
+        return {"number": pr.get("number"), "html_url": pr.get("html_url") or ""}
+    return None
+
+
+def create_pull_request(
+    token: str,
+    repo: str,
+    *,
+    head: str,
+    base: str,
+    title: str,
+    body: str = "",
+    draft: bool = False,
+) -> dict:
+    """Open a PR on ``owner/name``. Returns ``{number, html_url}``.
+
+    If a PR for ``head`` already exists (422), returns that one instead of
+    raising.
+    """
+    try:
+        data = _post(
+            token, f"/repos/{repo}/pulls",
+            {"title": title or head, "head": head, "base": base,
+             "body": body, "draft": bool(draft)},
+        )
+    except GitHubAuthError as exc:
+        if "already exist" in str(exc).lower():
+            existing = find_pr_for_branch(token, repo, head)
+            if existing:
+                return existing
+        raise
+    if isinstance(data, dict):
+        return {"number": data.get("number"), "html_url": data.get("html_url") or ""}
+    return {}
 
 
 def parse_pr_url(url: str) -> Optional[tuple[str, int]]:

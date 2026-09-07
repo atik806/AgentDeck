@@ -16,6 +16,7 @@ across a layout change.
 from __future__ import annotations
 
 import math
+import secrets
 from typing import Optional
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
@@ -182,6 +183,7 @@ class TerminalPane(QFrame):
         *,
         cwd: Optional[str] = None,
         startup_command: Optional[str] = None,
+        pane_id: Optional[str] = None,
     ):
         super().__init__(parent)
         self._index = index
@@ -190,6 +192,10 @@ class TerminalPane(QFrame):
         self._font_size = font_size
         self._cwd = cwd
         self._startup_command = startup_command
+        # A stable identity that survives every relayout reparent. The
+        # Worktrees feature keys a pane to its isolated worktree by this, since
+        # the pane's list index shifts as panes are added / closed / reordered.
+        self._pane_id = pane_id or ("p_" + secrets.token_hex(4))
         self._active = False
         self._expanded = False
 
@@ -348,6 +354,11 @@ class TerminalPane(QFrame):
         self.focus_terminal()
 
     # -- appearance --------------------------------------------------------
+
+    @property
+    def pane_id(self) -> str:
+        """Stable identity for this pane, unchanged across relayout reparents."""
+        return self._pane_id
 
     @property
     def index(self) -> int:
@@ -590,6 +601,12 @@ class Workspace(QWidget):
     #: The user asked to hand a pane's agent conversation off. Carries the pane.
     pane_handoff_requested = Signal(object)
 
+    #: The user asked to close a pane that owns an isolated worktree. Emitted
+    #: only while ``_intercept_pane_close`` is set (isolated workspaces); the
+    #: panel decides merge / keep / discard, then calls ``close_pane(force=True)``.
+    #: Carries the pane.
+    pane_close_requested = Signal(object)
+
     def __init__(
         self,
         name: str,
@@ -620,6 +637,10 @@ class Workspace(QWidget):
         # chosen agent.
         self._cwd = cwd
         self._startup_command = startup_command
+        # When set, a pane-close request is routed out to the panel (via
+        # ``pane_close_requested``) instead of closing immediately -- the panel
+        # prompts merge / keep / discard for the pane's isolated worktree first.
+        self._intercept_pane_close = False
 
         self._panes: list[TerminalPane] = []
         self._active: Optional[TerminalPane] = None
@@ -636,11 +657,17 @@ class Workspace(QWidget):
 
     # -- lifecycle -------------------------------------------------------------
 
-    def initialize(self, count: int) -> None:
-        """Fill a fresh workspace with ``count`` panes and lay them out once."""
+    def initialize(self, count: int, pane_cwds: "Optional[list[str]]" = None) -> None:
+        """Fill a fresh workspace with ``count`` panes and lay them out once.
+
+        ``pane_cwds`` (isolated workspaces only) gives each pane its own start
+        folder -- its worktree. When given it must have exactly ``count``
+        entries; the panel guarantees that.
+        """
         count = max(1, min(self._max_panes, int(count)))
-        for _ in range(count):
-            self._spawn_pane(with_startup=True)
+        for i in range(count):
+            cwd = pane_cwds[i] if pane_cwds and i < len(pane_cwds) else None
+            self._spawn_pane(with_startup=True, cwd=cwd)
         self._relayout()
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
@@ -668,7 +695,11 @@ class Workspace(QWidget):
         return self._zoomed is not None
 
     def _spawn_pane(
-        self, *, with_startup: bool = False, startup_command: Optional[str] = None
+        self,
+        *,
+        with_startup: bool = False,
+        startup_command: Optional[str] = None,
+        cwd: Optional[str] = None,
     ) -> TerminalPane:
         if startup_command is None and with_startup:
             startup_command = self._startup_command
@@ -677,10 +708,10 @@ class Workspace(QWidget):
             shell=self._shell,
             font_size=self._font_size,
             scrollback=self._scrollback,
-            cwd=self._cwd,
+            cwd=cwd if cwd is not None else self._cwd,
             startup_command=startup_command,
         )
-        pane.close_requested.connect(self.close_pane)
+        pane.close_requested.connect(self._on_pane_close_requested)
         pane.expand_requested.connect(self.toggle_zoom)
         pane.activated.connect(self.set_active)
         pane.submitted.connect(self.pane_submitted)
@@ -689,7 +720,9 @@ class Workspace(QWidget):
         self._panes.append(pane)
         return pane
 
-    def add_pane(self, focus: bool = True) -> Optional[TerminalPane]:
+    def add_pane(
+        self, focus: bool = True, *, cwd: Optional[str] = None
+    ) -> Optional[TerminalPane]:
         if len(self._panes) >= self._max_panes:
             if self._max_panes < MAX_PANES:
                 self.notice.emit(
@@ -700,7 +733,7 @@ class Workspace(QWidget):
                 self.notice.emit(f"Pane limit reached ({MAX_PANES})")
             return None
 
-        pane = self._spawn_pane()
+        pane = self._spawn_pane(cwd=cwd)
         # A new pane the user cannot see is not much use, so adding one leaves
         # the expanded view.
         self._zoomed = None
@@ -710,13 +743,15 @@ class Workspace(QWidget):
         return pane
 
     def add_pane_with_command(
-        self, startup_command: str, *, focus: bool = True
+        self, startup_command: str, *, focus: bool = True, cwd: Optional[str] = None
     ) -> Optional[TerminalPane]:
         """Add a pane that auto-runs ``startup_command`` once its shell is up.
 
         Used by the conversation handoff: the new pane runs the target agent's
         resume command (or the target agent pointed at a transcript file).
-        Respects the plan's pane cap exactly like :meth:`add_pane`.
+        ``cwd`` overrides the workspace folder (e.g. to open the pane inside an
+        existing isolated worktree). Respects the plan's pane cap exactly like
+        :meth:`add_pane`.
         """
         if len(self._panes) >= self._max_panes:
             if self._max_panes < MAX_PANES:
@@ -728,18 +763,37 @@ class Workspace(QWidget):
                 self.notice.emit(f"Pane limit reached ({MAX_PANES})")
             return None
 
-        pane = self._spawn_pane(startup_command=startup_command)
+        pane = self._spawn_pane(startup_command=startup_command, cwd=cwd)
         self._zoomed = None
         self._relayout()
         if focus:
             pane.focus_terminal()
         return pane
 
-    def close_pane(self, pane: TerminalPane) -> None:
+    def _on_pane_close_requested(self, pane: TerminalPane) -> None:
+        """Route a pane's close button.
+
+        Isolated workspaces (``_intercept_pane_close``) hand the decision to the
+        panel so it can prompt about the pane's worktree first; everything else
+        closes straight away.
+        """
+        if self._intercept_pane_close and pane in self._panes:
+            self.pane_close_requested.emit(pane)
+        else:
+            self.close_pane(pane)
+
+    def close_pane(self, pane: TerminalPane, *, force: bool = False) -> None:
+        """Close a pane. ``force`` skips the worktree-close interception -- the
+        panel passes it once it has already prompted."""
         if pane not in self._panes:
             return
 
         if len(self._panes) == 1:
+            if self._intercept_pane_close and not force:
+                # Last pane of an isolated workspace: let the panel prompt about
+                # the worktree, then it re-enters via ``empty`` / force-close.
+                self.pane_close_requested.emit(pane)
+                return
             # The panel decides what closing the final pane means.
             self.empty.emit(self)
             return
@@ -763,7 +817,7 @@ class Workspace(QWidget):
     def close_active_pane(self) -> None:
         pane = self._active or (self._panes[0] if self._panes else None)
         if pane is not None:
-            self.close_pane(pane)
+            self._on_pane_close_requested(pane)
 
     # -- reordering ----------------------------------------------------------
 

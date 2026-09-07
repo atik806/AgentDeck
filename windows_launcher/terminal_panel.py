@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -54,6 +55,7 @@ from PySide6.QtWidgets import (
 )
 
 import entitlements
+import git_worktree
 import perf
 import theme
 from account import AccountController
@@ -89,6 +91,14 @@ from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported
     Workspace,
 )
 from workspace_sidebar import WorkspaceSidebar
+from worktree_panel import WorktreePanel
+from worktree_store import (
+    WorktreeStore,
+    branch_name,
+    default_worktrees_root,
+    repo_key_for,
+    worktree_dir,
+)
 import voice_commands
 import voice_postprocess
 from voice_engine import VoiceEngine
@@ -199,11 +209,18 @@ class TerminalPanel(QMainWindow):
         self._routines_active = False
         self._skills_active = False
         self._settings_active = False
+        self._worktrees_active = False
         self._routine_scheduler = RoutineScheduler()
         # Files an "Improve with agent" run is watching for the agent's edits:
         # {abs path -> (skill_id, last_sha, agent_key)}. Polled by _refresh_status.
         self._skill_watch: dict[str, tuple] = {}
         self._skills_materialized_once = False
+        # Worktree ids created for the workspace currently being built, then
+        # bound to their panes once the panes exist (see _add_workspace).
+        self._pending_worktree_ids: list[str] = []
+        # detect_repo() result cached per folder -- called on every new-workspace.
+        self._repo_info_cache: dict[str, object] = {}
+        self._last_worktree_poll = 0.0
         # Set before anything can show the window: showEvent reads it.
         self._focus_primed = False
 
@@ -257,6 +274,10 @@ class TerminalPanel(QMainWindow):
         self._watchdog.setInterval(1000)
         self._watchdog.timeout.connect(self._refresh_status)
         self._watchdog.start()
+
+        # Bring the isolated-worktree store back in step with what's on disk
+        # (a previous session may have crashed mid-cleanup).
+        self._reconcile_worktrees_on_startup()
 
     # -- initial focus ---------------------------------------------------------
     #
@@ -537,6 +558,7 @@ class TerminalPanel(QMainWindow):
         self._notes_panel.apply_theme()
         self._routines_panel.apply_theme()
         self._skills_panel.apply_theme()
+        self._worktree_panel.apply_theme()
         self._settings_panel.apply_theme()
         if getattr(self, "_trial_banner", None) is not None:
             self._trial_banner.apply_theme()
@@ -568,6 +590,7 @@ class TerminalPanel(QMainWindow):
         self._plugins_active = False
         self._routines_active = False
         self._skills_active = False
+        self._worktrees_active = False
         self._settings_active = True
         self._settings_panel.reset_to_first_page()
         self._main_stack.setCurrentWidget(self._settings_panel)
@@ -660,6 +683,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.notes_selected.connect(self._show_notes)
         self._sidebar.routines_selected.connect(self._show_routines)
         self._sidebar.skills_selected.connect(self._show_skills)
+        self._sidebar.worktrees_selected.connect(self._show_worktrees)
         self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
@@ -691,6 +715,21 @@ class TerminalPanel(QMainWindow):
         )
         self._skills_panel.improve_requested.connect(self._improve_skill_with_agent)
         self._skills_panel.changed.connect(self._on_skills_changed)
+        self._worktree_store = WorktreeStore()
+        self._worktree_panel = WorktreePanel(
+            central,
+            store=self._worktree_store,
+            config=self.config,
+            repo_provider=self._active_repo_info,
+            github_connected=lambda: bool(
+                getattr(self, "github", None) and self.github.is_connected
+            ),
+            merge_enabled=lambda: entitlements.worktrees_enabled(self._plan()),
+        )
+        self._worktree_panel.merge_requested.connect(self._merge_worktree)
+        self._worktree_panel.open_pr_requested.connect(self._open_pr_for_worktree)
+        self._worktree_panel.discard_requested.connect(self._discard_worktree)
+        self._worktree_panel.open_in_pane_requested.connect(self._open_worktree_in_pane)
         self._settings_panel = SettingsPanel(
             self.config, central,
             updater=getattr(self, "updater", None),
@@ -708,6 +747,7 @@ class TerminalPanel(QMainWindow):
         self._main_stack.addWidget(self._notes_panel)
         self._main_stack.addWidget(self._routines_panel)
         self._main_stack.addWidget(self._skills_panel)
+        self._main_stack.addWidget(self._worktree_panel)
         self._main_stack.addWidget(self._settings_panel)
 
         row.addWidget(self._sidebar)
@@ -782,11 +822,27 @@ class TerminalPanel(QMainWindow):
             )
             return
 
+        folder = self._working_folder or ""
+        pro = entitlements.worktrees_enabled(self._plan())
+        repo_ok = bool(folder) and git_worktree.git_available() and git_worktree.is_git_repo(folder)
+        allow_isolation = pro and repo_ok
+        if allow_isolation:
+            isolation_reason = ""
+        elif not pro:
+            isolation_reason = "Isolated worktrees are a Pro feature."
+        elif not git_worktree.git_available():
+            isolation_reason = "git isn't installed, so worktrees are unavailable."
+        else:
+            isolation_reason = "This workspace's folder isn't a git repository."
+
         dialog = NewWorkspaceDialog(
             default_name=self._peek_ws_name(),
             default_agent=self._last_ws_agent,
             default_custom=self._last_ws_agent_custom,
             default_count=self._default_count,
+            allow_isolation=allow_isolation,
+            isolation_reason=isolation_reason,
+            default_isolate=bool(self.config.get("worktree_isolate_default", False)),
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -801,11 +857,15 @@ class TerminalPanel(QMainWindow):
         if command and self.config.get("pretrust_agent_folder", False):
             pretrust_folder(command, self._working_folder)
 
+        isolate = bool(picked.get("isolate_panes"))
+        if isolate:
+            self.config["worktree_isolate_default"] = True
         name = (picked.get("name") or "").strip() or None
         self._add_workspace(
             name=name,
             pane_count=int(picked.get("count", self._default_count)),
             startup_command=command or None,
+            isolate_panes=isolate,
         )
 
     def _add_workspace(
@@ -814,6 +874,7 @@ class TerminalPanel(QMainWindow):
         pane_count: Optional[int] = None,
         *,
         startup_command: Optional[str] = None,
+        isolate_panes: bool = False,
     ) -> Workspace:
         accent = _WS_ACCENTS[len(self._workspaces) % len(_WS_ACCENTS)]
         # Wire the connected plugins' MCP servers into the agents' configs *before*
@@ -830,6 +891,18 @@ class TerminalPanel(QMainWindow):
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
+        count = pane_count if pane_count is not None else self._default_count
+
+        # Isolated workspace: give each pane its own git worktree so several
+        # agents can work the same repo without colliding. Falls back to a plain
+        # shared-folder workspace on any failure.
+        pane_cwds: Optional[list[str]] = None
+        self._pending_worktree_ids = []
+        if isolate_panes and entitlements.worktrees_enabled(self._plan()):
+            pane_cwds = self._create_worktrees_for_workspace(
+                name or auto, count, startup_command
+            )
+
         workspace = Workspace(
             name or auto,
             accent,
@@ -846,9 +919,16 @@ class TerminalPanel(QMainWindow):
         )
         # Lay the panes out before wiring `changed`, so the initial relayout does
         # not fire a sidebar refresh for a workspace not yet in the list.
-        workspace.initialize(
-            pane_count if pane_count is not None else self._default_count
-        )
+        workspace.initialize(count, pane_cwds=pane_cwds)
+
+        if pane_cwds and self._pending_worktree_ids:
+            for pane, wid in zip(workspace.panes, self._pending_worktree_ids):
+                self._worktree_store.update(wid, pane_id=pane.pane_id)
+            workspace._intercept_pane_close = True
+            workspace.pane_close_requested.connect(self._prompt_pane_worktree_close)
+            self._worktree_panel.reload()
+        self._pending_worktree_ids = []
+
         workspace.changed.connect(self._on_workspace_changed)
         workspace.active_pane_changed.connect(lambda _pane: self._refresh_status())
         workspace.empty.connect(self._on_workspace_empty)
@@ -862,6 +942,400 @@ class TerminalPanel(QMainWindow):
         self._ws_stack.addWidget(workspace)
         self._select_workspace(workspace)
         return workspace
+
+    # -- worktrees ------------------------------------------------------------
+
+    def _active_repo_info(self):
+        """``git_worktree.RepoInfo`` for the working folder, or ``None``.
+
+        Cached per folder -- the Worktrees panel calls this on every redraw.
+        """
+        folder = self._working_folder or ""
+        if not folder:
+            return None
+        if folder in self._repo_info_cache:
+            return self._repo_info_cache[folder]
+        try:
+            info = git_worktree.detect_repo(folder)
+        except git_worktree.GitError:
+            info = None
+        self._repo_info_cache[folder] = info
+        return info
+
+    def _create_worktrees_for_workspace(
+        self, ws_name: str, count: int, startup_command: Optional[str]
+    ) -> Optional[list[str]]:
+        """Create one git worktree per pane. Returns the pane cwds, or ``None``
+        (and opens the workspace shared-folder) on any failure."""
+        info = self._active_repo_info()
+        if info is None:
+            self.statusBar().showMessage(
+                "Folder isn't a git repository — opening without isolation", 5000
+            )
+            return None
+
+        base = info.default_base or info.current_branch
+        if not base:
+            self.statusBar().showMessage(
+                "Repo has no mainline branch yet — opening without isolation", 5000
+            )
+            return None
+
+        agent_key = ""
+        try:
+            import agents
+
+            agent_key = agents.agent_key_for_command(startup_command or "") or ""
+        except Exception:  # noqa: BLE001
+            agent_key = ""
+
+        progress = QProgressDialog(
+            f"Creating {count} isolated worktree(s)…", None, 0, count, self
+        )
+        progress.setWindowTitle("New workspace")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+
+        cwds: list[str] = []
+        created_ids: list[str] = []
+        root = default_worktrees_root()
+        repo_key = repo_key_for(info.toplevel)
+        try:
+            for i in range(count):
+                progress.setValue(i)
+                QApplication.processEvents()
+                branch = branch_name(ws_name, i)
+                dest = str(worktree_dir(root, repo_key, branch))
+                st = git_worktree.add_worktree(
+                    info, worktree_path=dest, branch=branch, base=base
+                )
+                rec = self._worktree_store.create(
+                    repo_root=info.toplevel,
+                    repo_key=repo_key,
+                    branch=st.branch,
+                    path=dest,
+                    base_branch=base,
+                    base_sha_at_create=st.base_sha,
+                    workspace_name=ws_name,
+                    agent_key=agent_key,
+                    status="active",
+                )
+                created_ids.append(rec.id)
+                cwds.append(dest)
+            progress.setValue(count)
+        except git_worktree.GitError as exc:
+            progress.close()
+            # Roll back whatever we made this call.
+            for wid in created_ids:
+                rec = self._worktree_store.get(wid)
+                if rec is not None:
+                    try:
+                        git_worktree.remove_worktree(info, rec.path, force=True)
+                        git_worktree.delete_branch(info, rec.branch)
+                    except git_worktree.GitError:
+                        pass
+                    self._worktree_store.delete(wid)
+            self.statusBar().showMessage(
+                f"Couldn't create worktrees ({exc}) — opening without isolation", 7000
+            )
+            return None
+
+        self._pending_worktree_ids = created_ids
+        return cwds
+
+    def _prompt_pane_worktree_close(self, pane: TerminalPane) -> None:
+        """A pane owning an isolated worktree is being closed -- ask what to do
+        with its branch first, then close the pane."""
+        ws = next((w for w in self._workspaces if pane in w.panes), None)
+        rec = self._worktree_store.by_pane(pane.pane_id)
+        if ws is None:
+            return
+        if rec is None:
+            ws.close_pane(pane, force=True)
+            return
+
+        info = self._active_repo_info()
+        box = QMessageBox(self)
+        box.setWindowTitle("Close terminal")
+        box.setIcon(QMessageBox.Question)
+        box.setText(
+            f"This terminal has its own worktree on branch\n“{rec.short_branch}”."
+        )
+        box.setInformativeText("What should happen to it?")
+        merge_btn = None
+        if entitlements.worktrees_enabled(self._plan()) and info is not None:
+            merge_btn = box.addButton(
+                f"Merge to {rec.base_branch}", QMessageBox.AcceptRole
+            )
+        keep_btn = box.addButton("Keep branch", QMessageBox.ActionRole)
+        discard_btn = box.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(keep_btn)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is cancel_btn:
+            return
+        if clicked is merge_btn:
+            if not self._run_merge(rec.id):
+                return  # merge failed / conflicted -- keep the pane open to fix it
+            ws.close_pane(pane, force=True)
+            self._worktree_store.update(rec.id, pane_id="")
+            self._worktree_panel.reload()
+            return
+        if clicked is discard_btn:
+            ws.close_pane(pane, force=True)  # kill the shell (releases the cwd) first
+            self._remove_worktree_dir(rec.id)
+            return
+
+        # Keep: detach the record from the pane, leave branch + dir on disk.
+        ws.close_pane(pane, force=True)
+        self._worktree_store.update(rec.id, pane_id="", status="detached")
+        self._worktree_panel.reload()
+
+    def _remove_worktree_dir(self, wid: str) -> None:
+        rec = self._worktree_store.get(wid)
+        if rec is None:
+            return
+        info = self._active_repo_info()
+        try:
+            if info is not None:
+                git_worktree.remove_worktree(info, rec.path, force=True)
+                git_worktree.delete_branch(info, rec.branch)
+            self._worktree_store.set_status(wid, "discarded")
+        except OSError:
+            self._worktree_store.set_status(wid, "pending_delete")
+            self.statusBar().showMessage(
+                "Worktree folder is locked — it'll be cleaned up on next launch", 6000
+            )
+        except git_worktree.GitError as exc:
+            self.statusBar().showMessage(f"Couldn't remove worktree: {exc}", 6000)
+        self._worktree_panel.reload()
+
+    def _discard_worktree(self, wid: str) -> None:
+        rec = self._worktree_store.get(wid)
+        if rec is None:
+            return
+        if QMessageBox.question(
+            self, "Discard worktree",
+            f"Delete the worktree and branch “{rec.short_branch}”?\n"
+            "Any uncommitted work in it is lost.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        # A pane may still be sitting in it.
+        for ws in self._workspaces:
+            for pane in list(ws.panes):
+                if pane.pane_id == rec.pane_id:
+                    ws.close_pane(pane, force=True)
+        self._remove_worktree_dir(wid)
+
+    def _open_worktree_in_pane(self, wid: str) -> None:
+        rec = self._worktree_store.get(wid)
+        if rec is None or not rec.dir_exists:
+            self.statusBar().showMessage("That worktree folder is gone", 4000)
+            return
+        ws = self._active_ws or (self._workspaces[0] if self._workspaces else None)
+        if ws is None:
+            return
+        self._leave_worktrees()
+        command = self._startup_command or None
+        if command:
+            pane = ws.add_pane_with_command(command, cwd=rec.path)
+        else:
+            pane = ws.add_pane(cwd=rec.path)
+        if pane is not None:
+            self._worktree_store.update(rec.id, pane_id=pane.pane_id, status="active")
+            ws._intercept_pane_close = True
+            try:
+                ws.pane_close_requested.disconnect(self._prompt_pane_worktree_close)
+            except (RuntimeError, TypeError):
+                pass
+            ws.pane_close_requested.connect(self._prompt_pane_worktree_close)
+
+    def _run_merge(self, wid: str) -> bool:
+        """Merge a worktree's branch to its base. Returns True on success."""
+        rec = self._worktree_store.get(wid)
+        info = self._active_repo_info()
+        if rec is None or info is None:
+            return False
+        if not entitlements.worktrees_enabled(self._plan()):
+            self._prompt_upgrade(
+                "Merging worktrees",
+                "Reviewing an isolated worktree's diff is free; merging it back "
+                "or opening a PR is a Pro feature.",
+            )
+            return False
+        dirty, files = git_worktree.is_dirty(rec.path)
+        if dirty:
+            if QMessageBox.question(
+                self, "Uncommitted changes",
+                f"“{rec.short_branch}” has {len(files)} uncommitted change(s). "
+                "Commit them all and merge?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            ) != QMessageBox.Yes:
+                return False
+            try:
+                git_worktree.commit_all(rec.path, f"WIP on {rec.short_branch} (AgentDeck)")
+            except git_worktree.GitError as exc:
+                QMessageBox.warning(self, "Commit failed", str(exc))
+                return False
+        try:
+            result = git_worktree.merge_to_base(
+                info, branch=rec.branch, base=rec.base_branch,
+                scratch_root=str(default_worktrees_root() / repo_key_for(info.toplevel)),
+            )
+        except git_worktree.WorktreeConflict as exc:
+            QMessageBox.warning(
+                self, "Merge conflict",
+                "The merge hit conflicts in:\n\n"
+                + "\n".join(f"  • {p}" for p in exc.conflicts[:12])
+                + "\n\nNothing was merged. Open the worktree in a pane to resolve it.",
+            )
+            self._worktree_store.update(rec.id, last_merge_status="conflict")
+            self._worktree_panel.reload()
+            return False
+        except git_worktree.GitError as exc:
+            QMessageBox.warning(self, "Merge failed", str(exc))
+            return False
+
+        self._worktree_store.update(
+            rec.id, status="merged",
+            last_merge_status="fast-forward" if result.fast_forward else "merge commit",
+        )
+        self._repo_info_cache.pop(self._working_folder or "", None)
+        self._worktree_panel.reload()
+        self.statusBar().showMessage(
+            f"Merged {rec.short_branch} into {rec.base_branch} "
+            f"({'fast-forward' if result.fast_forward else 'merge commit'})", 6000
+        )
+        if getattr(self, "github", None) is not None:
+            try:
+                self.github.log_run("worktree.merged", rec.branch)
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+
+    def _merge_worktree(self, wid: str) -> None:
+        if self._run_merge(wid):
+            rec = self._worktree_store.get(wid)
+            if rec is not None and QMessageBox.question(
+                self, "Remove worktree",
+                f"Merged. Remove the worktree folder and branch “{rec.short_branch}” now?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            ) == QMessageBox.Yes:
+                self._remove_worktree_dir(wid)
+
+    def _open_pr_for_worktree(self, wid: str) -> None:
+        rec = self._worktree_store.get(wid)
+        info = self._active_repo_info()
+        if rec is None or info is None:
+            return
+        if rec.pr_url:
+            QDesktopServices.openUrl(QUrl(rec.pr_url))
+            return
+        gh = getattr(self, "github", None)
+        if gh is None or not gh.is_connected or not info.remote_slug:
+            self.statusBar().showMessage(
+                "Connect GitHub in Plugins and add an origin remote first", 5000
+            )
+            return
+        if not entitlements.worktrees_enabled(self._plan()):
+            self._prompt_upgrade("Opening a PR from a worktree",
+                                 "Opening a PR from an isolated worktree is a Pro feature.")
+            return
+        dirty, _ = git_worktree.is_dirty(rec.path)
+        if dirty:
+            try:
+                git_worktree.commit_all(rec.path, f"WIP on {rec.short_branch} (AgentDeck)")
+            except git_worktree.GitError as exc:
+                QMessageBox.warning(self, "Commit failed", str(exc))
+                return
+        try:
+            git_worktree.push_branch(rec.path, branch=rec.branch)
+        except git_worktree.GitError as exc:
+            QMessageBox.warning(self, "Push failed", str(exc))
+            return
+        title = f"{rec.workspace_name or rec.short_branch}"
+        try:
+            pr = gh.create_pull_request(
+                info.remote_slug, head=rec.branch, base=rec.base_branch,
+                title=title, body="Opened from an AgentDeck isolated worktree.",
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any API error
+            QMessageBox.warning(self, "Couldn't open PR", str(exc))
+            return
+        url = (pr or {}).get("html_url", "")
+        if url:
+            self._worktree_store.update(rec.id, pr_url=url)
+            self._worktree_panel.reload()
+            QDesktopServices.openUrl(QUrl(url))
+            self.statusBar().showMessage(f"PR opened: {url}", 8000)
+
+    def _show_worktrees(self) -> None:
+        """Swap the terminal area for the WORKTREES review panel."""
+        self._notes_panel.flush()
+        self._routines_panel.flush()
+        self._skills_panel.flush()
+        self._notes_active = False
+        self._plugins_active = False
+        self._routines_active = False
+        self._skills_active = False
+        self._settings_active = False
+        self._worktrees_active = True
+        self._worktree_panel.reload()
+        self._main_stack.setCurrentWidget(self._worktree_panel)
+        self._hide_voice_overlay()
+        self._refresh_sidebar()
+
+    def _leave_worktrees(self) -> None:
+        """Back to the workspaces view. No-op when already there."""
+        if not self._worktrees_active:
+            return
+        self._worktrees_active = False
+        self._main_stack.setCurrentWidget(self._ws_stack)
+        self._restore_voice_overlay()
+
+    def _reconcile_worktrees_on_startup(self) -> None:
+        """Bring the worktree store back in step with what's on disk.
+
+        Marks vanished worktrees orphaned, adopts strays, sweeps rows whose
+        deletion failed last time. Skips entirely without git.
+        """
+        store = getattr(self, "_worktree_store", None)
+        if store is None or not git_worktree.git_available():
+            return
+        live: dict[str, list] = {}
+        for root in store.repo_roots():
+            try:
+                live[root] = git_worktree.list_worktrees(root)
+            except git_worktree.GitError:
+                live[root] = []
+        try:
+            changed = store.reconcile(live)
+        except Exception:  # noqa: BLE001 - reconcile is best-effort
+            changed = []
+
+        for rec in store.with_status("pending_delete"):
+            info = None
+            try:
+                info = git_worktree.detect_repo(rec.repo_root)
+            except git_worktree.GitError:
+                info = None
+            try:
+                if info is not None:
+                    git_worktree.remove_worktree(info, rec.path, force=True)
+                    git_worktree.delete_branch(info, rec.branch)
+                store.delete(rec.id)
+            except (OSError, git_worktree.GitError):
+                pass
+
+        if changed:
+            n = len(changed)
+            self.statusBar().showMessage(
+                f"{n} isolated worktree(s) need attention — see Worktrees", 8000
+            )
 
     def _wire_github_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
         """Best-effort: add the GitHub MCP server to every installed agent's config.
@@ -1348,6 +1822,7 @@ class TerminalPanel(QMainWindow):
         self._routines_active = False
         self._skills_active = False
         self._settings_active = False
+        self._worktrees_active = False
         self._plugins_active = True
         self._main_stack.setCurrentWidget(self._plugins_panel)
         self._hide_voice_overlay()
@@ -1369,6 +1844,7 @@ class TerminalPanel(QMainWindow):
         self._routines_active = False
         self._skills_active = False
         self._settings_active = False
+        self._worktrees_active = False
         self._notes_active = True
         self._notes_panel.reload()
         self._main_stack.setCurrentWidget(self._notes_panel)
@@ -1404,6 +1880,7 @@ class TerminalPanel(QMainWindow):
         self._notes_active = False
         self._skills_active = False
         self._settings_active = False
+        self._worktrees_active = False
         self._routines_active = True
         self._routines_panel.reload()
         self._main_stack.setCurrentWidget(self._routines_panel)
@@ -1442,6 +1919,7 @@ class TerminalPanel(QMainWindow):
         self._notes_active = False
         self._routines_active = False
         self._settings_active = False
+        self._worktrees_active = False
         self._skills_active = True
         self._skills_panel.reload()
         self._main_stack.setCurrentWidget(self._skills_panel)
@@ -1652,6 +2130,7 @@ class TerminalPanel(QMainWindow):
         self._leave_notes()
         self._leave_routines()
         self._leave_skills()
+        self._leave_worktrees()
         self._leave_settings()
         self._active_ws = workspace
         self._ws_stack.setCurrentWidget(workspace)
@@ -1745,7 +2224,8 @@ class TerminalPanel(QMainWindow):
     def _refresh_sidebar(self) -> None:
         on_nav_view = (
             self._plugins_active or self._notes_active
-            or self._routines_active or self._skills_active or self._settings_active
+            or self._routines_active or self._skills_active
+            or self._settings_active or self._worktrees_active
         )
         active = None if on_nav_view else self._active_ws
         self._sidebar.refresh(self._workspaces, active)
@@ -1753,6 +2233,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.set_notes_active(self._notes_active)
         self._sidebar.set_routines_active(self._routines_active)
         self._sidebar.set_skills_active(self._skills_active)
+        self._sidebar.set_worktrees_active(self._worktrees_active)
 
     def _toggle_sidebar(self, show: Optional[bool] = None) -> None:
         if show is None:
@@ -2191,6 +2672,14 @@ class TerminalPanel(QMainWindow):
         # Light the sidebar's glow dot on any workspace with an agent working.
         self._sidebar.refresh_activity()
 
+        # Keep the open Worktrees panel roughly current -- but throttled, since a
+        # refresh shells out to git for every row.
+        if self._worktrees_active:
+            now = time.monotonic()
+            if now - self._last_worktree_poll >= 4.0:
+                self._last_worktree_poll = now
+                self._worktree_panel.refresh_status()
+
         workspace = self._active_ws
         if workspace is None:
             self._status_label.setText("")
@@ -2251,7 +2740,7 @@ class TerminalPanel(QMainWindow):
 
     def _close_pane(self, pane: TerminalPane) -> None:
         if self._active_ws is not None:
-            self._active_ws.close_pane(pane)
+            self._active_ws._on_pane_close_requested(pane)
 
     def _toggle_zoom(self, pane: TerminalPane) -> None:
         if self._active_ws is not None:

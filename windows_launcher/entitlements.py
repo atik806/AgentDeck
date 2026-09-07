@@ -46,6 +46,7 @@ __all__ = [
     "handoff_enabled",
     "routines_enabled",
     "skills_enabled",
+    "worktrees_enabled",
     "upgrade_hint",
 ]
 
@@ -259,6 +260,19 @@ def skills_enabled(plan: str | None) -> bool:
     materialized into the agents' config (quietly) if the plan later lapses.
     Cross-device sync of the library additionally rides on
     :func:`cloud_sync_enabled` (also Pro).
+    """
+    return is_pro(plan)
+
+
+def worktrees_enabled(plan: str | None) -> bool:
+    """Isolated git worktree per pane + the Review/Merge panel -- Pro only.
+
+    Same tier as :func:`handoff_enabled` / :func:`routines_enabled`. The
+    Worktrees nav item and the "Isolate each pane" checkbox stay visible for
+    Free (discoverability); the action is gated with the standard
+    :func:`upgrade_hint`. A workspace opened isolated while Pro keeps its
+    worktrees if the plan later lapses -- Merge / Open PR just stop being
+    offered, and cleanup still runs.
     """
     return is_pro(plan)
 
