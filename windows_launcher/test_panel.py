@@ -987,6 +987,83 @@ def _():
 
 @step
 def _():
+    print("== 32. skills: Pro gate, materialize, improve-with-agent re-import ==")
+    import tempfile
+    import terminal_panel as tpmod
+    from skills_store import SkillsStore
+    p2 = state["panel2"]
+
+    # Sandbox every skills path so the test never writes into the repo / the
+    # real ~/.claude / the real %APPDATA%.
+    box = tempfile.mkdtemp(prefix="adk-skills-test-")
+    os.environ["ADK_AGENT_HOME_DIR"] = os.path.join(box, "home")
+    os.environ["ADK_SKILLS_DIR"] = os.path.join(box, "work")
+    os.environ["ADK_SKILLS_STATE"] = os.path.join(box, "state.json")
+    sbox_store = SkillsStore(path=os.path.join(box, "skills.json"))
+    p2._skills_store = sbox_store
+    p2._skills_panel._store = sbox_store
+    p2._working_folder = os.path.join(box, "proj")
+    os.makedirs(p2._working_folder, exist_ok=True)
+
+    # Free plan -> the nav click is gated, no view switch.
+    hits = []
+    real_upsell = p2._prompt_upgrade
+    p2._prompt_upgrade = lambda *a, **k: hits.append(a)
+    p2.account._plan = "free"
+    p2._show_skills()
+    check("Free plan shows the skills upsell", bool(hits), True)
+    check("Free plan did not open the skills view", p2._skills_active, False)
+    p2._prompt_upgrade = real_upsell
+    p2.account._plan = "pro"
+
+    # Pro -> the view opens and lists a skill we add.
+    sk = p2._skills_store.create(
+        "Panel Test Skill", "use when testing the panel", "step 1\nstep 2",
+        enabled=True,
+    )
+    p2._show_skills()
+    check("Pro opens the skills view", p2._skills_active, True)
+    check("skills panel lists the new skill", p2._skills_panel._list.count(), 1)
+
+    # Improve with agent: route the review file into a temp path we control,
+    # spawn a pane, and confirm a watch was registered.
+    review_file = os.path.join(tempfile.mkdtemp(prefix="adk-skill-"), "SKILL.md")
+    state["_real_art"] = tpmod.skills_sync.agent_review_target
+    tpmod.skills_sync.agent_review_target = lambda skill, folder, key: __import__(
+        "pathlib"
+    ).Path(review_file)
+    state["_real_ikeys"] = tpmod.installed_agent_keys
+    state["_real_resolve2"] = tpmod.resolve_agent
+    tpmod.installed_agent_keys = lambda: ["claude"]
+    tpmod.resolve_agent = lambda key, custom="": "claude" if key == "claude" else ""
+    p2.config["skills_improve_agent"] = "claude"
+
+    before = p2._active_ws.pane_count if p2._active_ws else 0
+    p2._improve_skill_with_agent(sk.id)
+    check("improve-with-agent spawned a review pane",
+          (p2._active_ws.pane_count if p2._active_ws else 0), before + 1)
+    check("a watch was registered for the review file",
+          str(__import__("pathlib").Path(review_file)) in p2._skill_watch, True)
+
+    # The agent rewrites the file -> the watchdog re-imports it.
+    with open(review_file, "w", encoding="utf-8") as fh:
+        fh.write("---\nname: Panel Test Skill\ndescription: sharper description\n---\n"
+                 "rewritten body from the agent\n")
+    p2._check_skill_watches()
+    updated = p2._skills_store.get(sk.id)
+    check("agent's edit re-imported into the store",
+          updated.body.strip(), "rewritten body from the agent")
+    check("re-import marks the source as agent", updated.source, "agent")
+    check("re-import records the reviewer", bool(updated.last_reviewed_by), True)
+
+    tpmod.skills_sync.agent_review_target = state["_real_art"]
+    tpmod.installed_agent_keys = state["_real_ikeys"]
+    tpmod.resolve_agent = state["_real_resolve2"]
+    p2._select_workspace(p2._workspaces[0])
+
+
+@step
+def _():
     import agent_sessions
     p2 = state["panel2"]
     agent_sessions.locate_latest = state["_real_locate"]

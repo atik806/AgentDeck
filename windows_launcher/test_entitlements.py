@@ -52,6 +52,8 @@ check("conversation handoff: pro only",
       e.handoff_enabled("pro") and not e.handoff_enabled("free"))
 check("routines: pro only",
       e.routines_enabled("pro") and not e.routines_enabled("free"))
+check("skills: pro only",
+      e.skills_enabled("pro") and not e.skills_enabled("free"))
 
 print("[4] upgrade hint carries the pricing URL")
 check("hint mentions the feature", "Voice" in e.upgrade_hint("Voice"))

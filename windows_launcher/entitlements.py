@@ -45,6 +45,7 @@ __all__ = [
     "github_automation_enabled",
     "handoff_enabled",
     "routines_enabled",
+    "skills_enabled",
     "upgrade_hint",
 ]
 
@@ -243,6 +244,21 @@ def routines_enabled(plan: str | None) -> bool:
     (discoverability); creating/editing is gated with the standard
     :func:`upgrade_hint`, and a routine created while Pro simply stops firing
     (quietly, no popup from a background timer) if the plan later lapses.
+    """
+    return is_pro(plan)
+
+
+def skills_enabled(plan: str | None) -> bool:
+    """Uploading / creating / enabling a skill (a reusable agent instruction
+    doc) -- Pro only.
+
+    Same tier as :func:`routines_enabled` / :func:`plugins_enabled` /
+    :func:`handoff_enabled`. The Skills nav item stays visible for Free
+    (discoverability); creating and enabling are gated with the standard
+    :func:`upgrade_hint`, and a skill enabled while Pro simply stops being
+    materialized into the agents' config (quietly) if the plan later lapses.
+    Cross-device sync of the library additionally rides on
+    :func:`cloud_sync_enabled` (also Pro).
     """
     return is_pro(plan)
 

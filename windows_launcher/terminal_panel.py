@@ -11,7 +11,9 @@ test suite reach for are kept as thin proxies onto the active workspace.
 
 from __future__ import annotations
 
+import hashlib
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -61,7 +63,7 @@ from jira_controller import JiraController
 from gitlab_controller import GitLabController
 from linear_controller import LinearController
 from account_dialog import AccountDialog
-from agents import pretrust_folder, resolve_agent
+from agents import agent_label, installed_agent_keys, pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
 from new_workspace_dialog import NewWorkspaceDialog
 from notes_panel import NotesPanel
@@ -69,6 +71,9 @@ from plugins_panel import PluginsPanel
 from routine_scheduler import RoutineScheduler
 from routines_panel import RoutinesPanel
 from routines_store import RoutinesStore
+from skills_panel import SkillsPanel
+from skills_store import SkillsStore
+import skills_sync
 from settings_dialog import SettingsPanel
 from config import save_config
 from pty_backend import DEFAULT_SHELL, available_shells
@@ -104,6 +109,14 @@ _WS_ACCENTS = ["#89b4fa", "#a6e3a1", "#cba6f7", "#fab387", "#f5c2e7", "#94e2d5"]
 #: Gap kept between the voice overlay and the terminal-area edges when it is
 #: auto-placed or clamped back into view.
 _OVERLAY_MARGIN = 12
+
+
+def _sha_of_triple(triple) -> str:
+    """SHA-256 of a ``(name, description, body)`` skill tuple -- used to tell
+    when an "Improve with agent" run has actually changed the file on disk."""
+    name, description, body = triple
+    payload = f"{(name or '').strip()}\x00{(description or '').strip()}\x00{(body or '').strip()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class TerminalPanel(QMainWindow):
@@ -184,8 +197,13 @@ class TerminalPanel(QMainWindow):
         self._plugins_active = False
         self._notes_active = False
         self._routines_active = False
+        self._skills_active = False
         self._settings_active = False
         self._routine_scheduler = RoutineScheduler()
+        # Files an "Improve with agent" run is watching for the agent's edits:
+        # {abs path -> (skill_id, last_sha, agent_key)}. Polled by _refresh_status.
+        self._skill_watch: dict[str, tuple] = {}
+        self._skills_materialized_once = False
         # Set before anything can show the window: showEvent reads it.
         self._focus_primed = False
 
@@ -216,6 +234,7 @@ class TerminalPanel(QMainWindow):
         self._build_voice()
         self._wire_updater()
         self._wire_account()
+        self._build_skills_cloud()
 
         # Perf HUD -- off by default, toggled with Ctrl+Shift+P. Parented to
         # the window so it floats over every pane; near-free while hidden.
@@ -510,6 +529,7 @@ class TerminalPanel(QMainWindow):
         self._plugins_panel.apply_theme()
         self._notes_panel.apply_theme()
         self._routines_panel.apply_theme()
+        self._skills_panel.apply_theme()
         self._settings_panel.apply_theme()
         if getattr(self, "_trial_banner", None) is not None:
             self._trial_banner.apply_theme()
@@ -532,9 +552,11 @@ class TerminalPanel(QMainWindow):
         """
         self._notes_panel.flush()
         self._routines_panel.flush()
+        self._skills_panel.flush()
         self._notes_active = False
         self._plugins_active = False
         self._routines_active = False
+        self._skills_active = False
         self._settings_active = True
         self._settings_panel.reset_to_first_page()
         self._main_stack.setCurrentWidget(self._settings_panel)
@@ -614,6 +636,7 @@ class TerminalPanel(QMainWindow):
         self._sidebar.plugins_selected.connect(self._show_plugins)
         self._sidebar.notes_selected.connect(self._show_notes)
         self._sidebar.routines_selected.connect(self._show_routines)
+        self._sidebar.skills_selected.connect(self._show_skills)
         self._sidebar.created.connect(self._new_workspace_interactive)
         self._sidebar.closed.connect(self._close_workspace)
         self._sidebar.renamed.connect(self._rename_workspace)
@@ -639,6 +662,12 @@ class TerminalPanel(QMainWindow):
             workspaces_provider=lambda: [w.name for w in self._workspaces],
         )
         self._routines_panel.run_now.connect(self._run_routine_now)
+        self._skills_store = SkillsStore()
+        self._skills_panel = SkillsPanel(
+            central, store=self._skills_store, config=self.config,
+        )
+        self._skills_panel.improve_requested.connect(self._improve_skill_with_agent)
+        self._skills_panel.changed.connect(self._on_skills_changed)
         self._settings_panel = SettingsPanel(
             self.config, central,
             updater=getattr(self, "updater", None),
@@ -653,6 +682,7 @@ class TerminalPanel(QMainWindow):
         self._main_stack.addWidget(self._plugins_panel)
         self._main_stack.addWidget(self._notes_panel)
         self._main_stack.addWidget(self._routines_panel)
+        self._main_stack.addWidget(self._skills_panel)
         self._main_stack.addWidget(self._settings_panel)
 
         row.addWidget(self._sidebar)
@@ -1288,8 +1318,10 @@ class TerminalPanel(QMainWindow):
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""
         self._notes_panel.flush()
         self._routines_panel.flush()
+        self._skills_panel.flush()
         self._notes_active = False
         self._routines_active = False
+        self._skills_active = False
         self._settings_active = False
         self._plugins_active = True
         self._main_stack.setCurrentWidget(self._plugins_panel)
@@ -1307,8 +1339,10 @@ class TerminalPanel(QMainWindow):
     def _show_notes(self) -> None:
         """Swap the terminal area for the NOTES panel (sidebar nav strip)."""
         self._routines_panel.flush()
+        self._skills_panel.flush()
         self._plugins_active = False
         self._routines_active = False
+        self._skills_active = False
         self._settings_active = False
         self._notes_active = True
         self._notes_panel.reload()
@@ -1340,8 +1374,10 @@ class TerminalPanel(QMainWindow):
             )
             return
         self._notes_panel.flush()
+        self._skills_panel.flush()
         self._plugins_active = False
         self._notes_active = False
+        self._skills_active = False
         self._settings_active = False
         self._routines_active = True
         self._routines_panel.reload()
@@ -1357,6 +1393,206 @@ class TerminalPanel(QMainWindow):
         self._routines_panel.flush()
         self._main_stack.setCurrentWidget(self._ws_stack)
         self._restore_voice_overlay()
+
+    # -- skills ---------------------------------------------------------
+
+    def _show_skills(self) -> None:
+        """Swap the terminal area for the SKILLS panel (sidebar nav strip).
+
+        Pro-gated (same tier as Routines / Plugins / Handoff) -- the nav button
+        stays visible for discoverability, the click is gated. See
+        :func:`entitlements.skills_enabled`.
+        """
+        if not entitlements.skills_enabled(self._plan()):
+            self._prompt_upgrade(
+                "Skills",
+                "Upload reusable SKILL.md instructions, wire them into every "
+                "agent, and let an agent review and improve them — on AgentDeck "
+                "Pro. Your library syncs across your devices.",
+            )
+            return
+        self._notes_panel.flush()
+        self._routines_panel.flush()
+        self._plugins_active = False
+        self._notes_active = False
+        self._routines_active = False
+        self._settings_active = False
+        self._skills_active = True
+        self._skills_panel.reload()
+        self._main_stack.setCurrentWidget(self._skills_panel)
+        self._hide_voice_overlay()
+        self._refresh_sidebar()
+
+    def _leave_skills(self) -> None:
+        """Back to the workspaces view. No-op when already there."""
+        if not self._skills_active:
+            return
+        self._skills_active = False
+        self._skills_panel.flush()
+        self._main_stack.setCurrentWidget(self._ws_stack)
+        self._restore_voice_overlay()
+
+    def _build_skills_cloud(self) -> None:
+        """The cross-device mirror for the skill library (Pro; best-effort)."""
+        try:
+            from skills_cloud import SkillsCloud
+
+            self._skills_cloud = SkillsCloud(
+                self.account, self.config, self._skills_store, self
+            )
+            self._skills_cloud.pulled.connect(self._on_skills_pulled)
+        except Exception:  # noqa: BLE001 - the mirror is optional
+            self._skills_cloud = None
+
+    def _on_skills_pulled(self) -> None:
+        """A cloud pull changed the local library -- reflect it everywhere."""
+        if getattr(self, "_skills_panel", None) is not None:
+            self._skills_panel.reload()
+        self._materialize_skills()
+
+    def _skill_folders(self) -> "list[str]":
+        """Workspace folders to wire the AGENTS.md skill fallback into. Every
+        workspace opens in the working folder, so that's the one that matters."""
+        src = (self._working_folder or "").strip()
+        return [src] if src and Path(src).is_dir() else []
+
+    def _materialize_skills(self) -> None:
+        """Put enabled skills where agents will find them (or, if the plan is
+        not Pro, take them all back out). Best-effort, never raises."""
+        try:
+            if not entitlements.skills_enabled(self._plan()):
+                if self._skills_materialized_once:
+                    skills_sync.remove_all()
+                    self._skills_materialized_once = False
+                return
+            skills = self._skills_store.all()
+            if not skills and not self._skills_materialized_once:
+                return  # nothing to write yet -- don't create empty dirs
+            self._skills_materialized_once = True
+            skills_sync.materialize(
+                skills,
+                folders=self._skill_folders(),
+                write_agents_md=bool(self.config.get("skills_materialize_agents_md", True)),
+            )
+        except Exception:  # noqa: BLE001 - materialization is a convenience
+            pass
+
+    def _on_skills_changed(self) -> None:
+        self._materialize_skills()
+        cloud = getattr(self, "_skills_cloud", None)
+        if cloud is not None:
+            cloud.push_soon()
+
+    def _improve_skill_with_agent(self, skill_id: str) -> None:
+        """"Improve with agent": open a pane where an agent reviews the skill's
+        file and rewrites it in place; watch that file and re-import its edits."""
+        if not entitlements.skills_enabled(self._plan()):
+            return
+        import agent_sessions
+
+        skill = self._skills_store.get(skill_id)
+        if skill is None:
+            return
+        agent_key = str(self.config.get("skills_improve_agent") or "").strip()
+        keys = installed_agent_keys()
+        if agent_key not in keys:
+            if not keys:
+                self.statusBar().showMessage(
+                    "Improve with agent needs a coding agent installed", 5000
+                )
+                return
+            agent_key = keys[0]
+        command = resolve_agent(agent_key, "")
+        if not command:
+            self.statusBar().showMessage(
+                f"{agent_label(agent_key)} isn't installed", 5000
+            )
+            return
+
+        folder = self._working_folder or None
+        if command and self.config.get("pretrust_agent_folder", False):
+            pretrust_folder(command, self._working_folder)
+        self._wire_github_for(folder, command)
+        self._wire_vercel_for(folder, command)
+        self._wire_jira_for(folder, command)
+        self._wire_gitlab_for(folder, command)
+        self._wire_linear_for(folder, command)
+
+        target = skills_sync.agent_review_target(skill, folder, agent_key)
+        prompt = (
+            f"Review the skill file at {target}. Check it against Claude Code "
+            "SKILL.md guidance: a precise `description` that says exactly when to "
+            "use the skill, tight imperative instructions, no redundancy, and "
+            "valid `name`/`description` frontmatter. Edit the file in place with "
+            "your improvements, then give me a 2-3 line summary of what you "
+            "changed."
+        )
+        launch = command
+        baked = agent_sessions.initial_prompt_command(agent_key, command, prompt)
+        if baked and len(baked) <= 6000:
+            launch = baked
+
+        self._leave_skills()
+        ws = self._active_ws or (self._workspaces[0] if self._workspaces else None)
+        if ws is None:
+            self.statusBar().showMessage("No workspace to run the review in", 5000)
+            return
+        pane = ws.add_pane_with_command(launch)
+        if pane is None:
+            self.statusBar().showMessage("No pane available for the review", 5000)
+            return
+        parsed = skills_sync.read_markdown_skill(target)
+        cur_sha = _sha_of_triple(
+            parsed if parsed else (skill.name, skill.description, skill.body)
+        )
+        self._skill_watch[str(target)] = (skill_id, cur_sha, agent_key)
+        if not baked:
+            QTimer.singleShot(
+                3000, lambda p=pane, ws=ws, t=prompt: (
+                    p.view.insert_and_submit(t) if p in ws.panes else None
+                )
+            )
+        self.statusBar().showMessage(
+            f"{agent_label(agent_key)} is reviewing “{skill.display_name}”", 5000
+        )
+
+    def _check_skill_watches(self) -> None:
+        """Poll every "Improve with agent" target file; re-import an agent's
+        edits into the skill library. Called from the 1 s watchdog."""
+        if not self._skill_watch:
+            return
+        for path, (skill_id, last_sha, agent_key) in list(self._skill_watch.items()):
+            parsed = skills_sync.read_markdown_skill(path)
+            if parsed is None:
+                continue
+            new_sha = _sha_of_triple(parsed)
+            if new_sha == last_sha:
+                continue
+            name, description, body = parsed
+            skill = self._skills_store.get(skill_id)
+            if skill is None:
+                self._skill_watch.pop(path, None)
+                continue
+            self._skills_store.update(
+                skill_id,
+                name=name or skill.name,
+                description=description or skill.description,
+                body=body,
+                source="agent",
+                last_reviewed_at=time.time(),
+                last_reviewed_by=agent_label(agent_key),
+            )
+            self._skill_watch[path] = (skill_id, new_sha, agent_key)
+            self._materialize_skills()
+            cloud = getattr(self, "_skills_cloud", None)
+            if cloud is not None:
+                cloud.push_soon()
+            if self._skills_active:
+                self._skills_panel.reload_current_from_store()
+            self.statusBar().showMessage(
+                f"Skill “{name or skill.display_name}” updated by "
+                f"{agent_label(agent_key)}", 6000
+            )
 
     def _send_note_to_terminal(self, text: str) -> None:
         """Leave the Notes view and drop a note's body at the active pane's
@@ -1390,6 +1626,7 @@ class TerminalPanel(QMainWindow):
         self._leave_plugins()
         self._leave_notes()
         self._leave_routines()
+        self._leave_skills()
         self._leave_settings()
         self._active_ws = workspace
         self._ws_stack.setCurrentWidget(workspace)
@@ -1483,13 +1720,14 @@ class TerminalPanel(QMainWindow):
     def _refresh_sidebar(self) -> None:
         on_nav_view = (
             self._plugins_active or self._notes_active
-            or self._routines_active or self._settings_active
+            or self._routines_active or self._skills_active or self._settings_active
         )
         active = None if on_nav_view else self._active_ws
         self._sidebar.refresh(self._workspaces, active)
         self._sidebar.set_plugins_active(self._plugins_active)
         self._sidebar.set_notes_active(self._notes_active)
         self._sidebar.set_routines_active(self._routines_active)
+        self._sidebar.set_skills_active(self._skills_active)
 
     def _toggle_sidebar(self, show: Optional[bool] = None) -> None:
         if show is None:
@@ -1919,6 +2157,8 @@ class TerminalPanel(QMainWindow):
     def _refresh_status(self) -> None:
         for routine in self._routine_scheduler.due(self._routines_store.all()):
             self._run_routine(routine)
+
+        self._check_skill_watches()
 
         for workspace in self._workspaces:
             workspace.poll()
@@ -2489,6 +2729,13 @@ class TerminalPanel(QMainWindow):
             ):
                 engine.prewarm()
 
+        # Skills: materialize the library into the agents' configs now that we
+        # know the plan (or, on a lapse to Free, take them all back out).
+        self._materialize_skills()
+        cloud = getattr(self, "_skills_cloud", None)
+        if cloud is not None and pro:
+            cloud.pull_soon()
+
         # Re-arm the "expire at plan_expires_at" timer for whatever we now know.
         self._arm_plan_expiry_timer()
         # ... and the trial gate + its warning surfaces.
@@ -2624,6 +2871,10 @@ class TerminalPanel(QMainWindow):
             self._notes_panel.flush()
         if getattr(self, "_routines_panel", None) is not None:
             self._routines_panel.flush()
+        if getattr(self, "_skills_panel", None) is not None:
+            self._skills_panel.flush()
+        if getattr(self, "_skills_cloud", None) is not None:
+            self._skills_cloud.shutdown()
         if getattr(self, "_plan_watch", None) is not None:
             self._plan_watch.stop()
         if getattr(self, "_plan_expiry_timer", None) is not None:
