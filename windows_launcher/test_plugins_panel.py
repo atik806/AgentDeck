@@ -426,6 +426,188 @@ check("Free plan labels Connect (Pro) and disables it",
       and not jp_free._jira_detail._primary.isEnabled())
 
 
+# ---------------------------------------------------------------------------
+print("[7] GitLab card + detail (thin plugin, same shape as Vercel)")
+
+from plugin_store import GITLAB
+
+
+class FakeGitLab(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+
+    def __init__(self, connected=False):
+        super().__init__()
+        self._connected = connected
+        self.is_busy = False
+        self.login = ""
+        self.started = False
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def connection(self):
+        return PluginConnection(GITLAB) if self._connected else None
+
+    def start_connect(self):
+        self.started = True
+        self._connected = True
+        self.connected.emit({})
+
+    def ensure_wired(self, *a, **k):
+        self.rewired = True
+        return True
+
+    def disconnect(self):
+        self._connected = False
+        self.disconnected.emit()
+
+
+# -- tolerates gitlab=None
+glp_none = PluginsPanel(github=FakeGitHub(), gitlab=None, account=None, config={})
+glp_none.resize(900, 640)
+glp_none.grab()
+gl_card_none = [c for c in glp_none._cards if c.key == "gitlab"][0]
+check("gitlab=None tolerated; card still renders", gl_card_none.property("interactive") == "true")
+check("gitlab card shows NOT ENABLED", "NOT ENABLED" in gl_card_none._pill.text())
+
+# -- not connected
+fgl = FakeGitLab(connected=False)
+glp = PluginsPanel(github=FakeGitHub(), gitlab=fgl, account=None, config={})
+glp.resize(900, 640)
+gl_card = [c for c in glp._cards if c.key == "gitlab"][0]
+check("gitlab card interactive", gl_card.property("interactive") == "true")
+glp._open_detail("gitlab")
+check("clicking gitlab opens its detail page (stack index 4)", glp._stack.currentIndex() == 4)
+gld = glp._gitlab_detail
+check("detail shows Connect", not gld._primary.isHidden())
+check("info box hidden until connected", gld._info.isHidden())
+gld._on_primary()
+check("Connect calls the controller", fgl.started)
+check("card flips to ENABLED", "ENABLED" in gl_card._pill.text() and "NOT" not in gl_card._pill.text())
+gld.refresh()
+check("detail hides Connect when connected", gld._primary.isHidden())
+check("info box (authorise instructions) shown when connected", not gld._info.isHidden())
+check("disconnect button shown", not gld._disconnect_btn.isHidden())
+check("re-sync button shown when connected", not gld._resync_btn.isHidden())
+gld._on_resync()
+check("re-sync button calls ensure_wired on the controller", getattr(fgl, "rewired", False))
+
+# -- search filter
+glp.show_catalog()
+glp._filter_cards("gitlab")
+check("search 'gitlab' keeps the card", not gl_card.isHidden())
+glp._filter_cards("zzz")
+check("search 'zzz' hides the card", gl_card.isHidden())
+glp._filter_cards("")
+
+# -- disconnect flips the card back
+gld._on_disconnect()
+check("disconnect flips the card back to NOT ENABLED", "NOT ENABLED" in gl_card._pill.text())
+
+# -- Pro gate
+glp_free = PluginsPanel(github=FakeGitHub(), gitlab=FakeGitLab(), account=_FreeAccount(), config={})
+glp_free._open_detail("gitlab")
+check("Free plan labels Connect (Pro) and disables it",
+      glp_free._gitlab_detail._primary.text().endswith("(Pro)")
+      and not glp_free._gitlab_detail._primary.isEnabled())
+
+
+# ---------------------------------------------------------------------------
+print("[8] Linear card + detail (thin plugin, same shape as Vercel)")
+
+from plugin_store import LINEAR
+
+
+class FakeLinear(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+
+    def __init__(self, connected=False):
+        super().__init__()
+        self._connected = connected
+        self.is_busy = False
+        self.login = ""
+        self.started = False
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def connection(self):
+        return PluginConnection(LINEAR) if self._connected else None
+
+    def start_connect(self):
+        self.started = True
+        self._connected = True
+        self.connected.emit({})
+
+    def ensure_wired(self, *a, **k):
+        self.rewired = True
+        return True
+
+    def disconnect(self):
+        self._connected = False
+        self.disconnected.emit()
+
+
+# -- tolerates linear=None
+lnp_none = PluginsPanel(github=FakeGitHub(), linear=None, account=None, config={})
+lnp_none.resize(900, 640)
+lnp_none.grab()
+ln_card_none = [c for c in lnp_none._cards if c.key == "linear"][0]
+check("linear=None tolerated; card still renders", ln_card_none.property("interactive") == "true")
+check("linear card shows NOT ENABLED", "NOT ENABLED" in ln_card_none._pill.text())
+
+# -- not connected
+fln = FakeLinear(connected=False)
+lnp = PluginsPanel(github=FakeGitHub(), linear=fln, account=None, config={})
+lnp.resize(900, 640)
+ln_card = [c for c in lnp._cards if c.key == "linear"][0]
+check("linear card interactive", ln_card.property("interactive") == "true")
+lnp._open_detail("linear")
+check("clicking linear opens its detail page (stack index 5)", lnp._stack.currentIndex() == 5)
+lnd = lnp._linear_detail
+check("detail shows Connect", not lnd._primary.isHidden())
+check("info box hidden until connected", lnd._info.isHidden())
+lnd._on_primary()
+check("Connect calls the controller", fln.started)
+check("card flips to ENABLED", "ENABLED" in ln_card._pill.text() and "NOT" not in ln_card._pill.text())
+lnd.refresh()
+check("detail hides Connect when connected", lnd._primary.isHidden())
+check("info box (authorise instructions) shown when connected", not lnd._info.isHidden())
+check("disconnect button shown", not lnd._disconnect_btn.isHidden())
+check("re-sync button shown when connected", not lnd._resync_btn.isHidden())
+lnd._on_resync()
+check("re-sync button calls ensure_wired on the controller", getattr(fln, "rewired", False))
+
+# -- search filter
+lnp.show_catalog()
+lnp._filter_cards("linear")
+check("search 'linear' keeps the card", not ln_card.isHidden())
+lnp._filter_cards("zzz")
+check("search 'zzz' hides the card", ln_card.isHidden())
+lnp._filter_cards("")
+
+# -- disconnect flips the card back
+lnd._on_disconnect()
+check("disconnect flips the card back to NOT ENABLED", "NOT ENABLED" in ln_card._pill.text())
+
+# -- Pro gate
+lnp_free = PluginsPanel(github=FakeGitHub(), linear=FakeLinear(), account=_FreeAccount(), config={})
+lnp_free._open_detail("linear")
+check("Free plan labels Connect (Pro) and disables it",
+      lnp_free._linear_detail._primary.text().endswith("(Pro)")
+      and not lnp_free._linear_detail._primary.isEnabled())
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

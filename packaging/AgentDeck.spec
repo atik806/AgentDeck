@@ -57,6 +57,8 @@ hiddenimports += [
     "github_controller", "github_review_dialog",
     "vercel_mcp", "vercel_controller",
     "jira_mcp", "jira_controller",
+    "gitlab_mcp", "gitlab_controller",
+    "linear_mcp", "linear_controller",
     "mcp_io", "mcp_targets",
 ]
 

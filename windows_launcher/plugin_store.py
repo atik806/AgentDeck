@@ -25,6 +25,8 @@ __all__ = [
     "GITHUB",
     "VERCEL",
     "JIRA",
+    "GITLAB",
+    "LINEAR",
     "CAPABILITIES",
     "CAPABILITY_LABELS",
     "DEFAULT_CAPABILITIES",
@@ -46,6 +48,15 @@ VERCEL = "vercel"
 #: MCP server it writes into ``~/.claude.json`` is named ``atlassian``; this
 #: provider key stays ``jira``. See ``jira_controller`` / ``jira_mcp``.
 JIRA = "jira"
+
+#: GitLab is thin too (GitLab's hosted MCP at ``gitlab.com/api/v4/mcp`` -- HTTP,
+#: OAuth-only). No capability model; the store row is just the presence flag.
+#: See ``gitlab_controller`` / ``gitlab_mcp``.
+GITLAB = "gitlab"
+
+#: Linear is thin too (``mcp.linear.app/mcp`` -- streamable HTTP, OAuth-only).
+#: No capability model. See ``linear_controller`` / ``linear_mcp``.
+LINEAR = "linear"
 
 #: Ordered capability keys. Each maps to one or more GitHub MCP toolsets and a
 #: tier of GitHub App permissions -- see docs/PLUGINS.md §5.

@@ -11,6 +11,8 @@ from plugin_store import (
     GITHUB,
     VERCEL,
     JIRA,
+    GITLAB,
+    LINEAR,
     PluginConnection,
     PluginStore,
     normalise_capabilities,
@@ -126,6 +128,41 @@ with tempfile.TemporaryDirectory() as d:
     store.remove(JIRA)
     check("jira removed, github + vercel untouched",
           not store.is_connected(JIRA) and store.is_connected(GITHUB) and store.is_connected(VERCEL))
+
+
+# ---------------------------------------------------------------------------
+print("[8] the store is provider-generic (GitLab -- thin, same as Vercel)")
+check("GITLAB constant", GITLAB == "gitlab")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    check("gitlab not connected initially", not store.is_connected(GITLAB))
+    store.put(PluginConnection(GITLAB))
+    check("connected after put", store.is_connected(GITLAB))
+    check("round-trips", PluginConnection.from_dict(GITLAB, store.get(GITLAB).to_dict()).provider == GITLAB)
+
+
+# ---------------------------------------------------------------------------
+print("[9] the store is provider-generic (Linear -- thin, same as Vercel)")
+check("LINEAR constant", LINEAR == "linear")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    check("linear not connected initially", not store.is_connected(LINEAR))
+    store.put(PluginConnection(LINEAR))
+    check("connected after put", store.is_connected(LINEAR))
+    check("round-trips", PluginConnection.from_dict(LINEAR, store.get(LINEAR).to_dict()).provider == LINEAR)
+    check("all five providers coexist in one file",
+          store.put(PluginConnection(GITHUB, login="atik806"))
+          and store.put(PluginConnection(VERCEL))
+          and store.put(PluginConnection(JIRA))
+          and store.put(PluginConnection(GITLAB))
+          and store.is_connected(GITHUB) and store.is_connected(VERCEL)
+          and store.is_connected(JIRA) and store.is_connected(GITLAB)
+          and store.is_connected(LINEAR))
+    store.remove(LINEAR)
+    check("linear removed, the other four untouched",
+          not store.is_connected(LINEAR) and store.is_connected(GITHUB)
+          and store.is_connected(VERCEL) and store.is_connected(JIRA)
+          and store.is_connected(GITLAB))
 
 
 print()

@@ -2,12 +2,12 @@
 
 Two levels (see ``docs/PLUGINS.md`` §2):
 
-* **catalog** -- a vertical list of plugin cards, one per row. v1 ships three
-  live cards, **GitHub**, **Vercel** and **Jira**; the rest render disabled as
-  "Coming soon".
+* **catalog** -- a vertical list of plugin cards, one per row. v1 ships five
+  live cards, **GitHub**, **Vercel**, **Jira**, **GitLab** and **Linear**; the
+  rest render disabled as "Coming soon".
 * **detail** -- click GitHub to connect it, pick which capabilities the agent
-  gets, list your repos, and kick off a **GitHub review**; click Vercel or Jira
-  to enable its (thin, agent-owns-the-OAuth) MCP server.
+  gets, list your repos, and kick off a **GitHub review**; click Vercel, Jira,
+  GitLab or Linear to enable its (thin, agent-owns-the-OAuth) MCP server.
 
 Keep :func:`plugin_icon` -- the sidebar's "Plugins" nav button reuses it.
 """
@@ -176,6 +176,57 @@ def _jira_icon(px: int = 40) -> QPixmap:
     return pm
 
 
+def _gitlab_icon(px: int = 40) -> QPixmap:
+    """The GitLab mark, drawn (no asset dependency): a fan of triangles."""
+    px = max(12, int(px))
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    u = px / 16.0
+    # centre spike (bright), two flanking spikes (dim) -- reads as the tanuki fan
+    p.setBrush(QColor(theme.color("accent")))
+    mid = QPainterPath()
+    mid.moveTo(8 * u, 14 * u)
+    mid.lineTo(5 * u, 5 * u)
+    mid.lineTo(11 * u, 5 * u)
+    mid.closeSubpath()
+    p.drawPath(mid)
+    p.setBrush(QColor(theme.color("accent_2")))
+    for x0, x1 in ((1.0, 5.0), (11.0, 15.0)):
+        wing = QPainterPath()
+        wing.moveTo(8 * u, 14 * u)
+        wing.lineTo(x0 * u, 6.5 * u)
+        wing.lineTo((x0 + 1.5) * u, 3 * u)
+        wing.lineTo(x1 * u, 6.5 * u)
+        wing.closeSubpath()
+        p.drawPath(wing)
+    p.end()
+    return pm
+
+
+def _linear_icon(px: int = 40) -> QPixmap:
+    """The Linear mark, drawn (no asset dependency): stacked diagonal bars."""
+    px = max(12, int(px))
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(theme.color("text")))
+    u = px / 16.0
+    p.save()
+    p.translate(8 * u, 8 * u)
+    p.rotate(45)
+    for i, half in enumerate((6.5, 4.5, 2.3)):
+        off = (i - 1) * 3.2 * u
+        p.drawRoundedRect(QRectF(-half * u, off - 0.9 * u, 2 * half * u, 1.8 * u), 0.9 * u, 0.9 * u)
+    p.restore()
+    p.end()
+    return pm
+
+
 # ---------------------------------------------------------------------------
 # QSS
 # ---------------------------------------------------------------------------
@@ -239,8 +290,10 @@ QLabel#code {{ color: {t('text')}; font-size: 22px; font-weight: 800; letter-spa
 _CATALOG = [
     ("github", "GitHub", "Version control",
      "Review PRs, run Actions, create repos — your agent works GitHub directly.", True),
-    ("gitlab", "GitLab", "Version control", "Coming soon", False),
-    ("linear", "Linear", "Project mgmt", "Coming soon", False),
+    ("gitlab", "GitLab", "Version control",
+     "Work merge requests, pipelines and issues — your agent works GitLab directly.", True),
+    ("linear", "Linear", "Project mgmt",
+     "Find, create and update Linear issues and projects — your agent works Linear directly.", True),
     ("jira", "Jira", "Project mgmt",
      "Search, read & update Jira issues and Confluence pages — your agent works Atlassian directly.", True),
     ("sentry", "Sentry", "Observability", "Coming soon", False),
@@ -275,6 +328,10 @@ class _PluginCard(QFrame):
             icon.setPixmap(_vercel_icon(28))
         elif key == "jira":
             icon.setPixmap(_jira_icon(28))
+        elif key == "gitlab":
+            icon.setPixmap(_gitlab_icon(28))
+        elif key == "linear":
+            icon.setPixmap(_linear_icon(28))
         else:
             icon.setPixmap(plugin_icon(24, theme.color("text_faint")).pixmap(24, 24))
         row.addWidget(icon, 0, Qt.AlignVCenter)
@@ -915,6 +972,309 @@ class _JiraDetail(QWidget):
         pass
 
 
+
+# ---------------------------------------------------------------------------
+# GitLab detail
+# ---------------------------------------------------------------------------
+
+class _GitLabDetail(QWidget):
+    """Thin detail page: enable / disable the GitLab MCP server.
+
+    Same shape as :class:`_VercelDetail` -- GitLab's hosted MCP server is
+    OAuth-only, and the agent owns the OAuth. "Connect" drops the tokenless
+    server entry into every OAuth-capable agent's config; the user authorises in
+    a pane.
+    """
+
+    back = Signal()
+
+    def __init__(self, gitlab, account, config, agents_provider=None, parent=None):
+        super().__init__(parent)
+        self._gitlab = gitlab
+        self._account = account
+        self._config = config or {}
+        self._agents_provider = agents_provider
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        back = QPushButton("‹  All plugins")
+        back.setObjectName("link")
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(self.back.emit)
+        root.addWidget(back, 0, Qt.AlignLeft)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setPixmap(_gitlab_icon(40))
+        head.addWidget(icon)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel("GitLab")
+        title.setObjectName("pluginsTitle")
+        self._sub = QLabel("")
+        self._sub.setObjectName("pluginsBody")
+        self._sub.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(self._sub)
+        head.addLayout(col, 1)
+        self._primary = QPushButton("Connect")
+        self._primary.setObjectName("primary")
+        self._primary.setCursor(Qt.PointingHandCursor)
+        self._primary.clicked.connect(self._on_primary)
+        head.addWidget(self._primary, 0, Qt.AlignTop)
+        root.addLayout(head)
+
+        # one-time-authorise instructions (shown once connected)
+        self._info = QFrame()
+        self._info.setObjectName("codeBox")
+        ib = QVBoxLayout(self._info)
+        ib.setContentsMargins(14, 12, 14, 12)
+        ib.setSpacing(4)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
+        self._info.setVisible(False)
+        root.addWidget(self._info)
+
+        drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the GitLab MCP server into every OAuth-capable agent "
+            "installed now (run this after installing a new agent)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
+        drow.addStretch(1)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.setObjectName("danger")
+        self._disconnect_btn.clicked.connect(self._on_disconnect)
+        drow.addWidget(self._disconnect_btn)
+        root.addLayout(drow)
+        root.addStretch(1)
+
+        if self._gitlab is not None:
+            self._gitlab.connected.connect(lambda _i: self.refresh())
+            self._gitlab.disconnected.connect(self.refresh)
+            self._gitlab.error.connect(self._on_error)
+            self._gitlab.busy_changed.connect(lambda _b: self.refresh())
+
+        self.refresh()
+
+    def _plan_ok(self) -> bool:
+        if entitlements is None or self._account is None:
+            return True
+        try:
+            return entitlements.plugins_enabled(self._account.plan)
+        except Exception:  # noqa: BLE001
+            return True
+
+    def refresh(self) -> None:
+        j = self._gitlab
+        connected = bool(j and j.is_connected)
+        busy = bool(j and j.is_busy)
+        pro = self._plan_ok()
+
+        self._primary.setVisible(not connected)
+        self._primary.setEnabled(pro and not busy)
+        self._primary.setText("Connect" if pro else "Connect  (Pro)")
+
+        self._info.setVisible(connected)
+        self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
+
+        if connected:
+            self._step.setText(_oauth_auth_html(self._agents_provider, "gitlab"))
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            self._sub.setText(
+                "Enabled for: " + (", ".join(wired) if wired else "no installed agent yet")
+            )
+        else:
+            self._sub.setText(
+                "Let your agents work merge requests, pipelines and issues — no tokens to copy."
+            )
+
+    def _on_primary(self) -> None:
+        if self._gitlab is not None:
+            self._gitlab.start_connect()
+
+    def _on_disconnect(self) -> None:
+        if self._gitlab is not None:
+            self._gitlab.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._gitlab is None:
+            return
+        try:
+            self._gitlab.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
+
+    def _on_error(self, message: str) -> None:
+        self._sub.setText(message)
+
+    def apply_theme(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Linear detail
+# ---------------------------------------------------------------------------
+
+class _LinearDetail(QWidget):
+    """Thin detail page: enable / disable the Linear MCP server.
+
+    Same shape as :class:`_VercelDetail` -- Linear's hosted MCP server is
+    OAuth-only, and the agent owns the OAuth. "Connect" drops the tokenless
+    server entry into every OAuth-capable agent's config; the user authorises in
+    a pane.
+    """
+
+    back = Signal()
+
+    def __init__(self, linear, account, config, agents_provider=None, parent=None):
+        super().__init__(parent)
+        self._linear = linear
+        self._account = account
+        self._config = config or {}
+        self._agents_provider = agents_provider
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        back = QPushButton("‹  All plugins")
+        back.setObjectName("link")
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(self.back.emit)
+        root.addWidget(back, 0, Qt.AlignLeft)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setPixmap(_linear_icon(40))
+        head.addWidget(icon)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel("Linear")
+        title.setObjectName("pluginsTitle")
+        self._sub = QLabel("")
+        self._sub.setObjectName("pluginsBody")
+        self._sub.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(self._sub)
+        head.addLayout(col, 1)
+        self._primary = QPushButton("Connect")
+        self._primary.setObjectName("primary")
+        self._primary.setCursor(Qt.PointingHandCursor)
+        self._primary.clicked.connect(self._on_primary)
+        head.addWidget(self._primary, 0, Qt.AlignTop)
+        root.addLayout(head)
+
+        # one-time-authorise instructions (shown once connected)
+        self._info = QFrame()
+        self._info.setObjectName("codeBox")
+        ib = QVBoxLayout(self._info)
+        ib.setContentsMargins(14, 12, 14, 12)
+        ib.setSpacing(4)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
+        self._info.setVisible(False)
+        root.addWidget(self._info)
+
+        drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the Linear MCP server into every OAuth-capable agent "
+            "installed now (run this after installing a new agent)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
+        drow.addStretch(1)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.setObjectName("danger")
+        self._disconnect_btn.clicked.connect(self._on_disconnect)
+        drow.addWidget(self._disconnect_btn)
+        root.addLayout(drow)
+        root.addStretch(1)
+
+        if self._linear is not None:
+            self._linear.connected.connect(lambda _i: self.refresh())
+            self._linear.disconnected.connect(self.refresh)
+            self._linear.error.connect(self._on_error)
+            self._linear.busy_changed.connect(lambda _b: self.refresh())
+
+        self.refresh()
+
+    def _plan_ok(self) -> bool:
+        if entitlements is None or self._account is None:
+            return True
+        try:
+            return entitlements.plugins_enabled(self._account.plan)
+        except Exception:  # noqa: BLE001
+            return True
+
+    def refresh(self) -> None:
+        j = self._linear
+        connected = bool(j and j.is_connected)
+        busy = bool(j and j.is_busy)
+        pro = self._plan_ok()
+
+        self._primary.setVisible(not connected)
+        self._primary.setEnabled(pro and not busy)
+        self._primary.setText("Connect" if pro else "Connect  (Pro)")
+
+        self._info.setVisible(connected)
+        self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
+
+        if connected:
+            self._step.setText(_oauth_auth_html(self._agents_provider, "linear"))
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            self._sub.setText(
+                "Enabled for: " + (", ".join(wired) if wired else "no installed agent yet")
+            )
+        else:
+            self._sub.setText(
+                "Let your agents find, create and update Linear issues and projects — no tokens to copy."
+            )
+
+    def _on_primary(self) -> None:
+        if self._linear is not None:
+            self._linear.start_connect()
+
+    def _on_disconnect(self) -> None:
+        if self._linear is not None:
+            self._linear.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._linear is None:
+            return
+        try:
+            self._linear.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
+
+    def _on_error(self, message: str) -> None:
+        self._sub.setText(message)
+
+    def apply_theme(self) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
@@ -925,12 +1285,14 @@ class PluginsPanel(QWidget):
     review_ready = Signal(dict)
 
     def __init__(self, parent: QWidget | None = None, *, github=None, vercel=None,
-                 jira=None, account=None, config: Optional[dict] = None,
-                 agents_provider=None):
+                 jira=None, gitlab=None, linear=None, account=None,
+                 config: Optional[dict] = None, agents_provider=None):
         super().__init__(parent)
         self._github = github
         self._vercel = vercel
         self._jira = jira
+        self._gitlab = gitlab
+        self._linear = linear
         # () -> list[str] of agent keys the plugins will wire (installed + active).
         self._agents_provider = agents_provider
         self.setObjectName("pluginsPanel")
@@ -1022,6 +1384,32 @@ class PluginsPanel(QWidget):
         j_host.setWidget(j_inner)
         self._stack.addWidget(j_host)
 
+        # -- gitlab detail page (stack index 4) --
+        gl_host = QScrollArea()
+        gl_host.setWidgetResizable(True)
+        gl_host.setFrameShape(QFrame.NoFrame)
+        gl_inner = QWidget()
+        glil = QVBoxLayout(gl_inner)
+        glil.setContentsMargins(40, 28, 40, 24)
+        self._gitlab_detail = _GitLabDetail(gitlab, account, config, agents_provider=agents_provider)
+        self._gitlab_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
+        glil.addWidget(self._gitlab_detail)
+        gl_host.setWidget(gl_inner)
+        self._stack.addWidget(gl_host)
+
+        # -- linear detail page (stack index 5) --
+        ln_host = QScrollArea()
+        ln_host.setWidgetResizable(True)
+        ln_host.setFrameShape(QFrame.NoFrame)
+        ln_inner = QWidget()
+        lnil = QVBoxLayout(ln_inner)
+        lnil.setContentsMargins(40, 28, 40, 24)
+        self._linear_detail = _LinearDetail(linear, account, config, agents_provider=agents_provider)
+        self._linear_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
+        lnil.addWidget(self._linear_detail)
+        ln_host.setWidget(ln_inner)
+        self._stack.addWidget(ln_host)
+
         if github is not None:
             github.connected.connect(lambda _i: self._sync_cards())
             github.disconnected.connect(self._sync_cards)
@@ -1031,6 +1419,12 @@ class PluginsPanel(QWidget):
         if jira is not None:
             jira.connected.connect(lambda _i: self._sync_cards())
             jira.disconnected.connect(self._sync_cards)
+        if gitlab is not None:
+            gitlab.connected.connect(lambda _i: self._sync_cards())
+            gitlab.disconnected.connect(self._sync_cards)
+        if linear is not None:
+            linear.connected.connect(lambda _i: self._sync_cards())
+            linear.disconnected.connect(self._sync_cards)
         self._sync_cards()
 
     # -- helpers ------------------------------------------------------
@@ -1050,6 +1444,12 @@ class PluginsPanel(QWidget):
         elif key == "jira":
             self._stack.setCurrentIndex(3)
             self._jira_detail.refresh()
+        elif key == "gitlab":
+            self._stack.setCurrentIndex(4)
+            self._gitlab_detail.refresh()
+        elif key == "linear":
+            self._stack.setCurrentIndex(5)
+            self._linear_detail.refresh()
 
     def _sync_cards(self) -> None:
         login = None
@@ -1057,6 +1457,8 @@ class PluginsPanel(QWidget):
             login = self._github.login or ""
         vercel_on = bool(self._vercel is not None and self._vercel.is_connected)
         jira_on = bool(self._jira is not None and self._jira.is_connected)
+        gitlab_on = bool(self._gitlab is not None and self._gitlab.is_connected)
+        linear_on = bool(self._linear is not None and self._linear.is_connected)
         for card in self._cards:
             if card.key == "github":
                 card.set_status(login)
@@ -1064,6 +1466,10 @@ class PluginsPanel(QWidget):
                 card.set_toggle_status(vercel_on)
             elif card.key == "jira":
                 card.set_toggle_status(jira_on)
+            elif card.key == "gitlab":
+                card.set_toggle_status(gitlab_on)
+            elif card.key == "linear":
+                card.set_toggle_status(linear_on)
 
     def show_catalog(self) -> None:
         self._stack.setCurrentIndex(0)

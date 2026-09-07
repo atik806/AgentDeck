@@ -58,6 +58,8 @@ from account import AccountController
 from github_controller import GitHubController
 from vercel_controller import VercelController
 from jira_controller import JiraController
+from gitlab_controller import GitLabController
+from linear_controller import LinearController
 from account_dialog import AccountDialog
 from agents import pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -131,6 +133,9 @@ class TerminalPanel(QMainWindow):
         self.vercel = VercelController(self.account, self.config, self)
         # The Jira plugin surface -- thin, same shape (Atlassian Rovo MCP).
         self.jira = JiraController(self.account, self.config, self)
+        # GitLab + Linear plugin surfaces -- thin, same shape (hosted OAuth MCP).
+        self.gitlab = GitLabController(self.account, self.config, self)
+        self.linear = LinearController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -621,6 +626,7 @@ class TerminalPanel(QMainWindow):
         self._ws_stack = QStackedWidget(central)
         self._plugins_panel = PluginsPanel(
             central, github=self.github, vercel=self.vercel, jira=self.jira,
+            gitlab=self.gitlab, linear=self.linear,
             account=self.account, config=self.config,
             agents_provider=lambda: self.github._target_agent_keys(self._startup_command),
         )
@@ -632,6 +638,7 @@ class TerminalPanel(QMainWindow):
             central, store=self._routines_store, config=self.config,
             workspaces_provider=lambda: [w.name for w in self._workspaces],
         )
+        self._routines_panel.run_now.connect(self._run_routine_now)
         self._settings_panel = SettingsPanel(
             self.config, central,
             updater=getattr(self, "updater", None),
@@ -763,6 +770,8 @@ class TerminalPanel(QMainWindow):
             self._wire_github_for(self._working_folder, startup_command)
             self._wire_vercel_for(self._working_folder, startup_command)
             self._wire_jira_for(self._working_folder, startup_command)
+            self._wire_gitlab_for(self._working_folder, startup_command)
+            self._wire_linear_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -840,6 +849,30 @@ class TerminalPanel(QMainWindow):
             return False
         try:
             return bool(j.is_connected and j.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
+    def _wire_gitlab_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the GitLab MCP server to every OAuth-capable agent's
+        config. Mirrors :meth:`_wire_vercel_for`. Returns True if any config changed.
+        """
+        g = getattr(self, "gitlab", None)
+        if g is None:
+            return False
+        try:
+            return bool(g.is_connected and g.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
+    def _wire_linear_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the Linear MCP server to every OAuth-capable agent's
+        config. Mirrors :meth:`_wire_vercel_for`. Returns True if any config changed.
+        """
+        ln = getattr(self, "linear", None)
+        if ln is None:
+            return False
+        try:
+            return bool(ln.is_connected and ln.ensure_wired(folder or None, agent_command))
         except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
             return False
 
@@ -1074,6 +1107,8 @@ class TerminalPanel(QMainWindow):
         self._wire_github_for(folder, base_command)
         self._wire_vercel_for(folder, base_command)
         self._wire_jira_for(folder, base_command)
+        self._wire_gitlab_for(folder, base_command)
+        self._wire_linear_for(folder, base_command)
 
         self._hlog(f"do: add_pane_with_command({command!r})")
         new_pane = ws.add_pane_with_command(command)
@@ -1117,6 +1152,15 @@ class TerminalPanel(QMainWindow):
         if panel is not None:
             panel.refresh_list()
 
+    def _run_routine_now(self, routine_id: str) -> None:
+        """The Routines panel's "Run now" button -- fire a routine immediately,
+        outside its schedule, and drop into the workspaces view to watch it."""
+        routine = self._routines_store.get(routine_id)
+        if routine is None:
+            return
+        self._leave_routines()
+        self._run_routine(routine)
+
     def _run_routine(self, routine) -> None:
         """A Routine's scheduled time arrived (``RoutineScheduler.due``):
         open (or reuse) a pane running its agent and send its prompt.
@@ -1129,6 +1173,7 @@ class TerminalPanel(QMainWindow):
             return
 
         import agents
+        import agent_sessions
 
         name = routine.display_name
         command = agents.resolve_agent(routine.agent_key, routine.agent_custom)
@@ -1151,6 +1196,29 @@ class TerminalPanel(QMainWindow):
         self._wire_github_for(self._working_folder, command)
         self._wire_vercel_for(self._working_folder, command)
         self._wire_jira_for(self._working_folder, command)
+        self._wire_gitlab_for(self._working_folder, command)
+        self._wire_linear_for(self._working_folder, command)
+
+        prompt = routine.prompt.strip()
+
+        # Prefer handing the prompt to the agent on its own command line: the
+        # agent boots straight into the task, with nothing to type into a TUI
+        # that's still grabbing the terminal. Typing it in after the fact is
+        # what produced the "prompt sits in the composer, never sent" bug --
+        # a bracketed paste and the Enter that follows it race the agent's
+        # render loop. Agents with no initial-prompt arg (aider, goose,
+        # copilot, …) still fall back to the type-in path, now with a paced
+        # Enter (see TerminalView.insert_and_submit). Skip the CLI route for a
+        # prompt too long to sit safely on a Windows command line.
+        launch = command
+        prompt_baked = False
+        if prompt and command:
+            baked = agent_sessions.initial_prompt_command(
+                routine.agent_key, command, prompt
+            )
+            if baked and len(baked) <= 6000:
+                launch = baked
+                prompt_baked = True
 
         ws = None
         if routine.workspace_target != "new":
@@ -1162,15 +1230,15 @@ class TerminalPanel(QMainWindow):
                 )
 
         if ws is not None:
-            new_pane = ws.add_pane_with_command(command) if command else ws.add_pane()
+            new_pane = ws.add_pane_with_command(launch) if launch else ws.add_pane()
         elif len(self._workspaces) < entitlements.max_workspaces(self.account.plan):
-            ws = self._add_workspace(pane_count=1, startup_command=command or None)
+            ws = self._add_workspace(pane_count=1, startup_command=launch or None)
             new_pane = ws.panes[-1] if ws.panes else None
         else:
             # Free plan, already at the workspace cap -- use the current one
             # rather than silently doing nothing.
             ws = self._active_ws or (self._workspaces[0] if self._workspaces else None)
-            new_pane = (ws.add_pane_with_command(command) if command else ws.add_pane()) if ws else None
+            new_pane = (ws.add_pane_with_command(launch) if launch else ws.add_pane()) if ws else None
 
         if ws is None or new_pane is None:
             self._routines_store.mark_run(routine.id, "skipped: no pane available")
@@ -1178,25 +1246,29 @@ class TerminalPanel(QMainWindow):
             self._refresh_routines_panel()
             return
 
-        prompt = routine.prompt.strip()
         if not prompt:
             self._routines_store.mark_run(routine.id, "ok")
             self._refresh_routines_panel()
+            self.statusBar().showMessage(f"Routine “{name}” started in {ws.name}.", 5000)
             return
 
         done: list = []
 
-        def _seed(p=new_pane, ws=ws, t=prompt, rid=routine.id, name=name):
+        def _seed(p=new_pane, ws=ws, t=prompt, rid=routine.id, name=name, baked=prompt_baked):
             if done or p not in ws.panes:
                 return
-            # Only once the pane has produced output (shell/agent is up).
-            if getattr(p.view, "_last_output_at", 0.0):
-                p.view.insert_text(t)
-                p.view.submit()
-                done.append(True)
-                self._routines_store.mark_run(rid, "ok")
-                self._refresh_routines_panel()
-                self.statusBar().showMessage(f"Routine “{name}” started in {ws.name}.", 5000)
+            # Wait until the pane has produced output (shell / agent is up).
+            if not getattr(p.view, "_last_output_at", 0.0):
+                return
+            if not baked:
+                # Type the prompt, then Enter a beat later -- a lone \r sent
+                # right behind a bracketed paste gets swallowed by the agent's
+                # paste handling. See TerminalView.insert_and_submit.
+                p.view.insert_and_submit(t)
+            done.append(True)
+            self._routines_store.mark_run(rid, "ok")
+            self._refresh_routines_panel()
+            self.statusBar().showMessage(f"Routine “{name}” started in {ws.name}.", 5000)
 
         def _give_up(rid=routine.id):
             if not done:
@@ -2136,6 +2208,14 @@ class TerminalPanel(QMainWindow):
         if j is not None:
             j.connected.connect(lambda _i: self._on_jira_connected())
             j.disconnected.connect(self._on_jira_disconnected)
+        g = getattr(self, "gitlab", None)
+        if g is not None:
+            g.connected.connect(lambda _i: self._on_gitlab_connected())
+            g.disconnected.connect(self._on_gitlab_disconnected)
+        ln = getattr(self, "linear", None)
+        if ln is not None:
+            ln.connected.connect(lambda _i: self._on_linear_connected())
+            ln.disconnected.connect(self._on_linear_disconnected)
 
     def _on_github_connected(self) -> None:
         if self._wire_github_for(self._working_folder, self._startup_command):
@@ -2179,6 +2259,30 @@ class TerminalPanel(QMainWindow):
     def _on_jira_disconnected(self) -> None:
         self.statusBar().showMessage(
             "Jira disabled — restart the agent (↻) to drop the Jira tools", 6000
+        )
+
+    def _on_gitlab_connected(self) -> None:
+        self._wire_gitlab_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            f"GitLab enabled — restart the agent (↻) in a pane, then {self._oauth_hint('gitlab')}",
+            8000,
+        )
+
+    def _on_gitlab_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "GitLab disabled — restart the agent (↻) to drop the GitLab tools", 6000
+        )
+
+    def _on_linear_connected(self) -> None:
+        self._wire_linear_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            f"Linear enabled — restart the agent (↻) in a pane, then {self._oauth_hint('linear')}",
+            8000,
+        )
+
+    def _on_linear_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "Linear disabled — restart the agent (↻) to drop the Linear tools", 6000
         )
 
     def _recheck_plan(self) -> None:
@@ -2536,6 +2640,12 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "jira", None) is not None:
             self.jira.unwire_all()
             self.jira.shutdown()
+        if getattr(self, "gitlab", None) is not None:
+            self.gitlab.unwire_all()
+            self.gitlab.shutdown()
+        if getattr(self, "linear", None) is not None:
+            self.linear.unwire_all()
+            self.linear.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 

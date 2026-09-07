@@ -89,9 +89,9 @@ structure below is what the code needs to support.)
 
 Each **card**: icon, name, category tag, one-line description, a status pill
 (`Not connected` / `Connected as @login` / `Needs attention`), and one primary
-button (`Connect` → `Manage`). Three live cards — **GitHub**, **Vercel** and
-**Jira** (the last two thin — see §12 / §13) — with the rest rendered disabled as
-`Coming soon` (GitLab, Bitbucket, Linear, Sentry, Netlify).
+button (`Connect` → `Manage`). Five live cards — **GitHub**, **Vercel**, **Jira**,
+**GitLab** and **Linear** (all but GitHub thin — see §12 / §13 / §15 / §16) — with
+the rest rendered disabled as `Coming soon` (Bitbucket, Sentry, Netlify).
 
 ### 2b. Detail / manage view (click a card)
 
@@ -343,7 +343,7 @@ idempotent, prompt builder), `test_plugin_store.py`.
 | **P2 — GitHub review MVP** | `github_mcp.py` (Claude Code), `github_review_dialog.py`, spawn review pane, remote GitHub MCP, results in pane, manual "Post to GitHub" + confirm, `plugin_runs` audit. | P1 |
 | **P3 — Capabilities & audit** | Capability checklist → scoped toolsets, `Ask first` / `Autonomous` modes, Activity log viewer, local `github-mcp-server` fallback. | P2 |
 | **P4 — More automations & agents** | Create repo, open/merge PRs, dispatch & inspect Actions, issue triage. Codex + Gemini MCP writers. | P3 |
-| **P5 — More providers** | GitLab / Linear / … using the same `plugin_store` + capability model. | P4 |
+| **P5 — More providers** | **GitLab + Linear shipped** (§15 / §16, thin OAuth plugins, v0.15.0). Bitbucket / Sentry / … next, same `plugin_store` model. | P4 |
 
 ## 10. Open questions
 
@@ -643,3 +643,108 @@ suites redirect config + ledger via `ADK_MCP_CONFIG_DIR` / `ADK_MCP_STATE`.
 * Windows path variance per agent — every env override has a test.
 * Each agent's exact format is verified against docs as of 2026-09; re-check when
   an agent ships a breaking config change.
+
+---
+
+## 15. GitLab plugin (thin) — shipped v0.15.0 (2026-09-07)
+
+The fourth live card. **A clone of the Vercel plugin (§12)** — the `_mcp` /
+`_controller` modules are byte-identical bar the constants and copy.
+
+### Why it's thin
+
+GitLab's official MCP server is **hosted and OAuth-only** —
+`https://gitlab.com/api/v4/mcp`, transport `type: "http"`, OAuth 2.0 with Dynamic
+Client Registration. It does not take an API bearer token on this path, and there
+is no official local binary to ship. Approved MCP clients run the OAuth
+themselves: Claude Code via `/mcp`, opencode via its auto-DCR flow on first tool
+use. So AgentDeck never handles a GitLab token — status is *"Enabled"*, not
+*"Connected as @user"*.
+
+**gitlab.com only in v1.** A self-hosted instance is `https://<host>/api/v4/mcp`;
+supporting that needs a per-connection URL field — future. Override
+`gitlab_mcp.REMOTE_MCP_URL` meanwhile. (Mirrors Jira's "Cloud-only".)
+
+### The injected block (root `mcpServers.gitlab` of `~/.claude.json`)
+
+```json
+{ "type": "http", "url": "https://gitlab.com/api/v4/mcp", "x-agentdeck-managed": true }
+```
+
+The MCP server is named **`gitlab`** (matches the AgentDeck provider key,
+`plugin_store.GITLAB`, and the `plugin_connections.provider` value). No `headers`,
+no toolset filtering — GitLab's OAuth consent screen is where scope is chosen.
+
+### Modules
+
+| Module | Notes |
+|---|---|
+| `gitlab_mcp.py` | Copy of `vercel_mcp.py`; `_SERVER_NAME = "gitlab"`, `REMOTE_MCP_URL = "https://gitlab.com/api/v4/mcp"`, `plugin_store.GITLAB`. `inject`/`remove`/`_strip_managed` are transport-agnostic — they key only on the name + `x-agentdeck-managed`. |
+| `gitlab_controller.py` | Copy of `vercel_controller.py` → `GitLabController`; `provider="gitlab"` in the Supabase mirror. No stagger (`mcp_io.locked()` serialises writes). |
+| `plugin_store.py` | Added `GITLAB = "gitlab"`. |
+| `plugins_panel.py` | `_GitLabDetail` inline (copy of `_JiraDetail`), `_gitlab_icon` (drawn triangle fan), catalog tuple → live, 5th stack page (index 4), `_open_detail` / `_sync_cards` branches, `PluginsPanel(gitlab=…)` kwarg. |
+| `terminal_panel.py` | Builds `GitLabController`, `gitlab=` kwarg, `_wire_gitlab_for`, `_on_gitlab_connected/_disconnected` nudges, teardown. |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='gitlab'`. **No migration.**
+Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### Tests
+
+`test_gitlab_mcp.py`, `test_gitlab_controller.py` (copies of the Jira ones);
+`test_plugin_store.py` §8, `test_plugins_panel.py` §7 (with a `FakeGitLab` stub).
+
+### Known: same "(re)start the agent then `/mcp`" caveat as Vercel / Jira
+
+`claude` reads `.claude.json` at launch. After enabling GitLab the user restarts
+the agent (`↻`) **and then runs `/mcp`** to authorise. `_on_gitlab_connected`
+re-injects and shows a status-bar nudge saying so.
+
+## 16. Linear plugin (thin) — shipped v0.15.0 (2026-09-07)
+
+The fifth live card. **A near-exact clone of the GitLab plugin (§15) / Vercel
+plugin (§12).**
+
+### Why it's thin
+
+Linear's official MCP server is **hosted and OAuth-only** —
+`https://mcp.linear.app/mcp`, streamable HTTP (`type: "http"`), OAuth 2.1 with
+Dynamic Client Registration. No API-token path in this flow, no local binary.
+Claude Code authorises via `/mcp`; opencode via auto-DCR. AgentDeck never handles
+a Linear token — status is *"Enabled"*.
+
+The wired endpoint is **read-write**. Linear also serves read-only tools at
+`https://mcp.linear.app/mcp/readonly` — a future per-connection toggle; switch
+`linear_mcp.REMOTE_MCP_URL` meanwhile.
+
+### The injected block (root `mcpServers.linear` of `~/.claude.json`)
+
+```json
+{ "type": "http", "url": "https://mcp.linear.app/mcp", "x-agentdeck-managed": true }
+```
+
+Server named **`linear`** (matches the provider key / `plugin_store.LINEAR` /
+`plugin_connections.provider`).
+
+### Modules
+
+| Module | Notes |
+|---|---|
+| `linear_mcp.py` | Copy of `gitlab_mcp.py`; `_SERVER_NAME = "linear"`, `REMOTE_MCP_URL = "https://mcp.linear.app/mcp"`, `plugin_store.LINEAR`. |
+| `linear_controller.py` | Copy of `gitlab_controller.py` → `LinearController`; `provider="linear"` in the Supabase mirror. |
+| `plugin_store.py` | Added `LINEAR = "linear"`. |
+| `plugins_panel.py` | `_LinearDetail` inline, `_linear_icon` (drawn stacked diagonal bars), catalog tuple → live, 6th stack page (index 5), `_open_detail` / `_sync_cards` branches, `PluginsPanel(linear=…)` kwarg. |
+| `terminal_panel.py` | Builds `LinearController`, `linear=` kwarg, `_wire_linear_for`, `_on_linear_connected/_disconnected` nudges, teardown. |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='linear'`. **No migration.**
+Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### Tests
+
+`test_linear_mcp.py`, `test_linear_controller.py`; `test_plugin_store.py` §9,
+`test_plugins_panel.py` §8 (with a `FakeLinear` stub).
+
+### Known: same "(re)start the agent then `/mcp`" caveat.

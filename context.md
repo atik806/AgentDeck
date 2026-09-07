@@ -926,6 +926,37 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     from its own signal crashes). Tests: `test_notes_store.py` 47,
     `test_notes_panel.py` 39, both green.
 
+33. **Plugins — GitLab + Linear (2026-09-07, v0.15.0)** — the last two
+    `docs/PLUGINS.md` §9 "P5 more providers" cards go live. Both ship an
+    **official hosted OAuth-only MCP server** (no bearer token, no local
+    binary), so both are exact clones of the Vercel/Jira thin-plugin pattern
+    (§12/§13 of PLUGINS.md): AgentDeck only drops a *tokenless* `{"type":"http",
+    "url":…,"x-agentdeck-managed":true}` entry into each OAuth-capable agent's
+    user-scope config (`OAUTH_ALLOWLIST = {claude, opencode}` — unchanged); the
+    agent runs the OAuth itself (`/mcp` for Claude, auto-DCR for opencode).
+    - **GitLab** — `gitlab_mcp.py` / `gitlab_controller.py` (`GitLabController`),
+      server `gitlab`, URL `https://gitlab.com/api/v4/mcp`. gitlab.com only in
+      v1 (self-hosted would need a per-connection URL field — override
+      `REMOTE_MCP_URL` meanwhile).
+    - **Linear** — `linear_mcp.py` / `linear_controller.py` (`LinearController`),
+      server `linear`, URL `https://mcp.linear.app/mcp` (read-write;
+      `/mcp/readonly` is a future toggle).
+    - `plugin_store.py` +`GITLAB`/`LINEAR` constants (thin, no capability model);
+      `plugins_panel.py` +`_gitlab_icon`/`_linear_icon` (drawn), `_GitLabDetail`/
+      `_LinearDetail` (copies of `_JiraDetail`), catalog tuples → live, stack
+      pages **4** (gitlab) / **5** (linear), `PluginsPanel(gitlab=, linear=)`
+      kwargs; `terminal_panel.py` builds both controllers, `_wire_gitlab_for` /
+      `_wire_linear_for` (called from `_add_workspace` / `_do_handoff` / routine
+      launch), `_on_{gitlab,linear}_{connected,disconnected}` status nudges,
+      teardown `unwire_all()`+`shutdown()`.
+    - **No Supabase migration** (`plugin_connections` is provider-generic), **no
+      `entitlements` change** (reuses `plugins_enabled`, Pro gate).
+    - Tests: `test_gitlab_mcp.py` / `test_linear_mcp.py` (43 each),
+      `test_gitlab_controller.py` / `test_linear_controller.py` (17 each),
+      `test_plugin_store.py` §8/§9 (49 total), `test_plugins_panel.py` §7/§8
+      (106 total). All green; `test_panel.py` unchanged bar the lone
+      pre-existing offscreen "drop focus" flake.
+
 ## Running / testing
 
 ```cmd
@@ -947,6 +978,11 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_new_workspace_dialog.py  # new-workspace agent dialog; offline
 .venv\Scripts\python.exe test_agentdeck_splash.py      # launch splash; offline
 .venv\Scripts\python.exe test_plugins_panel.py         # sidebar nav + plugins panel; offline
+.venv\Scripts\python.exe test_plugin_store.py          # plugins.json + provider constants; offline
+.venv\Scripts\python.exe test_gitlab_mcp.py            # GitLab MCP injector; offline
+.venv\Scripts\python.exe test_linear_mcp.py            # Linear MCP injector; offline
+.venv\Scripts\python.exe test_gitlab_controller.py     # GitLab Qt bridge; offline
+.venv\Scripts\python.exe test_linear_controller.py     # Linear Qt bridge; offline
 .venv\Scripts\python.exe test_notes_store.py           # notebook JSON store; offline
 .venv\Scripts\python.exe test_notes_panel.py           # notes panel + sidebar nav; offline
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
