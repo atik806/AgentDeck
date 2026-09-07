@@ -1024,6 +1024,57 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       sync with `theme._SCHEMES` by hand).
     - Tests: `test_theme.py` §8, `test_settings_dialog.py` §6b/§6c.
 
+36. **Skills — reusable SKILL.md instructions, wired into every agent
+    (2026-09-07, v0.16.0, branch `feat/skills`)** — a new sidebar nav view
+    (below "Routines"). A skill is a saved `{name, description, body}` Markdown
+    doc; enabled skills are *materialized* where each agent discovers
+    instructions, and an agent can review + rewrite one. **Pro** (same tier as
+    Routines / Plugins / Handoff). Full design: `docs/SKILLS.md`.
+    - `skills_store.py` — Qt-free, same rules as `notes_store` /
+      `routines_store`: one atomic JSON file `%APPDATA%\multi-terminal\skills.json`
+      (body inline — the JSON is the source of truth), tolerant load, `Skill`
+      dataclass. `slug` derived from `name` once at creation, never changes (it
+      is a dir/file name). `parse_frontmatter` (a tiny `key: value` YAML subset,
+      no dep) / `render_skill_markdown`. `import_markdown` (frontmatter → first
+      `#` heading → fallback name). `merge_cloud(rows)` / `cloud_rows()` = LWW by
+      slug for the sync layer.
+    - `skills_sync.py` — Qt-free materializer. **Claude**: one dir per skill at
+      `~/.claude/skills/<slug>/SKILL.md` + a `.agentdeck-managed` marker (a dir
+      without the marker is the user's own — never touched). **Everyone else**:
+      `<folder>/.agentdeck/skills/<slug>.md` + a marker-delimited
+      `<!-- agentdeck:skills:start -->…end -->` block in `<folder>/AGENTS.md`
+      (created if absent; `skills_materialize_agents_md` config opt-out). Working
+      copies at `%APPDATA%\multi-terminal\skills\<slug>.md`. Ledger
+      `skills_state.json` records what we wrote so disable/delete/plan-lapse
+      (`remove_all()`) undoes exactly that. Env overrides `ADK_AGENT_HOME_DIR` /
+      `ADK_SKILLS_DIR` / `ADK_SKILLS_STATE` sandbox every path for tests.
+    - `skills_panel.py` — `SkillsPanel` + `skill_icon`. List (New / Upload
+      SKILL.md) ∥ editor (name / description / monospace body / enabled) + an
+      action bar: **Improve with agent** (agent picker, remembers
+      `skills_improve_agent`), **Open file**, **Export…**, **Delete**. Debounced
+      autosave, `flush()` on nav-away — mirrors `RoutinesPanel`. Signals
+      `changed` / `count_changed` / `improve_requested`.
+    - `skills_cloud.py` — `SkillsCloud` (Qt): mirrors the library to
+      `public.skills` (RLS `user_id = auth.uid()`). Pull on launch / when the
+      plan resolves to Pro; debounced push on every change; soft-delete
+      tombstones. Gated on `account_cloud_sync` + `cloud_sync_enabled` (Pro).
+      Migration `supabase/migrations/20260908120000_skills.sql`.
+    - `terminal_panel.py` — `_skills_store` / `_skills_panel` / `_skills_cloud`
+      in `_main_stack`; `_show_skills` / `_leave_skills` / `_skills_active`
+      folded into every nav-view switch + `_refresh_sidebar`. `_materialize_skills`
+      runs on `_apply_entitlements` (plan resolve) and on `_skills_panel.changed`
+      — no-op / `remove_all()` when not Pro. `_improve_skill_with_agent` bakes a
+      review prompt (via `agent_sessions.initial_prompt_command`), spawns a pane,
+      and registers a watch keyed on a content hash; the 1 s `_refresh_status`
+      watchdog (`_check_skill_watches`) re-imports the agent's edits (source →
+      `agent`, `last_reviewed_*`), re-materializes, and pushes to cloud.
+    - `entitlements.skills_enabled(plan)` = `is_pro`.
+    - Tests: `test_skills_store.py` (52), `test_skills_sync.py` (33),
+      `test_skills_panel.py` (24), `test_entitlements.py` (+skills gate),
+      `test_panel.py` §32 (Pro gate + improve-with-agent pane spawn + watch
+      re-import). Full offline suite green; `test_panel.py` green bar the lone
+      pre-existing offscreen "drop focus" flake.
+
 ## Running / testing
 
 ```cmd
@@ -1052,6 +1103,9 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_linear_controller.py     # Linear Qt bridge; offline
 .venv\Scripts\python.exe test_notes_store.py           # notebook JSON store; offline
 .venv\Scripts\python.exe test_notes_panel.py           # notes panel + sidebar nav; offline
+.venv\Scripts\python.exe test_skills_store.py          # skills JSON store + frontmatter; offline
+.venv\Scripts\python.exe test_skills_sync.py           # skills materialize/prune/ledger; offline
+.venv\Scripts\python.exe test_skills_panel.py          # skills panel + sidebar nav; offline
 .venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
 .venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
 .venv\Scripts\python.exe test_settings_dialog.py       # Settings dialog + Updates section; offline

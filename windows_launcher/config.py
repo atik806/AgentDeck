@@ -106,6 +106,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # so it is kept modest on purpose.
     "handoff_max_transcript_chars": 60_000,
 
+    # --- Skills (Pro; the Skills sidebar view) ---
+    # Also write the managed "## Skills" block into each workspace folder's
+    # AGENTS.md so non-Claude agents (which have no native skill discovery) can
+    # find enabled skills. Only ever touches text between AgentDeck's markers.
+    # Set False to materialize skills for Claude Code only.
+    "skills_materialize_agents_md": True,
+    # Last agent picked in "Improve with agent" -- an agents.py key. Seeds the
+    # picker next time. Machine-local.
+    "skills_improve_agent": "",
+
     # --- Appearance ---
     "theme": "system",
     # Named colour scheme -- see theme._SCHEMES. "catppuccin" is the default
@@ -226,6 +236,8 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "handoff_fork_session": bool,
     "handoff_include_thinking": bool,
     "handoff_max_transcript_chars": int,
+    "skills_materialize_agents_md": bool,
+    "skills_improve_agent": str,
     "theme": str,
     "color_scheme": str,
     "window_width": int,
