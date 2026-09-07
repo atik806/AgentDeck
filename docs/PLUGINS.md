@@ -568,14 +568,16 @@ into each agent's own shape:
 
 * **GitHub** injects a bearer token, so it wires **every** agent with
   `mcp_remote_headers` (all 11 — Codex via `bearer_token`).
-* **Vercel / Jira** are tokenless; the agent runs the MCP OAuth handshake itself.
-  They wire only agents in `mcp_targets.OAUTH_ALLOWLIST` —
-  **`{"claude", "opencode"}` today** (opencode added 2026-09-02: its remote-MCP
-  support does auto-DCR OAuth and opens the browser on first tool use).
-  Phase 3 widens this set one agent at a time as each in-pane OAuth command is
-  verified. `oauth_hint(agent, server)` supplies the per-agent instruction
+* **Vercel / Jira / GitLab / Linear** are tokenless; the agent runs the MCP OAuth
+  handshake itself. As of **2026-09-07 `mcp_targets.OAUTH_ALLOWLIST` is every
+  MCP-capable agent** (all 11 — `aider` has no MCP support and isn't in
+  `_TARGETS`). `oauth_hint(agent, server)` supplies the per-agent instruction
   (`/mcp` for Claude, `codex mcp login <server>` for Codex, `/mcp auth` for
-  Gemini/Qwen, …) shown in the detail page and the status bar.
+  Gemini/Qwen, a first-use browser prompt for the rest) shown in the detail page
+  and the status bar. Hold one agent back with `McpTarget.oauth = False`.
+  *(Verified in-pane: Claude `/mcp`, opencode auto-DCR. The other nine are wired
+  on the strength of their documented remote-MCP OAuth support; a dead entry on
+  an agent that can't complete the flow is inert and is removed on disconnect.)*
 
 ### The ledger — `%APPDATA%\multi-terminal\mcp_state.json`
 
@@ -629,8 +631,13 @@ suites redirect config + ledger via `ADK_MCP_CONFIG_DIR` / `ADK_MCP_STATE`.
     tool use. Detail pages gained a **Re-sync to agents** button
     (`_VercelDetail._on_resync` / `_JiraDetail._on_resync` → `controller.ensure_wired()`)
     so a plugin connected before a new agent was installed can be pushed to it
-    without an app restart. Still Claude-only for `codex` / `gemini` / `qwen` /
-    the rest until their in-pane command is verified.
+    without an app restart.
+  * **all agents (2026-09-07, v0.15.0)** — `OAUTH_ALLOWLIST` is now every entry in
+    `_TARGETS` (`copilot`'s `oauth=False` guard dropped). Every tokenless plugin
+    (Vercel / Jira / GitLab / Linear) writes into every installed MCP-capable
+    agent; each agent's authorise command comes from `oauth_hint()`. Only Claude
+    and opencode are verified end-to-end; the rest rely on documented support and
+    fail inert.
 * **Phase 4** — optional Settings toggle for `plugins_wire_all_agents`.
 
 ### Known risks
@@ -656,9 +663,9 @@ The fourth live card. **A clone of the Vercel plugin (§12)** — the `_mcp` /
 GitLab's official MCP server is **hosted and OAuth-only** —
 `https://gitlab.com/api/v4/mcp`, transport `type: "http"`, OAuth 2.0 with Dynamic
 Client Registration. It does not take an API bearer token on this path, and there
-is no official local binary to ship. Approved MCP clients run the OAuth
-themselves: Claude Code via `/mcp`, opencode via its auto-DCR flow on first tool
-use. So AgentDeck never handles a GitLab token — status is *"Enabled"*, not
+is no official local binary to ship. The agent runs the OAuth itself (Claude via
+`/mcp`, opencode via auto-DCR, the rest via `oauth_hint()`'s per-agent command).
+So AgentDeck never handles a GitLab token — status is *"Enabled"*, not
 *"Connected as @user"*.
 
 **gitlab.com only in v1.** A self-hosted instance is `https://<host>/api/v4/mcp`;
@@ -711,8 +718,8 @@ plugin (§12).**
 Linear's official MCP server is **hosted and OAuth-only** —
 `https://mcp.linear.app/mcp`, streamable HTTP (`type: "http"`), OAuth 2.1 with
 Dynamic Client Registration. No API-token path in this flow, no local binary.
-Claude Code authorises via `/mcp`; opencode via auto-DCR. AgentDeck never handles
-a Linear token — status is *"Enabled"*.
+The agent authorises itself (Claude `/mcp`, opencode auto-DCR, others via
+`oauth_hint()`). AgentDeck never handles a Linear token — status is *"Enabled"*.
 
 The wired endpoint is **read-write**. Linear also serves read-only tools at
 `https://mcp.linear.app/mcp/readonly` — a future per-connection toggle; switch

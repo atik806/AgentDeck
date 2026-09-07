@@ -126,9 +126,9 @@ print("[4] ensure_wired no-ops when no target agent can run the OAuth handshake"
 with tempfile.TemporaryDirectory() as tmp:
     _reset_sandbox()
     jc = fresh_controller(tmp)
-    jc._config = {"agent": "codex", "plugins_wire_all_agents": False}
+    jc._config = {"agent": "aider", "plugins_wire_all_agents": False}
     jc._store.put(jira_controller.PluginConnection(JIRA))
-    check("ensure_wired declines -- codex isn't OAuth-capable yet", not jc.ensure_wired())
+    check("ensure_wired declines -- aider has no MCP support", not jc.ensure_wired())
 
     jc._config = {"agent": "claude", "plugins_wire_all_agents": False}
     check("ensure_wired writes for claude", jc.ensure_wired() and _atlassian_srv() is not None)

@@ -126,9 +126,9 @@ print("[4] ensure_wired no-ops when no target agent can run the OAuth handshake"
 with tempfile.TemporaryDirectory() as tmp:
     _reset_sandbox()
     vc = fresh_controller(tmp)
-    vc._config = {"agent": "codex", "plugins_wire_all_agents": False}
+    vc._config = {"agent": "aider", "plugins_wire_all_agents": False}
     vc._store.put(vercel_controller.PluginConnection(VERCEL))
-    check("ensure_wired declines -- codex isn't OAuth-capable yet", not vc.ensure_wired())
+    check("ensure_wired declines -- aider has no MCP support", not vc.ensure_wired())
 
     vc._config = {"agent": "claude", "plugins_wire_all_agents": False}
     check("ensure_wired writes for claude", vc.ensure_wired() and _vercel_srv() is not None)

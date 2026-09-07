@@ -46,7 +46,7 @@ print("[1] supports_agent -- tokenless OAuth server: only OAUTH_ALLOWLIST agents
 check("claude supported", jira_mcp.supports_agent("claude"))
 check("claude with args supported", jira_mcp.supports_agent("claude --dangerously-skip-permissions"))
 check("opencode supported (phase 3)", jira_mcp.supports_agent("opencode"))
-check("codex not yet supported (phased OAuth rollout)", not jira_mcp.supports_agent("codex"))
+check("codex supported (all MCP agents wired)", jira_mcp.supports_agent("codex"))
 check("aider not supported", not jira_mcp.supports_agent("aider"))
 check("plain shell not supported", not jira_mcp.supports_agent(""))
 
@@ -130,7 +130,7 @@ _reset_ledger()
 print("[6] unsupported agent / project-scope sweep")
 with tempfile.TemporaryDirectory() as d:
     cc = Path(d) / ".claude.json"
-    check("codex agent -> no-op", not jira_mcp.inject(agent_command="codex", claude_config=cc))
+    check("aider agent -> no-op (no MCP support)", not jira_mcp.inject(agent_command="aider", claude_config=cc))
     check("no file written", not cc.exists())
 
     cc.write_text(json.dumps({

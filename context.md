@@ -931,9 +931,15 @@ console — hence the crash-to-MessageBox handler in `main.py`).
     **official hosted OAuth-only MCP server** (no bearer token, no local
     binary), so both are exact clones of the Vercel/Jira thin-plugin pattern
     (§12/§13 of PLUGINS.md): AgentDeck only drops a *tokenless* `{"type":"http",
-    "url":…,"x-agentdeck-managed":true}` entry into each OAuth-capable agent's
-    user-scope config (`OAUTH_ALLOWLIST = {claude, opencode}` — unchanged); the
-    agent runs the OAuth itself (`/mcp` for Claude, auto-DCR for opencode).
+    "url":…,"x-agentdeck-managed":true}` entry into each MCP-capable agent's
+    user-scope config; the agent runs the OAuth itself (`/mcp` for Claude,
+    auto-DCR for opencode, `oauth_hint()`'s per-agent command for the rest).
+    **Same change widened `mcp_targets.OAUTH_ALLOWLIST` to ALL 11 agents**
+    (`copilot`'s `oauth=False` guard dropped) — so Vercel/Jira/GitLab/Linear now
+    also wire codex, gemini, qwen, cursor-agent, amp, antigravity, crush, goose,
+    copilot. Only Claude + opencode are verified end-to-end; the rest ride on
+    documented remote-MCP OAuth support and fail inert (dead entry, removed on
+    disconnect). `aider` stays out (no MCP support, absent from `_TARGETS`).
     - **GitLab** — `gitlab_mcp.py` / `gitlab_controller.py` (`GitLabController`),
       server `gitlab`, URL `https://gitlab.com/api/v4/mcp`. gitlab.com only in
       v1 (self-hosted would need a per-connection URL field — override

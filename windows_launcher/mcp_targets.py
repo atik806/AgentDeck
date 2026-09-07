@@ -98,13 +98,18 @@ class McpTarget:
     oauth: bool = True
 
 
-# Vercel / Jira are tokenless -- the agent runs the OAuth handshake itself. Until
-# each agent's in-pane flow is verified, only these agents get those two. Phase 3
-# of docs/PLUGINS.md §14 widens this set one agent at a time:
-#   * claude   -- `/mcp` in the pane, browser authorise (verified)
-#   * opencode -- native remote-MCP auto-DCR OAuth, opens the browser on first
-#                 tool use (verified 2026-09-02)
-OAUTH_ALLOWLIST = {"claude", "opencode"}
+# Vercel / Jira / GitLab / Linear are tokenless -- the agent runs the remote-MCP
+# OAuth handshake itself (browser or device flow). Every MCP-capable agent
+# AgentDeck can launch supports a hosted OAuth MCP server, so all of them are
+# wired; each agent's one-time in-pane authorise command is in ``_OAUTH_HINTS``
+# below (``/mcp`` for Claude, ``codex mcp login <server>`` for Codex, ``/mcp auth``
+# for Gemini/Qwen, a first-use browser prompt for the rest). ``aider`` has no MCP
+# support and is absent from ``_TARGETS`` entirely. Hold an individual agent back
+# by setting its ``McpTarget.oauth = False``.
+OAUTH_ALLOWLIST = {
+    "claude", "codex", "copilot", "gemini", "cursor-agent", "opencode",
+    "amp", "antigravity", "qwen", "crush", "goose",
+}
 
 
 _TARGETS: Dict[str, McpTarget] = {
@@ -126,7 +131,6 @@ _TARGETS: Dict[str, McpTarget] = {
         path=lambda: _env_dir("COPILOT_HOME", _home() / ".copilot") / "mcp-config.json",
         server_map=("mcpServers",), type_value="http",
         server_extra={"tools": ["*"]},
-        oauth=False,   # Copilot CLI OAuth-for-remote-MCP support unconfirmed
     ),
     "gemini": McpTarget(
         key="gemini", label="Gemini CLI", fmt="json",

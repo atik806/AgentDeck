@@ -43,10 +43,12 @@ check("caps(aider) all-False", mcp_targets.caps("aider") ==
 check("caps(unknown) all-False", not mcp_targets.caps("nope")["mcp"])
 check("every agent can bear a remote token (GitHub)",
       all(mcp_targets.caps(k)["mcp_remote_headers"] for k in keys))
-check("OAuth-capable set is claude + opencode (phased rollout)",
-      [k for k in keys if mcp_targets.caps(k)["mcp_oauth"]] == ["claude", "opencode"])
-check("a non-allowlisted agent stays OAuth-incapable", not mcp_targets.caps("codex")["mcp_oauth"]
-      and not mcp_targets.caps("gemini")["mcp_oauth"])
+check("every MCP-capable agent is OAuth-capable",
+      [k for k in keys if mcp_targets.caps(k)["mcp_oauth"]] == keys)
+check("OAUTH_ALLOWLIST covers every registered agent",
+      mcp_targets.OAUTH_ALLOWLIST == set(keys))
+check("codex + gemini are OAuth targets now", mcp_targets.caps("codex")["mcp_oauth"]
+      and mcp_targets.caps("gemini")["mcp_oauth"])
 check("codex format toml, goose yaml", mcp_targets.caps("codex")["format"] == "toml"
       and mcp_targets.caps("goose")["format"] == "yaml")
 
