@@ -83,6 +83,34 @@ print("[6] apply_palette doesn't explode")
 theme.apply_palette(app)
 check("app palette window colour set", app.palette().window().color().isValid())
 
+print("[8] named colour schemes")
+labels = theme.scheme_labels()
+check("scheme_labels lists several, Catppuccin first",
+      len(labels) >= 4 and labels[0][0] == "catppuccin")
+cat_accent = theme.color("accent", "dark")
+theme.init({"theme": "dark", "color_scheme": "dracula"})
+check("init reads color_scheme", theme.scheme() == "dracula")
+check("a scheme actually re-colours a token", theme.color("accent", "dark") != cat_accent)
+check("scheme tokens are still hex", theme.color("window_bg").startswith("#"))
+for m in theme.MODES:
+    check(f"{m}: scheme ansi still has 16 slots", len(theme.ansi(m)) == 16)
+check("Dracula is dark-only", theme.scheme_is_dark_only("dracula"))
+check("Catppuccin / Gruvbox have a light variant",
+      not theme.scheme_is_dark_only("catppuccin")
+      and not theme.scheme_is_dark_only("gruvbox"))
+check("a dark-only scheme in light mode still returns a colour",
+      theme.color("window_bg", "light").startswith("#"))
+seen = []
+theme.manager().changed.connect(seen.append)
+theme.set_scheme("nord")
+check("set_scheme fires changed", seen == [theme.mode()])
+seen.clear()
+theme.set_scheme("nord")  # same
+check("set_scheme to the same scheme is a no-op", seen == [])
+theme.set_scheme("no-such-scheme")
+check("an unknown scheme falls back to the default", theme.scheme() == theme.DEFAULT_SCHEME)
+theme.init({"theme": "dark", "color_scheme": "catppuccin"})
+
 print("[7] the panel toggles every surface without raising")
 theme.set_mode("dark")
 from terminal_panel import TerminalPanel
@@ -101,6 +129,20 @@ check("toolbar restyled to the light surface",
 panel._toggle_theme()
 app.processEvents()
 check("flipped back to dark", theme.mode() == "dark")
+
+print("[9] the panel applies a colour-scheme + font-family change")
+import terminal_view as _tv
+panel._on_settings_scheme_changed("dracula")
+app.processEvents()
+check("scheme change took", theme.scheme() == "dracula")
+check("scheme change kept the mode", theme.mode() == "dark")
+check("a Dracula token reached the toolbar QSS",
+      theme.color("toolbar_bg") in panel._toolbar.styleSheet())
+panel._on_settings_font_family_changed("Consolas")
+app.processEvents()
+check("font family recorded app-wide", _tv.active_font_family() == "Consolas")
+panel._on_settings_font_family_changed("")
+panel._on_settings_scheme_changed("catppuccin")
 
 # ---------------------------------------------------------------------------
 print(f"\n{_passed} passed, {_failed} failed")

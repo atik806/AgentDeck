@@ -1,7 +1,7 @@
 """Settings -- app-wide preferences that otherwise only live in ``config.json``:
-appearance (light / dark / system, terminal font size), startup behaviour,
-updates, agent trust, and voice input. The remaining toolbar-adjacent settings
-(shell, layout) keep their own control there.
+appearance (light / dark / system, colour scheme, terminal font + size), startup
+behaviour, updates, agent trust, and voice input. The remaining toolbar-adjacent
+settings (shell, layout) keep their own control there.
 
 :class:`SettingsPanel` is the real thing: a settings-app-style two-pane widget
 -- a column of category buttons on the left (``Appearance`` / ``Startup`` /
@@ -75,6 +75,10 @@ class SettingsPanel(QWidget):
 
     #: A theme radio was picked; the new key ("system"/"light"/"dark").
     theme_changed = Signal(str)
+    #: The colour-scheme dropdown changed; the new scheme key.
+    scheme_changed = Signal(str)
+    #: The terminal-font dropdown changed; the new family ("" = automatic).
+    font_family_changed = Signal(str)
     #: The font stepper changed; the new size in px.
     font_size_changed = Signal(int)
     #: Any voice_* setting changed -- the caller re-syncs the (already built)
@@ -218,6 +222,48 @@ class SettingsPanel(QWidget):
         theme_row.addStretch(1)
         outer.addLayout(theme_row)
         self._theme_group.buttonToggled.connect(self._on_theme_pick)
+        outer.addSpacing(14)
+
+        # -- colour scheme --------------------------------------------------
+        outer.addWidget(QLabel("Colour scheme"))
+        self._scheme_combo = QComboBox()
+        for key, label in theme.scheme_labels():
+            self._scheme_combo.addItem(label, key)
+        cur_scheme = str(self._config.get("color_scheme", theme.DEFAULT_SCHEME)
+                         or theme.DEFAULT_SCHEME).lower()
+        si = self._scheme_combo.findData(cur_scheme)
+        self._scheme_combo.setCurrentIndex(si if si >= 0 else 0)
+        # Connect after the initial index is set, so building the panel doesn't
+        # fire a spurious change (writing config, emitting scheme_changed).
+        self._scheme_combo.currentIndexChanged.connect(self._on_scheme_pick)
+        outer.addWidget(self._scheme_combo)
+        self._scheme_hint = QLabel("")
+        self._scheme_hint.setObjectName("hint")
+        self._scheme_hint.setWordWrap(True)
+        outer.addWidget(self._scheme_hint)
+        self._sync_scheme_hint()
+        outer.addSpacing(14)
+
+        # -- terminal font family ------------------------------------------
+        import terminal_view
+
+        outer.addWidget(QLabel("Terminal font"))
+        self._font_combo = QComboBox()
+        self._font_combo.addItem("Automatic (best installed)", "")
+        for fam in terminal_view.available_monospace_families():
+            self._font_combo.addItem(fam, fam)
+        cur_fam = str(self._config.get("font_family", "") or "")
+        fi = self._font_combo.findData(cur_fam)
+        if fi < 0 and cur_fam:  # saved font not installed on this machine
+            self._font_combo.addItem(f"{cur_fam}  (not installed)", cur_fam)
+            fi = self._font_combo.findData(cur_fam)
+        self._font_combo.setCurrentIndex(fi if fi >= 0 else 0)
+        self._font_combo.currentIndexChanged.connect(self._on_font_family_pick)
+        outer.addWidget(self._font_combo)
+        ffhint = QLabel("Monospace fonts only — a variable-width face misaligns every column.")
+        ffhint.setObjectName("hint")
+        ffhint.setWordWrap(True)
+        outer.addWidget(ffhint)
         outer.addSpacing(14)
 
         outer.addWidget(QLabel("Terminal font size"))
@@ -729,6 +775,26 @@ class SettingsPanel(QWidget):
         mode = button.property("theme_key")
         self._set("theme", mode)
         self.theme_changed.emit(mode)
+
+    def _on_scheme_pick(self, _idx: int) -> None:
+        key = self._scheme_combo.currentData() or theme.DEFAULT_SCHEME
+        self._set("color_scheme", key)
+        self._sync_scheme_hint()
+        self.scheme_changed.emit(key)
+
+    def _sync_scheme_hint(self) -> None:
+        key = self._scheme_combo.currentData() or theme.DEFAULT_SCHEME
+        dark_only = theme.scheme_is_dark_only(key)
+        self._scheme_hint.setText(
+            "This is a dark scheme — it stays dark even in Light mode."
+            if dark_only else ""
+        )
+        self._scheme_hint.setVisible(dark_only)
+
+    def _on_font_family_pick(self, _idx: int) -> None:
+        family = self._font_combo.currentData() or ""
+        self._set("font_family", family)
+        self.font_family_changed.emit(family)
 
     def _bump_font(self, delta: int) -> None:
         size = max(self._font_lo, min(self._font_hi, self._font_size + delta))

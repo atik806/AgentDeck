@@ -41,7 +41,10 @@ import theme
 from pty_backend import DEFAULT_SHELL, PtySession
 from vt_screen import DEFAULT_SCROLLBACK, Palette, TerminalScreen, TerminalStream
 
-__all__ = ["TerminalView", "TerminalCanvas", "preferred_font"]
+__all__ = [
+    "TerminalView", "TerminalCanvas", "preferred_font",
+    "set_font_family", "active_font_family", "available_monospace_families",
+]
 
 
 #: Repaint budget. 16 ms is one frame at 60 Hz.
@@ -125,15 +128,66 @@ _MONOSPACE_PREFERENCE = (
     "Courier New",
 )
 
+#: App-wide chosen terminal font family (``config["font_family"]``). Empty means
+#: "pick the best installed" -- see :func:`preferred_font`. Set once at startup
+#: and whenever Settings changes it (:func:`set_font_family`), so a pane built
+#: later comes up with the right face without threading it through every ctor.
+_font_family = ""
+
+
+def set_font_family(family: str) -> None:
+    """Record the user's chosen terminal font family (``""`` = automatic)."""
+    global _font_family
+    _font_family = (family or "").strip()
+
+
+def active_font_family() -> str:
+    return _font_family
+
+
+_monospace_cache: "Optional[list[str]]" = None
+
+
+def available_monospace_families() -> "list[str]":
+    """Installed fixed-pitch font families, sorted -- the Settings font picker.
+
+    Proportional fonts are excluded on purpose: cell geometry comes from font
+    metrics, so a variable-width face makes every column drift. Cached: walking
+    the font database (with a fixed-pitch probe per family) is not free and the
+    installed set doesn't change within a session.
+    """
+    global _monospace_cache
+    if _monospace_cache is not None:
+        return list(_monospace_cache)
+    out: "list[str]" = []
+    for fam in QFontDatabase.families():
+        if fam.startswith("@"):  # Windows' vertical-writing duplicates
+            continue
+        try:
+            if QFontDatabase.isFixedPitch(fam):
+                out.append(fam)
+        except Exception:  # noqa: BLE001 - an odd family name must not break the list
+            continue
+    _monospace_cache = sorted(out, key=str.casefold)
+    return list(_monospace_cache)
+
 
 def preferred_font(size: int) -> QFont:
-    """The best monospace font installed, at ``size`` points.
+    """The terminal font at ``size`` points.
 
-    Cell geometry is derived from font metrics, so a proportional font would
-    make every column drift. Falling back to the system fixed-pitch font
-    guarantees we never end up with one.
+    Honours :data:`_font_family` when it names an installed family; otherwise
+    the first installed of :data:`_MONOSPACE_PREFERENCE`, then the system
+    fixed-pitch font. Cell geometry is derived from font metrics, so a
+    proportional font would make every column drift -- the fixed-pitch
+    fallback guarantees we never end up with one.
     """
     families = set(QFontDatabase.families())
+    if _font_family and _font_family in families:
+        font = QFont(_font_family, size)
+        font.setStyleHint(QFont.Monospace)
+        font.setFixedPitch(True)
+        return font
+
     for name in _MONOSPACE_PREFERENCE:
         if name in families:
             font = QFont(name, size)
@@ -1509,6 +1563,11 @@ class TerminalView(QWidget):
 
     def set_font_size(self, size: int) -> None:
         self._font_size = max(6, min(48, size))
+        self.canvas.set_font(preferred_font(self._font_size))
+
+    def reapply_font(self) -> None:
+        """Re-resolve the font at the current size -- called after the app-wide
+        font family changes (:func:`set_font_family`)."""
         self.canvas.set_font(preferred_font(self._font_size))
 
     def apply_theme(self) -> None:

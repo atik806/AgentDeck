@@ -380,6 +380,10 @@ class TerminalPane(QFrame):
         self._font_size = size
         self.view.set_font_size(size)
 
+    def reapply_font(self) -> None:
+        """Re-resolve the terminal font after the app-wide family changed."""
+        self.view.reapply_font()
+
     def is_alive(self) -> bool:
         return self.view.is_alive()
 
@@ -878,6 +882,11 @@ class Workspace(QWidget):
         self._font_size = size
         for pane in self._panes:
             pane.set_font_size(size)
+
+    def reapply_font(self) -> None:
+        """Push the app-wide font-family change to every pane."""
+        for pane in self._panes:
+            pane.reapply_font()
 
     def set_shell(self, shell: str) -> None:
         self._shell = shell

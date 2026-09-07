@@ -73,8 +73,8 @@ Velopack `vpk pack`), then `vpk upload github --tag v<version>` — or just push
 Before the wizard, a **sign-in window** requires **Continue with Google** (via
 Supabase) — a signed-in account is mandatory; the only other button quits. It
 also brings a toolbar profile chip and cloud sync of a small config slice
-(working folder, recent folders, agent, terminal count, layout, font, shell,
-theme) across machines. The session is stored DPAPI-encrypted at
+(working folder, recent folders, agent, terminal count, layout, font, font
+family, shell, theme, colour scheme) across machines. The session is stored DPAPI-encrypted at
 `%APPDATA%\multi-terminal\session.bin`; **Sign out** in the ⚙ account dialog
 forgets it and puts the sign-in window back up. If the session is lost while the
 app is running, you're prompted to sign in again. `--no-login` (build-only,
@@ -202,6 +202,8 @@ the sidebar; `Ctrl+Shift+PgDn` / `Ctrl+Shift+PgUp` step between workspaces.
   "default_shell": "auto",
   "layout": "grid",
   "font_size": 11,
+  "font_family": "",
+  "color_scheme": "catppuccin",
   "scrollback": 5000,
   "window_width": 1400,
   "window_height": 880,
@@ -225,6 +227,8 @@ the sidebar; `Ctrl+Shift+PgDn` / `Ctrl+Shift+PgUp` step between workspaces.
 | `default_shell` | `auto`, `pwsh`, `powershell`, `cmd`, `bash` — `auto` picks the best installed |
 | `layout` | `grid`, `columns`, `rows` |
 | `font_size` | 6–48 |
+| `font_family` | Terminal font; `""` = best installed monospace. Settings ▸ Appearance lists the fixed-pitch families. |
+| `color_scheme` | `catppuccin` (default), `dracula`, `nord`, `tokyonight`, `gruvbox`. `theme` stays the light/dark axis; dark-only schemes ignore Light mode. |
 | `scrollback` | Lines kept per pane; `0` disables |
 | `working_folder` | Folder the terminals start in; `""` = home. The wizard's step 2. |
 | `recent_folders` | The wizard's quick-launch list, newest first |

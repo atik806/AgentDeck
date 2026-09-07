@@ -990,6 +990,40 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       of the send fix was swept into commit `9c06409` by a concurrent session's
       `commit --amend`; the rest is its own commit(s).
 
+35. **Settings ▸ Appearance — terminal font picker + named colour schemes
+    (2026-09-07)**
+    - **Terminal font:** new `config["font_family"]` ("" = automatic). A
+      dropdown of installed *fixed-pitch* families (Settings ▸ Appearance),
+      plus "Automatic (best installed)". `terminal_view` grew module state
+      `_font_family` + `set_font_family()` / `active_font_family()` /
+      `available_monospace_families()`; `preferred_font()` honours it.
+      `TerminalPanel.__init__` seeds it from config before the first pane;
+      `_on_settings_font_family_changed` sets it + `Workspace.reapply_font()`
+      → `TerminalPane.reapply_font()` → `TerminalView.reapply_font()` (re-runs
+      `canvas.set_font(preferred_font(size))`). A pane built later picks it up
+      for free. A saved font that isn't installed still shows in the dropdown,
+      flagged "(not installed)".
+    - **Colour scheme:** new `config["color_scheme"]` (default `catppuccin`).
+      `theme.py` keeps Catppuccin as the hand-authored base; other schemes
+      (Dracula, Nord, Tokyo Night, Gruvbox) are a compact ~20-value spec run
+      through `theme._expand()` onto the full token table. `_SCHEMES` +
+      `scheme()` / `set_scheme()` / `scheme_labels()` / `scheme_is_dark_only()`
+      / `DEFAULT_SCHEME`. `color()` / `ansi()` consult the active scheme, then
+      fall back to the Catppuccin table for the mode. Schemes with no `light`
+      variant (Dracula/Nord/Tokyo Night) show their dark palette in Light mode
+      (the picker says so). `set_scheme()` fires `theme.manager().changed`, so
+      the existing `_on_theme_changed` fan-out repaints everything incl. the
+      terminal (`vt_screen.Palette` already reads `term_*` + `ansi()` from
+      `theme`). Settings ▸ Appearance dropdown → `scheme_changed` signal →
+      `TerminalPanel._on_settings_scheme_changed`.
+    - `_on_theme_changed` no longer clobbers `config["theme"]` when it's
+      `"system"` (latent bug); the toolbar toggle now pins the concrete mode
+      itself (`_toggle_theme`).
+    - Both keys are in `account.CLOUD_KEYS` (sync with `theme`/`font_size`) and
+      `config.CONFIG_SCHEMA` (+ `color_scheme` in `CONFIG_CHOICES`, kept in
+      sync with `theme._SCHEMES` by hand).
+    - Tests: `test_theme.py` §8, `test_settings_dialog.py` §6b/§6c.
+
 ## Running / testing
 
 ```cmd

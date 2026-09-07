@@ -198,9 +198,12 @@ class TerminalPanel(QMainWindow):
             int(self.config.get("window_height", 880)),
         )
 
-        # Resolve light/dark once, then follow further toggles.
+        # Resolve light/dark + colour scheme once, then follow further changes.
         theme.init(self.config)
         theme.manager().changed.connect(self._on_theme_changed)
+        # App-wide terminal font family, before the first pane is built.
+        import terminal_view
+        terminal_view.set_font_family(self.config.get("font_family", ""))
         self._apply_window_chrome()
 
         # Built before the toolbar so the toolbar can gate the Update button on
@@ -488,10 +491,14 @@ class TerminalPanel(QMainWindow):
         self._theme_btn.setToolTip(f"Switch to {nxt} mode")
 
     def _toggle_theme(self) -> None:
-        theme.toggle()  # fires theme.manager().changed -> _on_theme_changed
+        new_mode = theme.toggle()  # fires theme.manager().changed -> _on_theme_changed
+        # The toolbar toggle is an explicit choice -- pin it (overrides "system").
+        self.config["theme"] = new_mode
+        self._save_settings()
 
     def _on_theme_changed(self, mode: str) -> None:
-        """Re-skin every surface the panel owns for the new light/dark mode."""
+        """Re-skin every surface the panel owns for the new light/dark mode
+        (also fired for a colour-scheme change -- same repaint)."""
         app = QApplication.instance()
         if app is not None:
             theme.apply_palette(app)
@@ -517,8 +524,12 @@ class TerminalPanel(QMainWindow):
             workspace.apply_theme()
         self._refresh_sidebar()
 
-        self.config["theme"] = mode
-        self._save_settings()
+        # Only sync an already-concrete choice. "system" is left alone (its
+        # resolved mode isn't the user's stored preference), and a colour-scheme
+        # change persists its own key via the Settings panel, not here.
+        if str(self.config.get("theme", "")).strip().lower() in ("light", "dark"):
+            self.config["theme"] = mode
+            self._save_settings()
 
     def _show_settings(self) -> None:
         """Gear button -- swap the terminal area for the SETTINGS panel.
@@ -551,6 +562,18 @@ class TerminalPanel(QMainWindow):
 
     def _on_settings_theme_changed(self, _mode: str) -> None:
         theme.set_mode(theme.init(self.config))
+
+    def _on_settings_scheme_changed(self, key: str) -> None:
+        """Colour-scheme dropdown -> repaint every surface (theme.set_scheme
+        fires theme.manager().changed, which _on_theme_changed handles)."""
+        theme.set_scheme(key)
+
+    def _on_settings_font_family_changed(self, family: str) -> None:
+        """Terminal-font dropdown -> re-resolve the font in every open pane."""
+        import terminal_view
+        terminal_view.set_font_family(family)
+        for workspace in self._workspaces:
+            workspace.reapply_font()
 
     def _on_settings_voice_changed(self) -> None:
         """A voice_* setting changed in the (always-live) Settings panel.
@@ -646,6 +669,8 @@ class TerminalPanel(QMainWindow):
             voice_enabled=entitlements.voice_enabled(self._plan()),
         )
         self._settings_panel.theme_changed.connect(self._on_settings_theme_changed)
+        self._settings_panel.scheme_changed.connect(self._on_settings_scheme_changed)
+        self._settings_panel.font_family_changed.connect(self._on_settings_font_family_changed)
         self._settings_panel.font_size_changed.connect(self._set_font)
         self._settings_panel.voice_settings_changed.connect(self._on_settings_voice_changed)
         self._main_stack = QStackedWidget(central)

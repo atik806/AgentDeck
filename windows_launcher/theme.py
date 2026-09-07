@@ -23,9 +23,15 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor, QPalette
 
 __all__ = ["init", "mode", "set_mode", "toggle", "color", "qcolor", "ansi",
-           "apply_palette", "manager", "MODES"]
+           "apply_palette", "manager", "MODES",
+           "scheme", "set_scheme", "scheme_labels", "scheme_is_dark_only",
+           "DEFAULT_SCHEME"]
 
 MODES = ("light", "dark")
+
+#: The colour scheme shipped as the default -- the one the toolbar / splash /
+#: logo already speak. ``config["color_scheme"]`` selects among :data:`_SCHEMES`.
+DEFAULT_SCHEME = "catppuccin"
 
 # ---------------------------------------------------------------------------
 # Palettes
@@ -193,6 +199,236 @@ _TABLE = {"dark": _DARK, "light": _LIGHT}
 
 
 # ---------------------------------------------------------------------------
+# Named colour schemes
+# ---------------------------------------------------------------------------
+#
+# Catppuccin (above) is the default and is authored token-by-token. The other
+# schemes are given as a compact ~20-value "spec" -- a handful of surface
+# layers, foregrounds, one accent, three semantic colours and a 16-slot ANSI
+# ramp -- and :func:`_expand` maps that onto the full token table the same way
+# every time, so each scheme reads as one considered set rather than a pile of
+# hand-picked values. Any token a scheme doesn't produce falls back to the
+# Catppuccin table for the active mode (see :func:`color`).
+#
+# A scheme entry: ``{"label", "dark": <table>, ["light": <table>],
+# "ansi_dark": {...}, ["ansi_light": {...}]}``. A scheme with no ``light`` key
+# is dark-only -- Light mode shows its dark palette (the Settings picker says
+# so).
+
+def _expand(s: dict) -> dict:
+    """A full colour-token table from a compact scheme spec.
+
+    Spec keys: ``crust mantle base layer1 surface surface_hi overlay overlay_hi
+    fg fg_dim fg_faint accent accent_hi accent_soft accent2 on_accent danger
+    warn ok cursor`` (+ optional ``selection``).
+    """
+    sel = s.get("selection", s["accent"])
+    return {
+        "window_bg": s["base"],
+        "toolbar_bg": s["layer1"],
+        "toolbar_border": s["overlay"],
+        "surface": s["surface"],
+        "surface_hover": s["surface_hi"],
+        "surface_pressed": s["overlay_hi"],
+        "border": s["overlay"],
+        "border_hover": s["overlay_hi"],
+        "separator": s["overlay"],
+        "text": s["fg"],
+        "text_muted": s["fg_dim"],
+        "text_faint": s["fg_faint"],
+        "accent": s["accent"],
+        "accent_hover": s["accent_hi"],
+        "accent_text": s["accent"],
+        "accent_soft_bg": s["accent_soft"],
+        "on_accent": s["on_accent"],
+        "accent_2": s["accent2"],
+        "pro": s["warn"],
+        "danger": s["danger"],
+        "danger_hover": s["danger"],
+        "activity": s["ok"],
+        "sidebar_bg": s["mantle"],
+        "sidebar_hover": s["surface"],
+        "sidebar_active": s["accent_soft"],
+        "sidebar_text": s["fg_dim"],
+        "sidebar_heading": s["fg_faint"],
+        "sidebar_badge_bg": s["surface"],
+        "sidebar_badge_text": s["fg_faint"],
+        "card_bg": s["base"],
+        "card_raised": s["surface"],
+        "card_border": s["overlay"],
+        "dialog_text": s["fg"],
+        "status_bg": s["layer1"],
+        "status_text": s["fg_dim"],
+        "menu_bg": s["layer1"],
+        "menu_border": s["overlay_hi"],
+        "pane_header_bg": s["layer1"],
+        "pane_header_bg_active": s["accent_soft"],
+        "pane_border": s["overlay"],
+        "pane_border_active": s["accent"],
+        "pane_border_dead": s["danger"],
+        "pane_title": s["fg_dim"],
+        "pane_title_dead": s["danger"],
+        "splitter": s["crust"],
+        "term_bg": s["mantle"],
+        "term_fg": s["fg"],
+        "term_cursor": s["cursor"],
+        "term_selection": sel,
+        "voice_bg": s["crust"],
+        "voice_border": s["overlay"],
+        "voice_border_rec": s["danger"],
+        "voice_wave": s["fg_dim"],
+        "voice_wave_idle": s["fg_faint"],
+        "voice_partial_text": s["fg_dim"],
+        "voice_text": s["fg"],
+    }
+
+
+_DRACULA = {
+    "crust": "#191a21", "mantle": "#21222c", "base": "#282a36", "layer1": "#2b2d3a",
+    "surface": "#343746", "surface_hi": "#44475a", "overlay": "#44475a", "overlay_hi": "#565973",
+    "fg": "#f8f8f2", "fg_dim": "#c9cad4", "fg_faint": "#6272a4",
+    "accent": "#bd93f9", "accent_hi": "#d6acff", "accent_soft": "#343049", "accent2": "#8be9fd",
+    "on_accent": "#282a36", "danger": "#ff5555", "warn": "#ffb86c", "ok": "#50fa7b",
+    "cursor": "#f8f8f2",
+    "ansi": {
+        "black": "#21222c", "red": "#ff5555", "green": "#50fa7b", "yellow": "#f1fa8c",
+        "blue": "#bd93f9", "magenta": "#ff79c6", "cyan": "#8be9fd", "white": "#f8f8f2",
+        "brightblack": "#6272a4", "brightred": "#ff6e6e", "brightgreen": "#69ff94",
+        "brightyellow": "#ffffa5", "brightblue": "#d6acff", "brightmagenta": "#ff92df",
+        "brightcyan": "#a4ffff", "brightwhite": "#ffffff",
+    },
+}
+
+_NORD = {
+    "crust": "#242933", "mantle": "#2e3440", "base": "#2e3440", "layer1": "#353c4a",
+    "surface": "#3b4252", "surface_hi": "#434c5e", "overlay": "#434c5e", "overlay_hi": "#4c566a",
+    "fg": "#d8dee9", "fg_dim": "#abb4c6", "fg_faint": "#7b869c",
+    "accent": "#88c0d0", "accent_hi": "#8fbcbb", "accent_soft": "#333f48", "accent2": "#81a1c1",
+    "on_accent": "#2e3440", "danger": "#bf616a", "warn": "#ebcb8b", "ok": "#a3be8c",
+    "cursor": "#d8dee9",
+    "ansi": {
+        "black": "#3b4252", "red": "#bf616a", "green": "#a3be8c", "yellow": "#ebcb8b",
+        "blue": "#81a1c1", "magenta": "#b48ead", "cyan": "#88c0d0", "white": "#e5e9f0",
+        "brightblack": "#4c566a", "brightred": "#bf616a", "brightgreen": "#a3be8c",
+        "brightyellow": "#ebcb8b", "brightblue": "#81a1c1", "brightmagenta": "#b48ead",
+        "brightcyan": "#8fbcbb", "brightwhite": "#eceff4",
+    },
+}
+
+_TOKYO_NIGHT = {
+    "crust": "#16161e", "mantle": "#1a1b26", "base": "#1a1b26", "layer1": "#1f2335",
+    "surface": "#24283b", "surface_hi": "#292e42", "overlay": "#3b4261", "overlay_hi": "#545c7e",
+    "fg": "#c0caf5", "fg_dim": "#a9b1d6", "fg_faint": "#565f89",
+    "accent": "#7aa2f7", "accent_hi": "#9eb8ff", "accent_soft": "#23283f", "accent2": "#7dcfff",
+    "on_accent": "#1a1b26", "danger": "#f7768e", "warn": "#e0af68", "ok": "#9ece6a",
+    "cursor": "#c0caf5",
+    "ansi": {
+        "black": "#15161e", "red": "#f7768e", "green": "#9ece6a", "yellow": "#e0af68",
+        "blue": "#7aa2f7", "magenta": "#bb9af7", "cyan": "#7dcfff", "white": "#a9b1d6",
+        "brightblack": "#414868", "brightred": "#ff899d", "brightgreen": "#9fe044",
+        "brightyellow": "#faba4a", "brightblue": "#8db0ff", "brightmagenta": "#c7a9ff",
+        "brightcyan": "#a4daff", "brightwhite": "#c0caf5",
+    },
+}
+
+_GRUVBOX_DARK = {
+    "crust": "#1d2021", "mantle": "#282828", "base": "#282828", "layer1": "#32302f",
+    "surface": "#3c3836", "surface_hi": "#504945", "overlay": "#504945", "overlay_hi": "#665c54",
+    "fg": "#ebdbb2", "fg_dim": "#bdae93", "fg_faint": "#a89984",
+    "accent": "#fabd2f", "accent_hi": "#ffd75f", "accent_soft": "#3c3626", "accent2": "#8ec07c",
+    "on_accent": "#282828", "danger": "#fb4934", "warn": "#fe8019", "ok": "#b8bb26",
+    "cursor": "#ebdbb2",
+    "ansi": {
+        "black": "#282828", "red": "#cc241d", "green": "#98971a", "yellow": "#d79921",
+        "blue": "#458588", "magenta": "#b16286", "cyan": "#689d6a", "white": "#a89984",
+        "brightblack": "#928374", "brightred": "#fb4934", "brightgreen": "#b8bb26",
+        "brightyellow": "#fabd2f", "brightblue": "#83a598", "brightmagenta": "#d3869b",
+        "brightcyan": "#8ec07c", "brightwhite": "#ebdbb2",
+    },
+}
+
+_GRUVBOX_LIGHT = {
+    "crust": "#d5c4a1", "mantle": "#f2e5bc", "base": "#fbf1c7", "layer1": "#f2e5bc",
+    "surface": "#ffffff", "surface_hi": "#ebdbb2", "overlay": "#d5c4a1", "overlay_hi": "#bdae93",
+    "fg": "#3c3836", "fg_dim": "#504945", "fg_faint": "#7c6f64",
+    "accent": "#b57614", "accent_hi": "#8f5902", "accent_soft": "#f2e0b0", "accent2": "#427b58",
+    "on_accent": "#fbf1c7", "danger": "#9d0006", "warn": "#af3a03", "ok": "#79740e",
+    "cursor": "#3c3836",
+    "ansi": {
+        "black": "#7c6f64", "red": "#9d0006", "green": "#79740e", "yellow": "#b57614",
+        "blue": "#076678", "magenta": "#8f3f71", "cyan": "#427b58", "white": "#3c3836",
+        "brightblack": "#928374", "brightred": "#cc241d", "brightgreen": "#98971a",
+        "brightyellow": "#d79921", "brightblue": "#458588", "brightmagenta": "#b16286",
+        "brightcyan": "#689d6a", "brightwhite": "#7c6f64",
+    },
+}
+
+_SCHEMES: "dict[str, dict]" = {
+    "catppuccin": {
+        "label": "Catppuccin",
+        "dark": _DARK, "light": _LIGHT,
+        "ansi_dark": _ANSI["dark"], "ansi_light": _ANSI["light"],
+    },
+    "dracula": {
+        "label": "Dracula",
+        "dark": _expand(_DRACULA), "ansi_dark": _DRACULA["ansi"],
+    },
+    "nord": {
+        "label": "Nord",
+        "dark": _expand(_NORD), "ansi_dark": _NORD["ansi"],
+    },
+    "tokyonight": {
+        "label": "Tokyo Night",
+        "dark": _expand(_TOKYO_NIGHT), "ansi_dark": _TOKYO_NIGHT["ansi"],
+    },
+    "gruvbox": {
+        "label": "Gruvbox",
+        "dark": _expand(_GRUVBOX_DARK), "light": _expand(_GRUVBOX_LIGHT),
+        "ansi_dark": _GRUVBOX_DARK["ansi"], "ansi_light": _GRUVBOX_LIGHT["ansi"],
+    },
+}
+
+
+def _scheme_entry(key: Optional[str] = None) -> dict:
+    return _SCHEMES.get(key or _scheme) or _SCHEMES[DEFAULT_SCHEME]
+
+
+def _scheme_table(key: Optional[str], m: str) -> dict:
+    entry = _scheme_entry(key)
+    return entry.get(m) or entry.get("dark") or _DARK
+
+
+def _scheme_ansi(key: Optional[str], m: str) -> dict:
+    entry = _scheme_entry(key)
+    return entry.get(f"ansi_{m}") or entry.get("ansi_dark") or _ANSI["dark"]
+
+
+def scheme() -> str:
+    return _scheme
+
+
+def scheme_labels() -> "list[tuple[str, str]]":
+    """``[(key, label)]`` in display order -- the Settings scheme picker."""
+    return [(k, v["label"]) for k, v in _SCHEMES.items()]
+
+
+def scheme_is_dark_only(key: str) -> bool:
+    return "light" not in (_SCHEMES.get(key) or {})
+
+
+def set_scheme(new_scheme: str) -> None:
+    """Switch the colour scheme and notify (repaint) if it actually changed."""
+    global _scheme
+    new_scheme = str(new_scheme or "").strip().lower()
+    if new_scheme not in _SCHEMES:
+        new_scheme = DEFAULT_SCHEME
+    if new_scheme == _scheme:
+        return
+    _scheme = new_scheme
+    manager().changed.emit(_mode)
+
+
+# ---------------------------------------------------------------------------
 # State + hub
 # ---------------------------------------------------------------------------
 
@@ -204,6 +440,7 @@ class _Manager(QObject):
 
 _manager: Optional[_Manager] = None
 _mode = "dark"
+_scheme = DEFAULT_SCHEME
 
 
 def manager() -> _Manager:
@@ -234,12 +471,16 @@ def _detect_system() -> str:
 
 
 def init(config: Optional[dict] = None) -> str:
-    """Resolve ``config['theme']`` to a concrete mode and store it. Idempotent."""
-    global _mode
+    """Resolve ``config['theme']`` to a concrete mode + read ``color_scheme``.
+    Idempotent; returns the resolved mode."""
+    global _mode, _scheme
     pref = "system"
+    sch = DEFAULT_SCHEME
     if isinstance(config, dict):
         pref = str(config.get("theme", "system") or "system").strip().lower()
+        sch = str(config.get("color_scheme", DEFAULT_SCHEME) or DEFAULT_SCHEME).strip().lower()
     _mode = _detect_system() if pref not in MODES else pref
+    _scheme = sch if sch in _SCHEMES else DEFAULT_SCHEME
     return _mode
 
 
@@ -266,8 +507,11 @@ def toggle() -> str:
 # ---------------------------------------------------------------------------
 
 def color(token: str, mode_override: Optional[str] = None) -> str:
-    table = _TABLE.get(mode_override or _mode, _DARK)
-    return table.get(token) or _DARK.get(token, "#ff00ff")
+    m = mode_override or _mode
+    # scheme table -> Catppuccin base for this mode -> Catppuccin dark -> magenta
+    table = _scheme_table(None, m)
+    base = _TABLE.get(m, _DARK)
+    return table.get(token) or base.get(token) or _DARK.get(token, "#ff00ff")
 
 
 def qcolor(token: str, mode_override: Optional[str] = None) -> QColor:
@@ -275,7 +519,8 @@ def qcolor(token: str, mode_override: Optional[str] = None) -> QColor:
 
 
 def ansi(mode_override: Optional[str] = None) -> dict:
-    return dict(_ANSI.get(mode_override or _mode, _ANSI["dark"]))
+    m = mode_override or _mode
+    return {**_ANSI.get(m, _ANSI["dark"]), **_scheme_ansi(None, m)}
 
 
 def apply_palette(app) -> None:

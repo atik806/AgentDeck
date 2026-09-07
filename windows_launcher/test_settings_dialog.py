@@ -162,6 +162,55 @@ d.close()
 
 
 # ---------------------------------------------------------------------------
+print("[6b] Appearance: colour scheme + terminal font pickers")
+c = new_cfg()
+d = SettingsDialog(c, current_version="1.2.3")
+
+# -- colour scheme --
+check("scheme combo lists every scheme",
+      d._scheme_combo.count() == len(theme.scheme_labels()))
+check("scheme combo starts on the stored scheme",
+      d._scheme_combo.currentData() == c.get("color_scheme", theme.DEFAULT_SCHEME))
+seen_scheme = []
+d.scheme_changed.connect(seen_scheme.append)
+di = d._scheme_combo.findData("dracula")
+d._scheme_combo.setCurrentIndex(di)
+check("picking a scheme writes config", c["color_scheme"] == "dracula")
+check("picking a scheme emits scheme_changed", seen_scheme == ["dracula"])
+check("dark-only scheme shows the hint", not d._scheme_hint.isHidden())
+d._scheme_combo.setCurrentIndex(d._scheme_combo.findData("catppuccin"))
+check("scheme with a light variant hides the hint", d._scheme_hint.isHidden())
+
+# -- terminal font --
+check("font combo has an Automatic entry first", d._font_combo.itemData(0) == "")
+seen_font = []
+d.font_family_changed.connect(seen_font.append)
+if d._font_combo.count() > 1:
+    d._font_combo.setCurrentIndex(1)
+    fam = d._font_combo.itemData(1)
+    check("picking a font writes config", c["font_family"] == fam)
+    check("picking a font emits font_family_changed", seen_font == [fam])
+    d._font_combo.setCurrentIndex(0)
+    check("back to Automatic clears the family", c["font_family"] == "")
+else:
+    check("no fixed-pitch fonts on this box — Automatic only (skipped)", True)
+    check("(skipped)", True)
+    check("(skipped)", True)
+d.close()
+
+
+# ---------------------------------------------------------------------------
+print("[6c] an unknown saved font shows as (not installed), still selectable")
+c = new_cfg()
+c["font_family"] = "Totally Not A Real Font 9000"
+d = SettingsDialog(c, current_version="1.2.3")
+check("unknown saved font kept as the current selection",
+      d._font_combo.currentData() == "Totally Not A Real Font 9000")
+check("unknown font is flagged", "not installed" in d._font_combo.currentText())
+d.close()
+
+
+# ---------------------------------------------------------------------------
 print("[7] voice section — model combo, mic, VAD, language write config")
 import voice_models
 

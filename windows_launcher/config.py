@@ -48,6 +48,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # "auto" picks the best one installed.
     "default_shell": "auto",
     "font_size": 11,
+    # Terminal font family. "" = pick the best installed monospace face
+    # (see terminal_view.preferred_font); otherwise an exact family name.
+    "font_family": "",
     # Lines kept above the visible screen, per pane.
     "scrollback": 5000,
     # How panes are arranged: "grid", "columns" or "rows".
@@ -105,6 +108,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # --- Appearance ---
     "theme": "system",
+    # Named colour scheme -- see theme._SCHEMES. "catppuccin" is the default
+    # (matches the splash / logo). "theme" above stays the light/dark axis.
+    "color_scheme": "catppuccin",
     "window_width": 1400,
     "window_height": 880,
 
@@ -202,6 +208,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "terminal_executable": (str, type(None)),
     "default_shell": str,
     "font_size": int,
+    "font_family": str,
     "scrollback": int,
     "layout": str,
     "default_count": int,
@@ -220,6 +227,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "handoff_include_thinking": bool,
     "handoff_max_transcript_chars": int,
     "theme": str,
+    "color_scheme": str,
     "window_width": int,
     "window_height": int,
     "start_maximized": bool,
@@ -282,6 +290,8 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "default_shell": ("auto", "pwsh", "powershell", "cmd", "bash"),
     "update_channel": ("stable", "beta"),
     "theme": ("system", "light", "dark"),
+    # Keep in sync with theme._SCHEMES.
+    "color_scheme": ("catppuccin", "dracula", "nord", "tokyonight", "gruvbox"),
     "voice_language": ("auto", "en"),
     "voice_global_target": ("agentdeck", "foreground"),
 }

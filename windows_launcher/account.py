@@ -47,8 +47,10 @@ CLOUD_KEYS = [
     "default_count",
     "layout",
     "font_size",
+    "font_family",
     "default_shell",
     "theme",
+    "color_scheme",
     # Voice preferences that are about *what* is transcribed, not the machine's
     # hardware. Mic device, overlay position, hotkey and the on/off master
     # switch stay machine-local.
