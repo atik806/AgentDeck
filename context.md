@@ -957,6 +957,27 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       (106 total). All green; `test_panel.py` unchanged bar the lone
       pre-existing offscreen "drop focus" flake.
 
+34. **Routines actually send the prompt now (2026-09-07)** — a fired routine
+    opened the agent but the prompt just sat unsent in the composer.
+    `_run_routine` typed the prompt in with `insert_text` then `submit()`
+    back-to-back; the lone `\r` lands inside the bracketed paste the TUI is
+    still ingesting (Claude Code / Codex render-loop race) and never submits.
+    - **Primary fix:** hand the prompt to the agent on its command line via
+      the existing `agent_sessions.initial_prompt_command` (same path the
+      handoff uses) — `claude "…"`, `codex "…"`, `opencode --prompt "…"`. The
+      agent boots straight into the task; nothing to type. Guarded to ≤6000
+      chars so it can't overflow a Windows command line.
+    - **Fallback** (aider/goose/copilot/amp/crush/antigravity/cursor-agent/
+      custom — no initial-prompt arg): new `TerminalView.insert_and_submit()`
+      types the text, then fires `\r` after a 600 ms beat so the paste is
+      committed first.
+    - `RoutinesPanel` gained a **"Run now"** button (`run_now` signal →
+      `TerminalPanel._run_routine_now`) so a routine can be tested off-schedule.
+    - Tests: `test_panel.py` §31/§31b (baked-command + paced-Enter paths),
+      `test_routines_panel.py` §6b (Run now). `terminal_panel.py` half of this
+      was swept into commit `9c06409` by a concurrent session's `commit --amend`;
+      the rest is its own commit.
+
 ## Running / testing
 
 ```cmd

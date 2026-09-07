@@ -251,6 +251,8 @@ class RoutinesPanel(QWidget):
     """Full-area panel shown when the sidebar's "Routines" nav item is active."""
 
     count_changed = Signal(int)
+    #: "Run now" clicked -- fire this routine id immediately, off-schedule.
+    run_now = Signal(str)
 
     def __init__(
         self,
@@ -423,6 +425,11 @@ class RoutinesPanel(QWidget):
         self._saved_label = QLabel("")
         self._saved_label.setObjectName("routinesSaved")
         footer.addWidget(self._saved_label, 1)
+        self._run_btn = QPushButton("Run now")
+        self._run_btn.setToolTip("Fire this routine immediately, ignoring its schedule")
+        self._run_btn.setCursor(Qt.PointingHandCursor)
+        self._run_btn.clicked.connect(self._on_run_now)
+        footer.addWidget(self._run_btn, 0, Qt.AlignRight)
         self._delete_btn = QPushButton("Delete routine")
         self._delete_btn.setObjectName("danger")
         self._delete_btn.setCursor(Qt.PointingHandCursor)
@@ -505,6 +512,7 @@ class RoutinesPanel(QWidget):
         if routine:
             self._saved_label.setText(f"Saved {_relative_time(routine.updated)}")
         self._delete_btn.setEnabled(routine is not None)
+        self._run_btn.setEnabled(routine is not None)
 
     def _rebuild_workspace_combo(self, current_target: str) -> None:
         self._ws_combo.blockSignals(True)
@@ -615,6 +623,12 @@ class RoutinesPanel(QWidget):
         self.reload()
         self._name_edit.setFocus(Qt.OtherFocusReason)
         self.count_changed.emit(len(self._store))
+
+    def _on_run_now(self) -> None:
+        if self._current_id is None:
+            return
+        self.flush()  # persist any in-flight edit so the fire uses it
+        self.run_now.emit(self._current_id)
 
     def _on_delete(self) -> None:
         if self._current_id is None:

@@ -922,6 +922,71 @@ def _():
 
 @step
 def _():
+    print("== 31. routine fires: prompt baked onto the agent command line ==")
+    import agents
+    from routines_store import NEW_WORKSPACE
+    p2 = state["panel2"]
+    p2.account._plan = "pro"
+
+    state["_real_resolve"] = agents.resolve_agent
+    agents.resolve_agent = lambda key, custom="": "claude" if key == "claude" else ""
+
+    r = p2._routines_store.create(
+        name="baked", prompt='review the site "carefully"', agent_key="claude",
+        agent_custom="", workspace_target=NEW_WORKSPACE, days=[], time="08:00",
+        enabled=True,
+    )
+    before = len(p2._workspaces)
+    p2._run_routine(r)
+    check("routine opened a new workspace", len(p2._workspaces), before + 1)
+    cmd = p2._workspaces[-1].panes[-1].startup_command
+    check("agent launched with the prompt as a CLI arg",
+          cmd.startswith('claude "') and "review the site 'carefully'" in cmd, True)
+
+
+@step
+def _():
+    print("== 31b. routine fallback: prompt typed in, then a paced Enter ==")
+    import agents
+    from routines_store import NEW_WORKSPACE
+    p2 = state["panel2"]
+    # A custom command has no initial-prompt arg -> the type-in path.
+    agents.resolve_agent = lambda key, custom="": custom if key == "custom" else ""
+    r = p2._routines_store.create(
+        name="typed", prompt="echo hi", agent_key="custom",
+        agent_custom="cmd", workspace_target=NEW_WORKSPACE, days=[], time="08:00",
+        enabled=True,
+    )
+    before = len(p2._workspaces)
+    p2._run_routine(r)
+    check("fallback routine opened a workspace", len(p2._workspaces), before + 1)
+    pane = p2._workspaces[-1].panes[-1]
+    check("custom command launched verbatim (no prompt baked in)",
+          pane.startup_command, "cmd")
+
+    spy = {"insert": [], "submit": 0}
+    pane.view.insert_text = lambda t: spy["insert"].append(t)
+    pane.view.submit = lambda: spy.__setitem__("submit", spy["submit"] + 1)
+    pane.view._last_output_at = 1.0  # pretend the shell has printed a prompt
+    state["_typed_spy"] = spy
+
+
+@step
+def _():
+    import time
+    spy = state["_typed_spy"]
+    deadline = time.time() + 15
+    while time.time() < deadline and spy["submit"] == 0:
+        app.processEvents()
+        time.sleep(0.03)
+    check("prompt was typed into the pane", "echo hi" in "".join(spy["insert"]), True)
+    check("Enter followed, after the paced delay", spy["submit"] >= 1, True)
+    import agents
+    agents.resolve_agent = state["_real_resolve"]
+
+
+@step
+def _():
     import agent_sessions
     p2 = state["panel2"]
     agent_sessions.locate_latest = state["_real_locate"]

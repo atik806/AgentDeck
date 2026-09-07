@@ -200,6 +200,23 @@ check("apply_theme survives", True)
 
 
 # ---------------------------------------------------------------------------
+print("[6b] Run now button emits run_now with the current routine id")
+store = fresh_store()
+panel = RoutinesPanel(store=store)
+panel._on_new()
+panel._prompt_edit.setPlainText("do the thing")
+panel._prompt_edit.textChanged.emit()
+rid = store.all()[0].id
+got = []
+panel.run_now.connect(got.append)
+check("Run now enabled once a routine is selected", panel._run_btn.isEnabled())
+panel._on_run_now()
+check("run_now carried the routine id", got == [rid])
+check("the in-flight prompt edit was flushed first",
+      store.get(rid).prompt == "do the thing")
+
+
+# ---------------------------------------------------------------------------
 print("[7] sidebar nav strip has a Routines button after Notes")
 sb = WorkspaceSidebar()
 

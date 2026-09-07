@@ -1487,6 +1487,24 @@ class TerminalView(QWidget):
         self.session.write("\r")
         self.submitted.emit()
 
+    def insert_and_submit(self, text: str, *, delay_ms: int = 600) -> None:
+        """Type ``text`` at the prompt, then press Enter a beat later.
+
+        The gap is the whole point. A TUI agent (Claude Code, Codex, …) takes
+        a bracketed paste on its own render loop; a ``\\r`` written in the same
+        breath lands *inside* the paste (or races the not-yet-committed input
+        state) and never submits -- the text just sits in the composer. A
+        plain shell doesn't care about the pause, so this is safe for a bare
+        command too. Used by Routines; anything else that needs "type it and
+        run it" unattended should prefer this over back-to-back
+        ``insert_text`` + ``submit``.
+        """
+        self.insert_text(text)
+        QTimer.singleShot(
+            max(0, int(delay_ms)),
+            lambda: self.session.is_alive() and self.submit(),
+        )
+
     # -- appearance --------------------------------------------------------
 
     def set_font_size(self, size: int) -> None:
