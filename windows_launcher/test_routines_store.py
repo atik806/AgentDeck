@@ -72,6 +72,9 @@ s2.update(r1.id, name="Morning check-in")  # identical -> no-op
 check("no-op update doesn't bump timestamp", s2.get(r1.id).updated == same)
 s2.update(r1.id, bogus_field="ignored")
 check("unknown field is ignored, doesn't raise", s2.get(r1.id) is not None)
+s2.update(r1.id, new_workspace_name="Review")
+check("new_workspace_name persisted + round-trips",
+      RoutinesStore(path=tmp).get(r1.id).new_workspace_name == "Review")
 
 
 print("[4] mark_run -- scheduler writes, doesn't touch 'updated'")

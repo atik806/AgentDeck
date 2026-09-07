@@ -229,7 +229,14 @@ class _RoutineRow(QFrame):
 
     @staticmethod
     def _schedule_line(routine: Routine) -> str:
-        target = "New workspace" if routine.workspace_target == NEW_WORKSPACE else routine.workspace_target
+        if routine.workspace_target == NEW_WORKSPACE:
+            target = (
+                f"New: {routine.new_workspace_name}"
+                if routine.new_workspace_name.strip()
+                else "New workspace"
+            )
+        else:
+            target = routine.workspace_target
         suffix = "" if routine.enabled else "  ·  disabled"
         return f"{schedule_summary(routine.days, routine.time)}  ·  {target}{suffix}"
 
@@ -368,8 +375,13 @@ class RoutinesPanel(QWidget):
         col1 = QVBoxLayout()
         col1.addWidget(self._label("Workspace"))
         self._ws_combo = QComboBox()
-        self._ws_combo.currentIndexChanged.connect(self._on_edited)
+        self._ws_combo.currentIndexChanged.connect(self._on_workspace_changed)
         col1.addWidget(self._ws_combo)
+        self._new_ws_name = QLineEdit()
+        self._new_ws_name.setObjectName("customAgent")  # same compact input style
+        self._new_ws_name.setPlaceholderText("Name for the new workspace (optional)")
+        self._new_ws_name.textEdited.connect(self._on_edited)
+        col1.addWidget(self._new_ws_name)
         row.addLayout(col1, 1)
 
         col2 = QVBoxLayout()
@@ -493,6 +505,8 @@ class RoutinesPanel(QWidget):
             self._prompt_edit.setPlainText(routine.prompt if routine else "")
 
             self._rebuild_workspace_combo(routine.workspace_target if routine else NEW_WORKSPACE)
+            self._new_ws_name.setText(routine.new_workspace_name if routine else "")
+            self._sync_new_ws_field()
 
             agent_key = routine.agent_key if routine else PLAIN_KEY
             idx = self._agent_combo.findData(agent_key)
@@ -565,6 +579,15 @@ class RoutinesPanel(QWidget):
 
     # -- editing ------------------------------------------------------
 
+    def _sync_new_ws_field(self) -> None:
+        """The 'name the new workspace' field only makes sense when the target
+        is a new workspace, not an existing one."""
+        self._new_ws_name.setVisible(self._ws_combo.currentData() == NEW_WORKSPACE)
+
+    def _on_workspace_changed(self, *_a) -> None:
+        self._sync_new_ws_field()  # runs during load too, so visibility tracks
+        self._on_edited()
+
     def _on_edited(self, *_a) -> None:
         if self._loading or self._current_id is None:
             return
@@ -584,6 +607,7 @@ class RoutinesPanel(QWidget):
             prompt=self._prompt_edit.toPlainText(),
             enabled=self._enabled_box.isChecked(),
             workspace_target=self._ws_combo.currentData() or NEW_WORKSPACE,
+            new_workspace_name=self._new_ws_name.text().strip(),
             agent_key=self._agent_key(),
             agent_custom=self._custom_edit.text().strip(),
             days=days,

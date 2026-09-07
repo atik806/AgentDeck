@@ -105,6 +105,9 @@ class Routine:
     agent_key: str = "none"
     agent_custom: str = ""
     workspace_target: str = NEW_WORKSPACE
+    #: Name to give the workspace this routine opens, when
+    #: ``workspace_target`` is :data:`NEW_WORKSPACE`. Empty = auto ("Workspace N").
+    new_workspace_name: str = ""
     days: "list[int]" = field(default_factory=list)
     enabled: bool = True
     # NB: field order matters here -- `created`/`updated`'s default factory
@@ -151,6 +154,7 @@ class Routine:
             agent_key=str(data.get("agent_key") or "none"),
             agent_custom=str(data.get("agent_custom") or ""),
             workspace_target=str(data.get("workspace_target") or NEW_WORKSPACE),
+            new_workspace_name=str(data.get("new_workspace_name") or ""),
             days=days,
             time=time_str,
             enabled=bool(data.get("enabled", True)),
@@ -168,7 +172,7 @@ def _new_id() -> str:
 #: Fields the editor UI is allowed to write via :meth:`RoutinesStore.update`.
 _EDITABLE_FIELDS = {
     "name", "prompt", "agent_key", "agent_custom", "workspace_target",
-    "days", "time", "enabled",
+    "new_workspace_name", "days", "time", "enabled",
 }
 
 

@@ -98,6 +98,27 @@ check("prompt round-trips through reload",
 check("closed workspace target still shown (with a marker) rather than silently reset",
       panel2._ws_combo.currentData() == "Dev"
       and "closed" in panel2._ws_combo.currentText())
+check("'name the new workspace' field hidden when target is an existing workspace",
+      panel._new_ws_name.isHidden())
+
+
+# ---------------------------------------------------------------------------
+print("[2b] naming the workspace a 'New workspace' routine opens")
+store = fresh_store()
+panel = RoutinesPanel(store=store, workspaces_provider=lambda: ["Workspace 1"])
+panel._on_new()
+panel._ws_combo.setCurrentIndex(panel._ws_combo.findData(NEW_WORKSPACE))
+check("field visible when target is a new workspace", not panel._new_ws_name.isHidden())
+panel._new_ws_name.setText("Review")
+panel._new_ws_name.textEdited.emit("Review")
+panel.flush()
+check("new_workspace_name persisted", store.all()[0].new_workspace_name == "Review")
+check("row schedule line shows the name",
+      "New: Review" in panel._list.itemWidget(panel._list.item(0))._schedule.text())
+# switching to an existing workspace hides the field again
+panel._ws_combo.setCurrentIndex(panel._ws_combo.findData("Workspace 1"))
+check("field hidden again after picking an existing workspace",
+      panel._new_ws_name.isHidden())
 
 
 # ---------------------------------------------------------------------------

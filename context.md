@@ -979,10 +979,16 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       committed first.
     - `RoutinesPanel` gained a **"Run now"** button (`run_now` signal →
       `TerminalPanel._run_routine_now`) so a routine can be tested off-schedule.
+    - **Name the new workspace:** `Routine.new_workspace_name` (new store field,
+      editable) — a text box under the Workspace combo, shown only when the
+      target is "New workspace". `_run_routine` passes it as
+      `_add_workspace(name=…)`; the list row shows `New: <name>`. Empty = the
+      old auto "Workspace N".
     - Tests: `test_panel.py` §31/§31b (baked-command + paced-Enter paths),
-      `test_routines_panel.py` §6b (Run now). `terminal_panel.py` half of this
-      was swept into commit `9c06409` by a concurrent session's `commit --amend`;
-      the rest is its own commit.
+      `test_routines_panel.py` §6b (Run now) / §2b (workspace name),
+      `test_routines_store.py` §3 (field round-trip). `terminal_panel.py` half
+      of the send fix was swept into commit `9c06409` by a concurrent session's
+      `commit --amend`; the rest is its own commit(s).
 
 ## Running / testing
 

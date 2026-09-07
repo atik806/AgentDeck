@@ -1232,7 +1232,11 @@ class TerminalPanel(QMainWindow):
         if ws is not None:
             new_pane = ws.add_pane_with_command(launch) if launch else ws.add_pane()
         elif len(self._workspaces) < entitlements.max_workspaces(self.account.plan):
-            ws = self._add_workspace(pane_count=1, startup_command=launch or None)
+            ws = self._add_workspace(
+                name=(routine.new_workspace_name or "").strip() or None,
+                pane_count=1,
+                startup_command=launch or None,
+            )
             new_pane = ws.panes[-1] if ws.panes else None
         else:
             # Free plan, already at the workspace cap -- use the current one
