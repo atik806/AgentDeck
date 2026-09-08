@@ -303,7 +303,8 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "update_channel": ("stable", "beta"),
     "theme": ("system", "light", "dark"),
     # Keep in sync with theme._SCHEMES.
-    "color_scheme": ("catppuccin", "dracula", "nord", "tokyonight", "gruvbox"),
+    "color_scheme": ("catppuccin", "dracula", "nord", "tokyonight", "gruvbox",
+                     "rosepine", "kanagawa", "onedark", "synthwave"),
     "voice_language": ("auto", "en"),
     "voice_global_target": ("agentdeck", "foreground"),
 }

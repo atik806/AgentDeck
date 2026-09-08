@@ -12,11 +12,20 @@ from PySide6.QtCore import (
     QMimeData,
     QPoint,
     QPointF,
+    QSize,
     Qt,
     QVariantAnimation,
     Signal,
 )
-from PySide6.QtGui import QColor, QDrag, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import (
+    QColor,
+    QDrag,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -42,6 +51,24 @@ __all__ = ["WorkspaceSidebar"]
 _WS_MIME = "application/x-agentdeck-workspace"
 
 
+def _gap_icon(icon, glyph: int = 16, gap: int = 8):
+    """Left-align a small glyph on a wider transparent canvas.
+
+    ``QToolButton`` leaves only a few pixels between an icon and its label;
+    padding the icon itself buys a proper, consistent gap for every nav row
+    without reworking each panel's icon factory.
+    """
+    dpr = 2.0
+    src = icon.pixmap(QSize(glyph, glyph), dpr)
+    canvas = QPixmap(int(round((glyph + gap) * dpr)), int(round(glyph * dpr)))
+    canvas.setDevicePixelRatio(dpr)
+    canvas.fill(Qt.transparent)
+    painter = QPainter(canvas)
+    painter.drawPixmap(0, 0, src)
+    painter.end()
+    return QIcon(canvas)
+
+
 def _sidebar_qss() -> str:
     t = theme.color
     return f"""
@@ -49,10 +76,15 @@ QWidget#workspaceSidebar {{ background: {t('sidebar_bg')}; }}
 QWidget#wsNav {{ background: {t('sidebar_bg')}; }}
 QToolButton#navBtn {{
     color: {t('sidebar_text')}; background: transparent; border: none; text-align: left;
-    padding: 7px 10px; font-size: 12px; border-radius: 6px;
+    padding: 8px 10px; min-height: 18px; font-size: 12px; border-radius: 6px;
 }}
+QToolButton#navBtn::menu-indicator {{ image: none; }}
 QToolButton#navBtn:hover {{ background: {t('sidebar_hover')}; color: {t('text')}; }}
-QToolButton#navBtn:checked {{ background: {t('sidebar_active')}; color: {t('text')}; }}
+QToolButton#navBtn:checked {{
+    background: {t('accent_soft_bg')}; color: {t('accent_text')}; font-weight: 600;
+}}
+QToolButton#navBtn:checked:hover {{ background: {t('accent_soft_bg')}; }}
+QToolButton#navBtn:focus {{ outline: none; }}
 QFrame#navRule {{ background: {t('separator')}; max-height: 1px; border: none; }}
 QWidget#wsHeader {{ background: {t('sidebar_bg')}; }}
 QLabel#wsTitle {{
@@ -491,30 +523,51 @@ class WorkspaceSidebar(QWidget):
         nav_box.setContentsMargins(6, 8, 6, 6)
         nav_box.setSpacing(2)
 
-        def _nav_button(text: str, icon, on_click) -> QToolButton:
+        # Each nav button carries two glyphs: a muted one at rest and an
+        # accent-tinted one while its view is on screen, so the active
+        # destination reads at a glance and not just from the fill behind it.
+        # ``apply_theme`` re-runs every entry here to re-tint on a theme swap.
+        self._nav_icon_refreshers: list = []
+
+        def _nav_button(text: str, icon_factory, on_click) -> QToolButton:
             btn = QToolButton(nav)
             btn.setObjectName("navBtn")
             btn.setText(text)
-            btn.setIcon(icon)
             btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            btn.setIconSize(QSize(24, 16))
             btn.setCheckable(True)
+            btn.setAutoRaise(True)
+            btn.setFocusPolicy(Qt.NoFocus)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(on_click)
+
+            def _retint() -> None:
+                btn._nav_icons = (
+                    _gap_icon(icon_factory(16, theme.color("sidebar_text"))),
+                    _gap_icon(icon_factory(16, theme.color("accent"))),
+                )
+                btn.setIcon(btn._nav_icons[1 if btn.isChecked() else 0])
+
+            btn.toggled.connect(
+                lambda on, b=btn: b.setIcon(b._nav_icons[1 if on else 0])
+            )
+            _retint()
+            self._nav_icon_refreshers.append(_retint)
             nav_box.addWidget(btn)
             return btn
 
         self._plugins_btn = _nav_button(
-            "Plugins", plugin_icon(16), lambda: self.plugins_selected.emit()
+            "Plugins", plugin_icon, lambda: self.plugins_selected.emit()
         )
         self._notes_btn = _nav_button(
-            "Notes", note_icon(16), lambda: self.notes_selected.emit()
+            "Notes", note_icon, lambda: self.notes_selected.emit()
         )
         self._routines_btn = _nav_button(
-            "Routines", routine_icon(16), lambda: self.routines_selected.emit()
+            "Routines", routine_icon, lambda: self.routines_selected.emit()
         )
         self._skills_btn = _nav_button(
-            "Skills", skill_icon(16), lambda: self.skills_selected.emit()
+            "Skills", skill_icon, lambda: self.skills_selected.emit()
         )
 
         # The nav strip is pinned to the top of the sidebar, above the
@@ -574,6 +627,8 @@ class WorkspaceSidebar(QWidget):
     def apply_theme(self) -> None:
         """Re-skin for the current light/dark theme."""
         self.setStyleSheet(_sidebar_qss())
+        for retint in self._nav_icon_refreshers:
+            retint()
 
     def refresh(self, workspaces, active) -> None:
         """Rebuild every row. Cheap: there are only ever a handful of these."""

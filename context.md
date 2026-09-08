@@ -1005,12 +1005,14 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       flagged "(not installed)".
     - **Colour scheme:** new `config["color_scheme"]` (default `catppuccin`).
       `theme.py` keeps Catppuccin as the hand-authored base; other schemes
-      (Dracula, Nord, Tokyo Night, Gruvbox) are a compact ~20-value spec run
+      (Dracula, Nord, Tokyo Night, Gruvbox, Rosé Pine, Kanagawa, One Dark,
+      Synthwave) are a compact ~20-value spec run
       through `theme._expand()` onto the full token table. `_SCHEMES` +
       `scheme()` / `set_scheme()` / `scheme_labels()` / `scheme_is_dark_only()`
       / `DEFAULT_SCHEME`. `color()` / `ansi()` consult the active scheme, then
-      fall back to the Catppuccin table for the mode. Schemes with no `light`
-      variant (Dracula/Nord/Tokyo Night) show their dark palette in Light mode
+      fall back to the Catppuccin table for the mode. Rosé Pine ships a Dawn
+      light variant; Kanagawa / One Dark / Synthwave and the earlier
+      Dracula/Nord/Tokyo Night are dark-only and show their dark palette in Light mode
       (the picker says so). `set_scheme()` fires `theme.manager().changed`, so
       the existing `_on_theme_changed` fan-out repaints everything incl. the
       terminal (`vt_screen.Palette` already reads `term_*` + `ansi()` from

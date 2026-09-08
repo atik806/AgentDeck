@@ -363,6 +363,98 @@ _GRUVBOX_LIGHT = {
     },
 }
 
+# -- Rosé Pine -------------------------------------------------------------
+# Muted rose, gold and pine over a near-black plum. Reads calm at a glance,
+# but the iris accent and love/gold semantics keep it lively.
+_ROSE_PINE = {
+    "crust": "#16141f", "mantle": "#1f1d2e", "base": "#191724", "layer1": "#1c1b2b",
+    "surface": "#1f1d2e", "surface_hi": "#26233a", "overlay": "#26233a", "overlay_hi": "#403d52",
+    "fg": "#e0def4", "fg_dim": "#908caa", "fg_faint": "#6e6a86",
+    "accent": "#c4a7e7", "accent_hi": "#d7c1f2", "accent_soft": "#2a2740", "accent2": "#9ccfd8",
+    "on_accent": "#191724", "danger": "#eb6f92", "warn": "#f6c177", "ok": "#31748f",
+    "cursor": "#e0def4", "selection": "#403d52",
+    "ansi": {
+        "black": "#26233a", "red": "#eb6f92", "green": "#31748f", "yellow": "#f6c177",
+        "blue": "#9ccfd8", "magenta": "#c4a7e7", "cyan": "#ebbcba", "white": "#e0def4",
+        "brightblack": "#6e6a86", "brightred": "#eb6f92", "brightgreen": "#31748f",
+        "brightyellow": "#f6c177", "brightblue": "#9ccfd8", "brightmagenta": "#c4a7e7",
+        "brightcyan": "#ebbcba", "brightwhite": "#e0def4",
+    },
+}
+
+_ROSE_PINE_DAWN = {
+    "crust": "#f2e9e1", "mantle": "#fffaf3", "base": "#faf4ed", "layer1": "#fffaf3",
+    "surface": "#fffaf3", "surface_hi": "#f2e9e1", "overlay": "#dfdad9", "overlay_hi": "#cecacd",
+    "fg": "#575279", "fg_dim": "#797593", "fg_faint": "#9893a5",
+    "accent": "#907aa9", "accent_hi": "#6c5c86", "accent_soft": "#ece7f2", "accent2": "#56949f",
+    "on_accent": "#faf4ed", "danger": "#b4637a", "warn": "#ea9d34", "ok": "#286983",
+    "cursor": "#575279", "selection": "#dfdad9",
+    "ansi": {
+        "black": "#f2e9e1", "red": "#b4637a", "green": "#286983", "yellow": "#ea9d34",
+        "blue": "#56949f", "magenta": "#907aa9", "cyan": "#d7827e", "white": "#575279",
+        "brightblack": "#9893a5", "brightred": "#b4637a", "brightgreen": "#286983",
+        "brightyellow": "#ea9d34", "brightblue": "#56949f", "brightmagenta": "#907aa9",
+        "brightcyan": "#d7827e", "brightwhite": "#575279",
+    },
+}
+
+# -- Synthwave --------------------------------------------------------------
+# Deep indigo with neon magenta and cyan -- retro-futurist, high contrast,
+# still legible for long sessions.
+_SYNTHWAVE = {
+    "crust": "#1a1527", "mantle": "#241b2f", "base": "#2a2139", "layer1": "#2f2542",
+    "surface": "#37294d", "surface_hi": "#453361", "overlay": "#453361", "overlay_hi": "#5c4685",
+    "fg": "#f6f6fb", "fg_dim": "#c7c1e0", "fg_faint": "#8b83b0",
+    "accent": "#ff5cc8", "accent_hi": "#ff8ad9", "accent_soft": "#3a2350", "accent2": "#36f9f6",
+    "on_accent": "#2a2139", "danger": "#fe4450", "warn": "#ffb000", "ok": "#72f1b8",
+    "cursor": "#ff5cc8", "selection": "#463067",
+    "ansi": {
+        "black": "#241b2f", "red": "#fe4450", "green": "#72f1b8", "yellow": "#fede5d",
+        "blue": "#36f9f6", "magenta": "#ff5cc8", "cyan": "#36f9f6", "white": "#f6f6fb",
+        "brightblack": "#8b83b0", "brightred": "#fe4450", "brightgreen": "#72f1b8",
+        "brightyellow": "#ffb000", "brightblue": "#6ee2ff", "brightmagenta": "#ff8ad9",
+        "brightcyan": "#36f9f6", "brightwhite": "#ffffff",
+    },
+}
+
+# -- Kanagawa -----------------------------------------------------------------
+# Sumi-ink darks with a wave-blue accent, after Hokusai. The most restrained
+# of the set -- boardroom-safe, still distinctly not grey.
+_KANAGAWA = {
+    "crust": "#16161d", "mantle": "#1f1f28", "base": "#1f1f28", "layer1": "#16161d",
+    "surface": "#2a2a37", "surface_hi": "#363646", "overlay": "#363646", "overlay_hi": "#54546d",
+    "fg": "#dcd7ba", "fg_dim": "#c8c093", "fg_faint": "#727169",
+    "accent": "#7e9cd8", "accent_hi": "#9db3e6", "accent_soft": "#223249", "accent2": "#7fb4ca",
+    "on_accent": "#1f1f28", "danger": "#c34043", "warn": "#ff9e3b", "ok": "#98bb6c",
+    "cursor": "#c8c093", "selection": "#2d4f67",
+    "ansi": {
+        "black": "#090618", "red": "#c34043", "green": "#76946a", "yellow": "#c0a36e",
+        "blue": "#7e9cd8", "magenta": "#957fb8", "cyan": "#6a9589", "white": "#c8c093",
+        "brightblack": "#727169", "brightred": "#e82424", "brightgreen": "#98bb6c",
+        "brightyellow": "#e6c384", "brightblue": "#7fb4ca", "brightmagenta": "#938aa9",
+        "brightcyan": "#7aa89f", "brightwhite": "#dcd7ba",
+    },
+}
+
+# -- One Dark ---------------------------------------------------------------
+# The Atom classic every developer recognises -- balanced slate with a clear
+# blue accent and warm semantic colours.
+_ONE_DARK = {
+    "crust": "#1b1f27", "mantle": "#21252b", "base": "#282c34", "layer1": "#2c313a",
+    "surface": "#333842", "surface_hi": "#3e4451", "overlay": "#3e4451", "overlay_hi": "#4b5263",
+    "fg": "#abb2bf", "fg_dim": "#9098a5", "fg_faint": "#5c6370",
+    "accent": "#61afef", "accent_hi": "#8ccbff", "accent_soft": "#22384f", "accent2": "#c678dd",
+    "on_accent": "#282c34", "danger": "#e06c75", "warn": "#e5c07b", "ok": "#98c379",
+    "cursor": "#528bff", "selection": "#3e4451",
+    "ansi": {
+        "black": "#282c34", "red": "#e06c75", "green": "#98c379", "yellow": "#e5c07b",
+        "blue": "#61afef", "magenta": "#c678dd", "cyan": "#56b6c2", "white": "#abb2bf",
+        "brightblack": "#5c6370", "brightred": "#e06c75", "brightgreen": "#98c379",
+        "brightyellow": "#e5c07b", "brightblue": "#61afef", "brightmagenta": "#c678dd",
+        "brightcyan": "#56b6c2", "brightwhite": "#ffffff",
+    },
+}
+
 _SCHEMES: "dict[str, dict]" = {
     "catppuccin": {
         "label": "Catppuccin",
@@ -385,6 +477,23 @@ _SCHEMES: "dict[str, dict]" = {
         "label": "Gruvbox",
         "dark": _expand(_GRUVBOX_DARK), "light": _expand(_GRUVBOX_LIGHT),
         "ansi_dark": _GRUVBOX_DARK["ansi"], "ansi_light": _GRUVBOX_LIGHT["ansi"],
+    },
+    "rosepine": {
+        "label": "Rosé Pine",
+        "dark": _expand(_ROSE_PINE), "light": _expand(_ROSE_PINE_DAWN),
+        "ansi_dark": _ROSE_PINE["ansi"], "ansi_light": _ROSE_PINE_DAWN["ansi"],
+    },
+    "kanagawa": {
+        "label": "Kanagawa",
+        "dark": _expand(_KANAGAWA), "ansi_dark": _KANAGAWA["ansi"],
+    },
+    "onedark": {
+        "label": "One Dark",
+        "dark": _expand(_ONE_DARK), "ansi_dark": _ONE_DARK["ansi"],
+    },
+    "synthwave": {
+        "label": "Synthwave",
+        "dark": _expand(_SYNTHWAVE), "ansi_dark": _SYNTHWAVE["ansi"],
     },
 }
 
