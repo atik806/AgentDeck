@@ -1077,8 +1077,8 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       re-import). Full offline suite green; `test_panel.py` green bar the lone
       pre-existing offscreen "drop focus" flake.
 
-37. **Isolated git worktree per pane + Review/Merge panel (2026-09-07,
-    `feat/isolated-worktrees`)** — a workspace can now run each of its panes in
+37. **Isolated git worktree per pane + Review/Merge panel (v0.17.0, 2026-09-08,
+    `feat/isolated-worktrees` → `main`)** — a workspace can now run each of its panes in
     its own `git worktree` on a scratch branch, so several agents work the same
     repo in parallel without colliding, and there's one place to triage what
     they produced. Solves the "parallel agents step on each other" problem the
@@ -1119,9 +1119,16 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       conflict/remove), `test_worktree_store.py` (CRUD + reconcile),
       `test_worktree_panel.py` (`offscreen` — rows, diff, signals, empty
       states); `test_entitlements.py` + `test_new_workspace_dialog.py` extended.
-    - **Not done here:** handoff / routines don't create worktrees yet (v2);
-      version.py not bumped (release sequencing vs `feat/skills` / v0.16.0 is
-      the user's call).
+    - **Not done here:** handoff / routines don't create worktrees yet (v2); no
+      one-click "base moved — rebase first" in the panel (badge shows, merge
+      still works via a real merge commit); diff render for a huge repo is
+      byte-capped, not threaded.
+    - **Rebased onto `main` @ `b0acf22` for the v0.17.0 ship** — the only
+      adaptation was the Worktrees nav button: `b0acf22` changed `_nav_button`
+      to take an icon *factory*, so `worktree_icon(16)` → `worktree_icon`.
+      Full offline suite + `test_panel.py` (160 checks) green;
+      `test_panel_account.py` "signed-out controller" fails on `main` too
+      (pre-existing, unrelated).
 
 ## Running / testing
 

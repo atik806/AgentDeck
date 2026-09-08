@@ -573,7 +573,7 @@ class WorkspaceSidebar(QWidget):
             "Skills", skill_icon, lambda: self.skills_selected.emit()
         )
         self._worktrees_btn = _nav_button(
-            "Worktrees", worktree_icon(16), lambda: self.worktrees_selected.emit()
+            "Worktrees", worktree_icon, lambda: self.worktrees_selected.emit()
         )
 
         # The nav strip is pinned to the top of the sidebar, above the

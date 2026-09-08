@@ -20,5 +20,11 @@ voice_capture/build/
 # Local editor / assistant state
 .claude/
 
+# Skills feature materialises enabled SKILL.md docs into a workspace folder;
+# when AgentDeck's own repo is used as a workspace these land here.
+.agentdeck/
+/windows_launcher/AGENTS.md
+.venv-test/
+
 # supabase CLI local state
 supabase/.temp/
