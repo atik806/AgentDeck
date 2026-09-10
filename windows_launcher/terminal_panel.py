@@ -222,6 +222,10 @@ class TerminalPanel(QMainWindow):
         # Worktree ids created for the workspace currently being built, then
         # bound to their panes once the panes exist (see _add_workspace).
         self._pending_worktree_ids: list[str] = []
+        # Guards against a reentrant new-workspace request while
+        # _create_worktrees_for_workspace is pumping the event loop for its
+        # progress dialog (a modal QProgressDialog.setValue() spins the loop).
+        self._building_worktrees = False
         # detect_repo() result cached per folder -- called on every new-workspace.
         self._repo_info_cache: dict[str, object] = {}
         self._last_worktree_poll = 0.0
@@ -258,6 +262,10 @@ class TerminalPanel(QMainWindow):
         # the restore block below has run. Empty here == nothing to resume.
         self._pending_restore: list = []
         self._restore_active_index = 0
+        # True once a real account profile has landed (profile_ready), so the
+        # plan-gated 2nd..Nth workspace restore knows the plan for real rather
+        # than acting on the provisional Free default.
+        self._plan_resolved = False
 
         self._build_toolbar()
         self._build_body()
@@ -287,6 +295,16 @@ class TerminalPanel(QMainWindow):
             self._add_workspace(
                 pane_count=self._default_count,
                 startup_command=self._startup_command or None,
+            )
+        elif self._pending_restore:
+            # A synchronously-resolved account already ran _apply_entitlements
+            # before _restore_session populated _pending_restore -- try now.
+            self._resume_pending_restore()
+            # ... and a fallback for when the plan never resolves (offline):
+            # after a short grace period, restore the user's own workspaces
+            # anyway rather than stranding them.
+            QTimer.singleShot(
+                15000, lambda: self._resume_pending_restore(force=True)
             )
 
         if self.config.get("start_maximized", False):
@@ -849,6 +867,8 @@ class TerminalPanel(QMainWindow):
         The plain :meth:`_add_workspace` stays dialog-free for the startup path
         and the tests.
         """
+        if self._building_worktrees:
+            return  # a previous new-workspace is still creating its worktrees
         if len(self._workspaces) >= entitlements.max_workspaces(self.account.plan):
             self._prompt_upgrade(
                 "Multiple workspaces",
@@ -959,7 +979,7 @@ class TerminalPanel(QMainWindow):
         if pane_cwds and self._pending_worktree_ids:
             for pane, wid in zip(workspace.panes, self._pending_worktree_ids):
                 self._worktree_store.update(wid, pane_id=pane.pane_id)
-            workspace._intercept_pane_close = True
+                workspace.mark_worktree_pane(pane.pane_id)
             workspace.pane_close_requested.connect(self._prompt_pane_worktree_close)
             self._worktree_panel.reload()
         self._pending_worktree_ids = []
@@ -1038,6 +1058,11 @@ class TerminalPanel(QMainWindow):
         if session.layout in (LAYOUT_GRID, LAYOUT_COLUMNS, LAYOUT_ROWS):
             self._layout_setting = session.layout
 
+        # The session's folder wins over the stale config default, but only if
+        # it still exists -- otherwise fall through to whatever's configured.
+        if session.folder and Path(session.folder).is_dir():
+            self._working_folder = session.folder
+
         rows = list(session.workspaces)
         self._restore_active_index = session.active
         first, rest = rows[0], rows[1:]
@@ -1056,11 +1081,22 @@ class TerminalPanel(QMainWindow):
             startup_command=command or None,
         )
 
-    def _resume_pending_restore(self) -> None:
-        """Open the workspaces a Free-while-resolving restore deferred."""
+    def _resume_pending_restore(self, *, force: bool = False) -> None:
+        """Open the 2nd..Nth workspaces the session restore deferred.
+
+        Deferred until ``_plan_resolved`` because the account plan is normally
+        still resolving when the window first appears, and the Free cap should
+        be applied against the *real* plan, not the provisional Free default.
+        ``force`` (a launch fallback timer) resumes even if the plan never
+        resolved -- these are the user's own saved workspaces, and a stuck
+        resolve must not lose them.
+        """
         if not self._pending_restore:
             return
-        cap = entitlements.max_workspaces(self.account.plan)
+        if not self._plan_resolved and not force:
+            return  # keep _pending_restore intact -- try again when the plan lands
+        plan = self.account.plan if self.account is not None else "free"
+        cap = entitlements.max_workspaces(plan)
         while self._pending_restore and len(self._workspaces) < cap:
             self._open_snapshot(self._pending_restore.pop(0))
         self._pending_restore = []
@@ -1085,6 +1121,26 @@ class TerminalPanel(QMainWindow):
         except git_worktree.GitError:
             info = None
         self._repo_info_cache[folder] = info
+        return info
+
+    def _repo_info_for_record(self, rec):
+        """``RepoInfo`` for the repo a worktree record belongs to, or ``None``.
+
+        A worktree action (merge / discard / PR) must run against the record's
+        own repo -- ``rec.repo_root`` -- not whatever folder the active
+        workspace happens to be pointed at. Falls back to the active folder only
+        when the record has no ``repo_root`` (very old / hand-made records).
+        """
+        root = getattr(rec, "repo_root", "") or ""
+        if not root:
+            return self._active_repo_info()
+        if root in self._repo_info_cache:
+            return self._repo_info_cache[root]
+        try:
+            info = git_worktree.detect_repo(root)
+        except git_worktree.GitError:
+            info = None
+        self._repo_info_cache[root] = info
         return info
 
     def _create_worktrees_for_workspace(
@@ -1126,9 +1182,10 @@ class TerminalPanel(QMainWindow):
         created_ids: list[str] = []
         root = default_worktrees_root()
         repo_key = repo_key_for(info.toplevel)
+        self._building_worktrees = True
         try:
             for i in range(count):
-                progress.setValue(i)
+                progress.setValue(i)  # modal -> spins the event loop on its own
                 QApplication.processEvents()
                 branch = branch_name(ws_name, i)
                 dest = str(worktree_dir(root, repo_key, branch))
@@ -1139,7 +1196,7 @@ class TerminalPanel(QMainWindow):
                     repo_root=info.toplevel,
                     repo_key=repo_key,
                     branch=st.branch,
-                    path=dest,
+                    path=st.path or dest,
                     base_branch=base,
                     base_sha_at_create=st.base_sha,
                     workspace_name=ws_name,
@@ -1147,7 +1204,7 @@ class TerminalPanel(QMainWindow):
                     status="active",
                 )
                 created_ids.append(rec.id)
-                cwds.append(dest)
+                cwds.append(st.path or dest)
             progress.setValue(count)
         except git_worktree.GitError as exc:
             progress.close()
@@ -1165,6 +1222,8 @@ class TerminalPanel(QMainWindow):
                 f"Couldn't create worktrees ({exc}) — opening without isolation", 7000
             )
             return None
+        finally:
+            self._building_worktrees = False
 
         self._pending_worktree_ids = created_ids
         return cwds
@@ -1180,7 +1239,7 @@ class TerminalPanel(QMainWindow):
             ws.close_pane(pane, force=True)
             return
 
-        info = self._active_repo_info()
+        info = self._repo_info_for_record(rec)
         box = QMessageBox(self)
         box.setWindowTitle("Close terminal")
         box.setIcon(QMessageBox.Question)
@@ -1223,7 +1282,7 @@ class TerminalPanel(QMainWindow):
         rec = self._worktree_store.get(wid)
         if rec is None:
             return
-        info = self._active_repo_info()
+        info = self._repo_info_for_record(rec)
         try:
             if info is not None:
                 git_worktree.remove_worktree(info, rec.path, force=True)
@@ -1272,7 +1331,7 @@ class TerminalPanel(QMainWindow):
             pane = ws.add_pane(cwd=rec.path)
         if pane is not None:
             self._worktree_store.update(rec.id, pane_id=pane.pane_id, status="active")
-            ws._intercept_pane_close = True
+            ws.mark_worktree_pane(pane.pane_id)
             try:
                 ws.pane_close_requested.disconnect(self._prompt_pane_worktree_close)
             except (RuntimeError, TypeError):
@@ -1282,7 +1341,7 @@ class TerminalPanel(QMainWindow):
     def _run_merge(self, wid: str) -> bool:
         """Merge a worktree's branch to its base. Returns True on success."""
         rec = self._worktree_store.get(wid)
-        info = self._active_repo_info()
+        info = self._repo_info_for_record(rec) if rec is not None else None
         if rec is None or info is None:
             return False
         if not entitlements.worktrees_enabled(self._plan()):
@@ -1330,6 +1389,8 @@ class TerminalPanel(QMainWindow):
             last_merge_status="fast-forward" if result.fast_forward else "merge commit",
         )
         self._repo_info_cache.pop(self._working_folder or "", None)
+        self._repo_info_cache.pop(getattr(rec, "repo_root", "") or "", None)
+        self._repo_info_cache.pop(getattr(info, "toplevel", "") or "", None)
         self._worktree_panel.reload()
         self.statusBar().showMessage(
             f"Merged {rec.short_branch} into {rec.base_branch} "
@@ -1354,7 +1415,7 @@ class TerminalPanel(QMainWindow):
 
     def _open_pr_for_worktree(self, wid: str) -> None:
         rec = self._worktree_store.get(wid)
-        info = self._active_repo_info()
+        info = self._repo_info_for_record(rec) if rec is not None else None
         if rec is None or info is None:
             return
         if rec.pr_url:
@@ -1432,13 +1493,15 @@ class TerminalPanel(QMainWindow):
         if store is None or not git_worktree.git_available():
             return
         live: dict[str, list] = {}
+        scanned: set[str] = set()
         for root in store.repo_roots():
             try:
                 live[root] = git_worktree.list_worktrees(root)
+                scanned.add(root)  # only a clean scan lets reconcile orphan rows
             except git_worktree.GitError:
                 live[root] = []
         try:
-            changed = store.reconcile(live)
+            changed = store.reconcile(live, scanned=scanned)
         except Exception:  # noqa: BLE001 - reconcile is best-effort
             changed = []
 
@@ -2879,7 +2942,10 @@ class TerminalPanel(QMainWindow):
         """
         focused = self._focused_pane()
         notify_on = self._notifier.enabled
+        live_ids: set[str] = set()
         for ws in self._workspaces:
+            for pane in ws.panes:
+                live_ids.add(pane.pane_id)
             for pane, _old, new in ws.refresh_attention():
                 if new not in pane_state.ATTENTION_STATES:
                     # Left an attention state -- clear its notify latch so the
@@ -2892,6 +2958,12 @@ class TerminalPanel(QMainWindow):
                     continue
                 self._pane_attn_notified[pane.pane_id] = new
                 self._toast_pane(ws, pane, new)
+
+        # A pane closed individually (not via _close_workspace) leaves a stale
+        # latch + throttle entry behind -- sweep them so the dicts don't grow.
+        for dead in [pid for pid in self._pane_attn_notified if pid not in live_ids]:
+            self._pane_attn_notified.pop(dead, None)
+            self._notifier.forget(dead)
 
     def _toast_pane(self, ws: Workspace, pane: TerminalPane, state: str) -> None:
         where = f"{ws.name} · terminal {pane.index + 1}"
@@ -3148,7 +3220,7 @@ class TerminalPanel(QMainWindow):
         a.error.connect(self._on_account_error)
         # The plan lands here (fresh sign-in, restored session, or a manual
         # refresh); re-run the Free/Pro gates whenever it does.
-        a.profile_ready.connect(lambda _p: self._apply_entitlements())
+        a.profile_ready.connect(self._on_profile_ready)
 
         # A subscription can lapse while the app is open. Two nudges:
         #  * a slow poll re-fetches the profile every 30 min (also picks up an
@@ -3405,6 +3477,11 @@ class TerminalPanel(QMainWindow):
 
     def _plan(self) -> str:
         return self.account.plan if self.account is not None else "free"
+
+    def _on_profile_ready(self, _profile=None) -> None:
+        """A real account profile landed -- the plan is now known for real."""
+        self._plan_resolved = True
+        self._apply_entitlements()
 
     def _apply_entitlements(self) -> None:
         """Fold the current plan's limits into the live UI. Idempotent."""

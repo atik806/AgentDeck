@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import secrets
+import time
 from typing import Optional
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
@@ -203,6 +204,12 @@ class TerminalPane(QFrame):
         # panel's notification both read it, and the classifier needs it as the
         # "previous" state so ``done`` fires exactly once.
         self._attn_state = pane_state.IDLE
+        # Continuous-output bookkeeping for the ``done`` guard (see
+        # pane_state.MIN_WORK_FOR_DONE_S): ``_busy_since`` is when the current
+        # busy run began (0 when idle), ``_work_streak`` its length as of the
+        # last poll.
+        self._busy_since = 0.0
+        self._work_streak = 0.0
 
         self.setFrameShape(QFrame.NoFrame)
         # Accept another pane being dropped onto this one (header-drag reorder).
@@ -453,12 +460,20 @@ class TerminalPane(QFrame):
         """
         view = self.view
         busy = view.is_busy()
+        now = time.monotonic()
+        if busy:
+            if not self._busy_since:
+                self._busy_since = now
+            self._work_streak = now - self._busy_since
+        else:
+            self._busy_since = 0.0
         sig = pane_state.PaneSignals(
             alive=view.is_alive(),
             error=view.error or "",
             busy=busy,
             quiet_for=view.seconds_since_output(),
             agent_started_at=self.agent_started_at,
+            work_streak=self._work_streak,
             # Reading the screen is cheap, but skip it while output is streaming
             # -- a mid-render frame is noise and can't be a settled prompt.
             screen_tail=view.screen_tail(6) if not busy else [],
@@ -633,10 +648,10 @@ class Workspace(QWidget):
     #: The user asked to hand a pane's agent conversation off. Carries the pane.
     pane_handoff_requested = Signal(object)
 
-    #: The user asked to close a pane that owns an isolated worktree. Emitted
-    #: only while ``_intercept_pane_close`` is set (isolated workspaces); the
-    #: panel decides merge / keep / discard, then calls ``close_pane(force=True)``.
-    #: Carries the pane.
+    #: The user asked to close a pane that owns an isolated worktree (its
+    #: ``pane_id`` is in ``_worktree_pane_ids``). The panel decides merge / keep
+    #: / discard, then calls ``close_pane(force=True)``. Carries the pane.
+    #: Panes that don't own a worktree close straight away, untouched.
     pane_close_requested = Signal(object)
 
     def __init__(
@@ -669,10 +684,10 @@ class Workspace(QWidget):
         # chosen agent.
         self._cwd = cwd
         self._startup_command = startup_command
-        # When set, a pane-close request is routed out to the panel (via
-        # ``pane_close_requested``) instead of closing immediately -- the panel
-        # prompts merge / keep / discard for the pane's isolated worktree first.
-        self._intercept_pane_close = False
+        # pane_ids of panes that own an isolated git worktree. Closing one is
+        # routed out to the panel (via ``pane_close_requested``) so it can
+        # prompt merge / keep / discard first; every other pane closes at once.
+        self._worktree_pane_ids: "set[str]" = set()
 
         self._panes: list[TerminalPane] = []
         self._active: Optional[TerminalPane] = None
@@ -802,14 +817,24 @@ class Workspace(QWidget):
             pane.focus_terminal()
         return pane
 
+    def mark_worktree_pane(self, pane_id: str, owns: bool = True) -> None:
+        """Record whether ``pane_id`` owns an isolated worktree (so closing it
+        is routed out to the panel to prompt merge / keep / discard first)."""
+        if owns:
+            self._worktree_pane_ids.add(pane_id)
+        else:
+            self._worktree_pane_ids.discard(pane_id)
+
+    def _owns_worktree(self, pane: TerminalPane) -> bool:
+        return getattr(pane, "pane_id", None) in self._worktree_pane_ids
+
     def _on_pane_close_requested(self, pane: TerminalPane) -> None:
         """Route a pane's close button.
 
-        Isolated workspaces (``_intercept_pane_close``) hand the decision to the
-        panel so it can prompt about the pane's worktree first; everything else
-        closes straight away.
+        A pane that owns an isolated worktree hands the decision to the panel so
+        it can prompt about the worktree first; every other pane closes at once.
         """
-        if self._intercept_pane_close and pane in self._panes:
+        if pane in self._panes and self._owns_worktree(pane):
             self.pane_close_requested.emit(pane)
         else:
             self.close_pane(pane)
@@ -821,9 +846,9 @@ class Workspace(QWidget):
             return
 
         if len(self._panes) == 1:
-            if self._intercept_pane_close and not force:
-                # Last pane of an isolated workspace: let the panel prompt about
-                # the worktree, then it re-enters via ``empty`` / force-close.
+            if self._owns_worktree(pane) and not force:
+                # Last pane and it owns a worktree: let the panel prompt first,
+                # then it re-enters via ``empty`` / force-close.
                 self.pane_close_requested.emit(pane)
                 return
             # The panel decides what closing the final pane means.
@@ -832,6 +857,7 @@ class Workspace(QWidget):
 
         position = self._panes.index(pane)
         self._panes.remove(pane)
+        self._worktree_pane_ids.discard(getattr(pane, "pane_id", None))
         if self._zoomed is pane:
             self._zoomed = None
         pane.close_session()

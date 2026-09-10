@@ -1193,6 +1193,59 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       isolated-worktree panes reopen in the repo folder, not their worktree;
       no "jump to next pane needing attention" shortcut yet.
 
+39. **Bug-fix pass on the v0.17 / v0.18 features (v0.18.1, 2026-09-10,
+    `fix/worktree-and-attention-bugs` → `main`, PR #17, GitHub issues #4–#16)** —
+    a review of isolated worktrees + pane attention turned up 13 bugs; all fixed
+    here, no behaviour changes beyond the fixes themselves.
+    - **`git_worktree.merge_to_base` (was corrupting the user's checkout, #4):**
+      it advanced `refs/heads/<base>` with `update-ref` even when `<base>` was
+      the branch checked out in the user's main worktree, desyncing that
+      worktree's index/tree from the moved HEAD (every merged file then shows as
+      a pending deletion). Now: if `<base>` is checked out somewhere the merge
+      runs *there* (`_merge_in_place`, refusing with `DirtyWorktree` on
+      uncommitted **tracked** changes); the ephemeral-worktree + CAS
+      `update-ref` path is kept only for when `<base>` is checked out nowhere.
+      `diff_stat` / `diff_text` now diff against `merge-base(base, HEAD)`, not
+      the base tip, so base's own later commits stop rendering as deletions in
+      the review diff (#7). `add_worktree`'s collision retry varies the
+      destination dir too, not just the branch name (#13).
+    - **`TerminalPanel` worktree ops (#5):** merge / discard / PR resolved the
+      repo from the active workspace's folder, not the record's `repo_root` —
+      new `_repo_info_for_record()`. Reentrancy guard around
+      `_create_worktrees_for_workspace`'s progress-dialog event pumping (#14);
+      the record now stores the real worktree path (`st.path`).
+    - **`worktree_store.reconcile()` (#10):** took the set of repo roots that
+      were actually scanned, so one flaky `git worktree list` can't orphan a
+      repo's records; an orphaned record whose dir + registration reappear is
+      recovered to `detached`. `_canon("")` returns `""` (was the process cwd via
+      `os.path.realpath`) (#12).
+    - **Session restore (#9):** the 2nd..Nth workspace resume is gated on a real
+      `_plan_resolved` flag (was driven by an `_apply_entitlements()` that fires
+      before `_pending_restore` is populated), retried at end of `__init__`,
+      with a 15 s offline fallback that force-resumes. `_restore_session()` now
+      adopts the snapshot's `folder` when it still exists (#15).
+    - **Attention / notifications:** `pane_state.classify` needs a minimum
+      continuous-work streak (`MIN_WORK_FOR_DONE_S`, tracked on `TerminalPane`)
+      before it reports `done`, so an interactive agent's startup banner no
+      longer fires a false "an agent finished" (#8). `AttentionNotifier.notify()`
+      returns a meaningful value (dispatched vs gated/throttled) and stale
+      per-pane latches are swept when a pane closes individually (#11). Pane
+      close-interception is per-pane now (`Workspace.mark_worktree_pane` +
+      `_worktree_pane_ids`), so opening a worktree into an ordinary workspace no
+      longer reroutes every pane's close through the panel (#16).
+    - **`WorktreePanel` (#6):** `refresh_status()` (the ~4 s poll) ran
+      `gw.status()` + `gw.diff_stat()` — ~6 `git` processes per row —
+      synchronously on the UI thread. It now runs the batch in a `QThreadPool`
+      worker (`_ProbeTask`) and re-renders from the result; `reload()` stays
+      synchronous for the explicit open. Per-reload probe cache + a
+      signal-blocked `_select_id` kill the old reload→select→load-detail double
+      probe.
+    - Tests: `test_git_worktree` gains an in-place-merge + clean-checkout
+      assertion (the old merge test only checked the ref moved);
+      `test_worktree_store` / `test_worktree_panel` / `test_pane_state` extended.
+      Full offline suite green; `test_panel.py` + `test_panel_account.py` keep
+      their two pre-existing `main` failures.
+
 ## Running / testing
 
 ```cmd

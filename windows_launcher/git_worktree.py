@@ -417,26 +417,29 @@ def add_worktree(
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     base_arg = [base] if base else []
-    attempts = [branch]
-    if create_branch:
-        attempts.append(f"{branch}-2")
+    # Each retry gets a fresh branch name *and* a fresh destination directory --
+    # "already exists" can mean either the branch or the path, and reusing the
+    # same dir just fails the same way.
+    attempts = 3 if create_branch else 1
 
     last_err: "GitError | None" = None
-    for name in attempts:
+    for i in range(attempts):
+        name = branch if i == 0 else f"{branch}-{i + 1}"
+        dst = dest if i == 0 else dest.with_name(f"{dest.name}-{i + 1}")
         args = ["worktree", "add"]
         if create_branch:
             args += ["-b", name]
-        args += [str(dest), *base_arg]
+        args += [str(dst), *base_arg]
         proc = _run(args, top, check=False, timeout=120.0)
         if proc.returncode == 0:
-            return status(str(dest), base or name)
+            return status(str(dst), base or name)
         detail = (proc.stderr or proc.stdout or "").strip()
         last_err = GitError(f"git worktree add failed: {detail}")
         low = detail.lower()
-        if "already exists" in low and create_branch:
-            continue  # retry with the suffixed name
         if "no space left" in low:
             raise GitError("not enough disk space to create the worktree") from last_err
+        if create_branch and ("already exists" in low or "already used by worktree" in low):
+            continue  # retry with a fresh branch + dir
         break
     raise last_err or GitError("git worktree add failed")
 
@@ -503,6 +506,22 @@ def is_dirty(worktree_path: "str | os.PathLike") -> "tuple[bool, list[str]]":
     return bool(files), files
 
 
+def _tracked_changes(worktree_path: str) -> "list[str]":
+    """Modified/staged tracked paths only -- untracked (``??``) files excluded.
+
+    ``git merge`` handles untracked files itself (it only aborts when one would
+    be clobbered), so they should not block an in-place merge.
+    """
+    if not os.path.isdir(worktree_path):
+        return []
+    out = _out(["status", "--porcelain"], worktree_path, check=False)
+    return [
+        ln[3:].strip()
+        for ln in out.splitlines()
+        if ln.strip() and not ln.startswith("??")
+    ]
+
+
 def _ahead_behind(worktree_path: str, base_ref: str) -> "tuple[int, int]":
     """``(ahead, behind)`` of HEAD relative to ``base_ref``."""
     if not base_ref:
@@ -524,6 +543,38 @@ def _resolve_base_ref(worktree_path: str, base_branch: str) -> str:
     for ref in (base_branch, f"refs/heads/{base_branch}", f"origin/{base_branch}"):
         if ref and _rev(worktree_path, ref):
             return ref
+    return ""
+
+
+def _merge_base(cwd, a: str, b: str) -> str:
+    """The common ancestor of ``a`` and ``b`` (``""`` if there is none)."""
+    if not a or not b:
+        return ""
+    return _out(["merge-base", a, b], cwd, check=False)
+
+
+def _diff_base(worktree_path: str, base_ref: str) -> str:
+    """The ref a worktree-vs-base diff should be taken against.
+
+    Not ``base_ref`` itself: once the base branch advances past where this
+    worktree forked, diffing against its *tip* renders base's own new commits
+    as deletions in the worktree's "review" diff. The merge-base of
+    ``base_ref`` and ``HEAD`` isolates just the worktree's own work.
+    """
+    return _merge_base(worktree_path, base_ref, "HEAD") or base_ref
+
+
+def _checked_out_worktree(top: str, branch: str) -> str:
+    """Path of the registered worktree that has ``branch`` checked out, or ``""``.
+
+    ``list_worktrees`` already strips the ``refs/heads/`` prefix, so the entry's
+    ``branch`` is the short name.
+    """
+    if not branch:
+        return ""
+    for e in list_worktrees(top):
+        if e.get("branch", "") == branch:
+            return e.get("path", "")
     return ""
 
 
@@ -588,9 +639,10 @@ def diff_stat(worktree_path: "str | os.PathLike", base_branch: str) -> "list[Fil
     base_ref = _resolve_base_ref(path, base_branch)
     if not base_ref:
         return []
-    nums = _numstat(path, base_ref)
+    diff_base = _diff_base(path, base_ref)
+    nums = _numstat(path, diff_base)
     out = _out(
-        ["diff", "--name-status", "--find-renames", base_ref], path, check=False
+        ["diff", "--name-status", "--find-renames", diff_base], path, check=False
     )
     deltas: list[FileDelta] = []
     for line in out.splitlines():
@@ -630,7 +682,8 @@ def diff_text(
     base_ref = _resolve_base_ref(wt, base_branch)
     if not base_ref:
         return ""
-    args = ["diff", "--no-color", f"-U{max(0, int(context))}", "--find-renames", base_ref]
+    diff_base = _diff_base(wt, base_ref)
+    args = ["diff", "--no-color", f"-U{max(0, int(context))}", "--find-renames", diff_base]
     if path:
         args += ["--", path]
     text = _out(args, wt, check=False, timeout=60.0)
@@ -690,6 +743,65 @@ def rebase_onto_base(worktree_path: "str | os.PathLike", base: str) -> MergeResu
     )
 
 
+def _merge_args(branch: str, base: str, mode: str, message: "str | None") -> "list[str]":
+    args = ["merge"]
+    if mode == "ff-only":
+        args.append("--ff-only")
+    elif mode == "no-ff":
+        args.append("--no-ff")
+    if message:
+        args += ["-m", message]
+    elif mode != "ff-only":
+        args += ["-m", f"Merge {branch} into {base} (AgentDeck)"]
+    args.append(branch)
+    return args
+
+
+def _fast_forwarded(cwd, sha: str) -> bool:
+    # `rev-list --parents -n1` prints "<sha> <parent...>": <=2 tokens == single
+    # parent == no merge commit was created.
+    parents = _out(["rev-list", "--parents", "-n", "1", sha], cwd).split()
+    return len(parents) <= 2
+
+
+def _merge_in_place(
+    host: str, *, branch: str, base: str, mode: str, message: "str | None",
+    old_base_sha: str,
+) -> MergeResult:
+    """Merge ``branch`` into ``base`` directly in the worktree that has ``base``
+    checked out. Keeps that worktree's index/tree consistent with the moved ref.
+
+    Refuses (``DirtyWorktree``) if the host worktree has uncommitted changes to
+    *tracked* files -- a merge there would collide with the user's own work.
+    Untracked files are left for ``git merge`` itself to guard.
+    """
+    changed = _tracked_changes(host)
+    if changed:
+        raise DirtyWorktree(
+            f"your checkout of {base!r} has uncommitted changes — commit or "
+            "stash them before merging a worktree into it",
+            changed,
+        )
+    proc = _run(_merge_args(branch, base, mode, message), host, check=False, timeout=120.0)
+    if proc.returncode != 0:
+        conflicts = _out(
+            ["diff", "--name-only", "--diff-filter=U"], host, check=False
+        ).splitlines()
+        _run(["merge", "--abort"], host, check=False)
+        if conflicts:
+            raise WorktreeConflict(
+                f"merging {branch} into {base} hit conflicts", conflicts
+            )
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise GitError(f"git merge failed: {detail}")
+    new_sha = _rev(host, "HEAD")
+    ff = _fast_forwarded(host, new_sha)
+    return MergeResult(
+        ok=True, fast_forward=ff, merge_sha=new_sha, base_sha_before=old_base_sha,
+        conflicts=[], message="fast-forward" if ff else "merge commit",
+    )
+
+
 def merge_to_base(
     repo: "RepoInfo | str",
     *,
@@ -699,12 +811,18 @@ def merge_to_base(
     message: "str | None" = None,
     scratch_root: "str | os.PathLike | None" = None,
 ) -> MergeResult:
-    """Merge ``branch`` into ``base`` **without touching the user's checkout**.
+    """Merge ``branch`` into ``base`` without leaving the user's checkout dirty.
 
-    Runs the merge in an ephemeral detached worktree checked out at ``base``,
-    then advances ``refs/heads/<base>`` with a compare-and-swap ``update-ref``.
     ``mode``: ``"ff-only"`` (fail unless fast-forwardable), ``"no-ff"`` (always a
     merge commit), or ``"auto"`` (fast-forward when possible).
+
+    * If ``base`` is checked out in a worktree, the merge runs *there* -- moving
+      the branch ref out from under a checked-out worktree via ``update-ref``
+      would leave that worktree's index/tree desynced from HEAD (every merged
+      file shows as deleted in ``git status``). Refuses with
+      :class:`DirtyWorktree` if that worktree has uncommitted changes.
+    * Otherwise it runs in an *ephemeral* detached worktree and advances
+      ``refs/heads/<base>`` with a compare-and-swap ``update-ref``.
 
     Raises :class:`WorktreeConflict` on conflicts (nothing is changed) and
     :class:`GitError` for everything else.
@@ -721,22 +839,21 @@ def merge_to_base(
     if not old_base_sha:
         raise GitError(f"base branch {base!r} has no commits")
 
+    host = _checked_out_worktree(top, base)
+    if host and os.path.isdir(host):
+        return _merge_in_place(
+            host, branch=branch, base=base, mode=mode, message=message,
+            old_base_sha=old_base_sha,
+        )
+
     root = Path(scratch_root) if scratch_root else Path(top).parent
     tmp = root / f".agentdeck-merge-{os.getpid()}-{_short_token()}"
 
     _run(["worktree", "add", "--detach", str(tmp), old_base_sha], top, timeout=120.0)
     try:
-        args = ["merge"]
-        if mode == "ff-only":
-            args.append("--ff-only")
-        elif mode == "no-ff":
-            args.append("--no-ff")
-        if message:
-            args += ["-m", message]
-        elif mode != "ff-only":
-            args += ["-m", f"Merge {branch} into {base} (AgentDeck)"]
-        args.append(branch)
-        proc = _run(args, str(tmp), check=False, timeout=120.0)
+        proc = _run(
+            _merge_args(branch, base, mode, message), str(tmp), check=False, timeout=120.0
+        )
         if proc.returncode != 0:
             conflicts = _out(
                 ["diff", "--name-only", "--diff-filter=U"], str(tmp), check=False
@@ -750,10 +867,7 @@ def merge_to_base(
             raise GitError(f"git merge failed: {detail}")
 
         new_sha = _rev(str(tmp), "HEAD")
-        # Fast-forward iff no merge commit was created: `rev-list --parents -n1`
-        # prints "<sha> <parent...>", so <=2 tokens means a single parent.
-        parents = _out(["rev-list", "--parents", "-n", "1", new_sha], str(tmp)).split()
-        fast_forward = len(parents) <= 2
+        fast_forward = _fast_forwarded(str(tmp), new_sha)
 
         cas = _run(
             ["update-ref", f"refs/heads/{base}", new_sha, old_base_sha], top, check=False

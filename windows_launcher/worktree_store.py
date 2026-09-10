@@ -75,11 +75,17 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _canon(path: str) -> str:
-    """Case-folded real path for reliable comparison (8.3 names, symlinks)."""
+    """Case-folded real path for reliable comparison (8.3 names, symlinks).
+
+    Empty in, empty out -- ``os.path.realpath("")`` resolves to the process cwd,
+    which would let an empty ``path`` collide with a real worktree.
+    """
+    if not path:
+        return ""
     try:
-        return os.path.normcase(os.path.realpath(str(path or "")))
+        return os.path.normcase(os.path.realpath(str(path)))
     except (OSError, ValueError):
-        return os.path.normcase(os.path.normpath(str(path or "")))
+        return os.path.normcase(os.path.normpath(str(path)))
 
 
 def slugify(text: str, *, fallback: str = "ws", maxlen: int = 24) -> str:
@@ -300,6 +306,8 @@ class WorktreeStore:
     def by_path(self, path: str) -> Optional[WorktreeRecord]:
         self._ensure()
         target = _canon(path)
+        if not target:
+            return None
         return next((r for r in self._items if _canon(r.path) == target), None)
 
     def for_repo(self, repo_root: str) -> list[WorktreeRecord]:
@@ -366,14 +374,23 @@ class WorktreeStore:
 
     # -- reconcile -----------------------------------------------------
 
-    def reconcile(self, live_by_repo: "dict[str, list[dict]]") -> list[WorktreeRecord]:
+    def reconcile(
+        self,
+        live_by_repo: "dict[str, list[dict]]",
+        scanned: "set[str] | list[str] | None" = None,
+    ) -> list[WorktreeRecord]:
         """Bring the store back in step with what's actually on disk.
 
         ``live_by_repo`` maps a repo root to the parsed
-        ``git_worktree.list_worktrees`` output for it.
+        ``git_worktree.list_worktrees`` output for it. ``scanned`` (optional) is
+        the set of repo roots whose ``git`` query actually **succeeded** -- a
+        record whose repo wasn't successfully scanned is left alone rather than
+        orphaned on the strength of a transient ``git`` failure. ``None`` means
+        "trust every key of ``live_by_repo``" (back-compat).
 
-        * A record whose directory is gone -> ``orphaned``.
-        * A record whose dir exists but git no longer registers it -> ``orphaned``.
+        * A record whose directory is gone (repo was scanned) -> ``orphaned``.
+        * A record git no longer registers (repo was scanned) -> ``orphaned``.
+        * An ``orphaned`` record that is back on disk + registered -> ``detached``.
         * An on-disk ``agentdeck/*`` worktree with no record -> a synthesised
           ``detached`` record so the user can still find and clean it up.
 
@@ -383,30 +400,45 @@ class WorktreeStore:
         self._ensure()
         changed: list[WorktreeRecord] = []
 
+        scanned_keys: "set[str] | None" = None
+        if scanned is not None:
+            scanned_keys = {repo_key_for(r) for r in scanned}
+
         live_paths: dict[str, dict] = {}
         for entries in live_by_repo.values():
             for e in entries or []:
-                live_paths[_canon(e.get("path", ""))] = e
+                canon = _canon(e.get("path", ""))
+                if canon:
+                    live_paths[canon] = e
 
         known_paths = set()
         for rec in self._items:
             known_paths.add(_canon(rec.path))
             if rec.status in ("discarded", "merged", "pending_delete"):
                 continue
+            repo_scanned = scanned_keys is None or rec.repo_key in scanned_keys
+            if not repo_scanned:
+                continue
             norm = _canon(rec.path)
             on_disk = bool(rec.path) and os.path.isdir(rec.path)
-            registered = norm in live_paths
+            registered = bool(norm) and norm in live_paths
             if (not on_disk or not registered) and rec.status != "orphaned":
                 rec.status = "orphaned"
                 rec.updated = time.time()
                 changed.append(rec)
+            elif on_disk and registered and rec.status == "orphaned":
+                rec.status = "detached"  # it came back -- likely a flaky scan
+                rec.updated = time.time()
+                changed.append(rec)
 
         # Adopt stray agentdeck/* worktrees that no record covers.
-        for entries in live_by_repo.values():
+        for root, entries in live_by_repo.items():
+            if scanned_keys is not None and repo_key_for(root) not in scanned_keys:
+                continue
             for e in entries or []:
                 branch = e.get("branch", "")
                 norm = _canon(e.get("path", ""))
-                if not branch.startswith("agentdeck/") or norm in known_paths:
+                if not branch.startswith("agentdeck/") or not norm or norm in known_paths:
                     continue
                 rec = WorktreeRecord(
                     id=_new_id(),

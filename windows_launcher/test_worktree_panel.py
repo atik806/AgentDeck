@@ -19,6 +19,7 @@ try:
 except Exception:
     pass
 
+from PySide6.QtCore import QThreadPool  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import git_worktree as gw  # noqa: E402
@@ -113,6 +114,17 @@ def main() -> int:
             panel3 = WorktreePanel(store=store, repo_provider=lambda: info,
                                    merge_enabled=lambda: False)
             check(not panel3._merge_btn.isEnabled(), "Merge disabled when merge_enabled() False")
+
+            # -- background refresh: off-thread probe, stale results ignored --
+            panel3.refresh_status()  # must not block / raise on the UI thread
+            check(True, "refresh_status kicks the probe without blocking")
+            stale_gen = panel3._probe_gen - 1
+            panel3._on_probe_refreshed(stale_gen, {"whatever": (None, [])})
+            check("whatever" not in panel3._probe_cache,
+                  "a superseded background probe result is dropped")
+
+            # let the background probe finish before the temp repo is torn down
+            QThreadPool.globalInstance().waitForDone(5000)
 
     print(f"\n{_PASS} passed, {_FAIL} failed")
     return 1 if _FAIL else 0

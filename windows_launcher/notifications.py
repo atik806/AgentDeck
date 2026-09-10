@@ -81,10 +81,13 @@ class AttentionNotifier(QObject):
     # -- the one entry point -------------------------------------------
 
     def notify(self, key: str, title: str, body: str = "") -> bool:
-        """Raise a notification for ``key``. Returns whether one actually fired.
+        """Raise a notification for ``key``.
 
-        Silently does nothing when the feature is off or the same key fired
-        within the throttle window.
+        Returns whether the notification was **dispatched** -- i.e. it passed
+        the enable switch and the per-key throttle. Returns ``False`` (a no-op)
+        when the feature is off or the same key fired within the throttle
+        window. Whether a toast physically appears also depends on the OS having
+        a system tray; that is not reflected here.
         """
         if not self._enabled:
             return False
@@ -95,11 +98,11 @@ class AttentionNotifier(QObject):
         self._last[key] = now
         self._last_key = key
 
-        shown = self._toast(title, body)
+        self._toast(title, body)
         self._flash_taskbar()
         if self._sound:
             QApplication.beep()
-        return shown or True
+        return True
 
     def forget(self, key: str) -> None:
         """Drop a key's throttle history -- e.g. when its pane closes."""
@@ -148,17 +151,19 @@ class AttentionNotifier(QObject):
         ):
             self.activated.emit(self._last_key)
 
-    def _flash_taskbar(self) -> None:
+    def _flash_taskbar(self) -> bool:
         app = QApplication.instance()
         if app is None or self._window is None:
-            return
+            return False
         try:
             # No flash when the window is already the foreground window --
             # the user is looking at AgentDeck, just not this pane.
             if not self._window.isActiveWindow():
                 app.alert(self._window, 2000)
+                return True
         except Exception:  # noqa: BLE001
             pass
+        return False
 
     def shutdown(self) -> None:
         if self._tray is not None:

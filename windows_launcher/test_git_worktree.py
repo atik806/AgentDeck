@@ -137,13 +137,31 @@ def main() -> int:
 
         # -- commit_all + merge_to_base --
         gw.commit_all(dest, "wt changes")
+        # main is checked out in `repo`; an uncommitted *tracked* change here
+        # must block the in-place merge. Prove that, then revert and merge for
+        # real. (An untracked file must NOT block -- git merge guards those.)
+        (repo / "untracked.txt").write_text("scratch\n", encoding="utf-8")
+        (repo / "c.txt").write_text("locally edited\n", encoding="utf-8")
+        try:
+            gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
+            check(False, "merge_to_base raises DirtyWorktree when base checkout is dirty")
+        except gw.DirtyWorktree:
+            check(True, "merge_to_base raises DirtyWorktree when base checkout is dirty")
+        _git(repo, "checkout", "--", "c.txt")
+        (repo / "untracked.txt").unlink()
+
         res = gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
         check(res.ok, "merge_to_base ok")
         merged_main = _git(repo, "log", "--oneline", "main")
         check("wt changes" in merged_main, "base branch now contains the worktree commit")
-        # user's checkout untouched (still on main, working tree clean of the merge)
+        # user's checkout still on main *and* not left showing the merge as a
+        # pile of pending deletions (the whole point of the in-place path).
         check(_git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main",
               "user checkout still on main")
+        check(_git(repo, "status", "--porcelain") == "",
+              "user checkout clean after merge (not desynced from the moved ref)")
+        check(_git(repo, "rev-parse", "HEAD") == _git(repo, "rev-parse", "main"),
+              "user checkout HEAD == merged main")
 
         # -- conflict path --
         cdest = wt_root / "pc"
