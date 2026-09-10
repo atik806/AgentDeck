@@ -56,8 +56,10 @@ from PySide6.QtWidgets import (
 
 import entitlements
 import git_worktree
+import pane_state
 import perf
 import theme
+from notifications import AttentionNotifier
 from account import AccountController
 from github_controller import GitHubController
 from vercel_controller import VercelController
@@ -91,6 +93,7 @@ from workspace import (  # noqa: F401 - _EXPAND_GLYPH/_RESTORE_GLYPH re-exported
     Workspace,
 )
 from workspace_sidebar import WorkspaceSidebar
+from workspaces_store import SessionSnapshot, WorkspaceSnapshot, WorkspacesStore
 from worktree_panel import WorktreePanel
 from worktree_store import (
     WorktreeStore,
@@ -176,6 +179,7 @@ class TerminalPanel(QMainWindow):
         # not supplied -- direct construction, tests, --no-wizard -- fall back to
         # saved config, so a configured folder / agent still take effect.
         startup = startup or {}
+        self._startup = startup
         self._default_count = max(1, min(MAX_PANES, int(
             startup.get("count", self.config.get("default_count", 4))
         )))
@@ -248,6 +252,13 @@ class TerminalPanel(QMainWindow):
         )
         self._update_dialog: Optional[UpdateProgressDialog] = None
 
+        # Session-restore bookkeeping -- initialised before _wire_account()
+        # because a synchronously-resolved account fires _apply_entitlements
+        # (hence _resume_pending_restore) straight from _wire_account, before
+        # the restore block below has run. Empty here == nothing to resume.
+        self._pending_restore: list = []
+        self._restore_active_index = 0
+
         self._build_toolbar()
         self._build_body()
         self._build_shortcuts()
@@ -260,10 +271,23 @@ class TerminalPanel(QMainWindow):
         # the window so it floats over every pane; near-free while hidden.
         self._perf_hud = perf.PerfHUD(self)
 
-        self._add_workspace(
-            pane_count=self._default_count,
-            startup_command=self._startup_command or None,
-        )
+        # Persist the workspace list so a restart reopens it. Session-only until
+        # this feature; see workspaces_store.py.
+        self._workspaces_store = WorkspacesStore()
+        self._session_save_timer = QTimer(self)
+        self._session_save_timer.setSingleShot(True)
+        self._session_save_timer.setInterval(500)
+        self._session_save_timer.timeout.connect(self._do_persist_session)
+        # _pending_restore / _restore_active_index initialised above, before
+        # _wire_account(). _restore_session() fills _pending_restore with the
+        # 2nd..Nth workspace; _apply_entitlements opens them once the plan is
+        # known (async in the real app).
+
+        if not self._restore_session():
+            self._add_workspace(
+                pane_count=self._default_count,
+                startup_command=self._startup_command or None,
+            )
 
         if self.config.get("start_maximized", False):
             self.showMaximized()
@@ -741,6 +765,7 @@ class TerminalPanel(QMainWindow):
         self._settings_panel.font_family_changed.connect(self._on_settings_font_family_changed)
         self._settings_panel.font_size_changed.connect(self._set_font)
         self._settings_panel.voice_settings_changed.connect(self._on_settings_voice_changed)
+        self._settings_panel.notifications_changed.connect(self._configure_notifications)
         self._main_stack = QStackedWidget(central)
         self._main_stack.addWidget(self._ws_stack)
         self._main_stack.addWidget(self._plugins_panel)
@@ -754,6 +779,16 @@ class TerminalPanel(QMainWindow):
         row.addWidget(self._main_stack, 1)
         outer.addWidget(body, 1)
         self.setCentralWidget(central)
+
+        # "A terminal needs you" desktop notifications. Owned here, driven from
+        # _refresh_status; configure() is (re)called from _apply_entitlements
+        # and the settings-changed path. Silent until then.
+        self._notifier = AttentionNotifier(self, icon=self.windowIcon())
+        self._notifier.set_main_window(self)
+        self._notifier.activated.connect(self._focus_pane_by_id)
+        # {pane_id -> last attention state we notified about} -- so a pane that
+        # sits in "awaiting_input" for a minute doesn't re-toast every second.
+        self._pane_attn_notified: dict[str, str] = {}
 
         status = self.statusBar()
         self._status_label = QLabel("", status)
@@ -941,7 +976,97 @@ class TerminalPanel(QMainWindow):
         self._workspaces.append(workspace)
         self._ws_stack.addWidget(workspace)
         self._select_workspace(workspace)
+        self._persist_session()
         return workspace
+
+    # -- session persistence -----------------------------------------------
+
+    def _session_snapshot(self) -> SessionSnapshot:
+        rows = [
+            WorkspaceSnapshot(
+                name=ws.name,
+                panes=ws.pane_count,
+                agent_key=ws.panes[0].detect_agent_key() if ws.panes else "",
+                agent_command=(ws.panes[0].startup_command if ws.panes else "")
+                or getattr(ws, "_startup_command", "") or "",
+            )
+            for ws in self._workspaces
+        ]
+        active = 0
+        if self._active_ws in self._workspaces:
+            active = self._workspaces.index(self._active_ws)
+        return SessionSnapshot(
+            folder=self._working_folder or "",
+            layout=self._layout_setting,
+            active=active,
+            workspaces=rows,
+        )
+
+    def _persist_session(self) -> None:
+        """Debounced save -- many small changes in a burst write once."""
+        if not self._persist_settings or not self.config.get("restore_session", True):
+            return
+        self._session_save_timer.start()
+
+    def _do_persist_session(self) -> None:
+        if not self._persist_settings or not self.config.get("restore_session", True):
+            return
+        try:
+            self._workspaces_store.save(self._session_snapshot())
+        except Exception:  # noqa: BLE001 - a save must never crash the app
+            pass
+
+    def _restore_session(self) -> bool:
+        """Rebuild the workspace list from the last session. Returns whether it
+        opened anything (``False`` -> caller seeds a fresh workspace).
+
+        Only the *first* workspace opens now; the rest wait in
+        ``_pending_restore`` until ``_apply_entitlements`` confirms the plan
+        allows them (the account plan is still resolving at construction).
+        """
+        if not self._persist_settings or not self.config.get("restore_session", True):
+            return False
+        if getattr(self, "_startup", None) and self._startup.get("fresh"):
+            return False
+        try:
+            session = self._workspaces_store.load()
+        except Exception:  # noqa: BLE001
+            return False
+        if not session.is_usable():
+            return False
+
+        if session.layout in (LAYOUT_GRID, LAYOUT_COLUMNS, LAYOUT_ROWS):
+            self._layout_setting = session.layout
+
+        rows = list(session.workspaces)
+        self._restore_active_index = session.active
+        first, rest = rows[0], rows[1:]
+        self._pending_restore = rest
+        self._open_snapshot(first)
+        if not self._workspaces:
+            self._pending_restore = []
+            return False
+        return True
+
+    def _open_snapshot(self, snap: "WorkspaceSnapshot") -> None:
+        command = (snap.agent_command or "").strip()
+        self._add_workspace(
+            name=snap.name or None,
+            pane_count=snap.panes,
+            startup_command=command or None,
+        )
+
+    def _resume_pending_restore(self) -> None:
+        """Open the workspaces a Free-while-resolving restore deferred."""
+        if not self._pending_restore:
+            return
+        cap = entitlements.max_workspaces(self.account.plan)
+        while self._pending_restore and len(self._workspaces) < cap:
+            self._open_snapshot(self._pending_restore.pop(0))
+        self._pending_restore = []
+        idx = self._restore_active_index
+        if 0 <= idx < len(self._workspaces):
+            self._select_workspace(self._workspaces[idx])
 
     # -- worktrees ------------------------------------------------------------
 
@@ -2168,6 +2293,9 @@ class TerminalPanel(QMainWindow):
                 return
 
         position = self._workspaces.index(workspace)
+        for pane in workspace.panes:
+            self._pane_attn_notified.pop(pane.pane_id, None)
+            self._notifier.forget(pane.pane_id)
         self._workspaces.remove(workspace)
         self._ws_stack.removeWidget(workspace)
         workspace.shutdown()
@@ -2181,6 +2309,7 @@ class TerminalPanel(QMainWindow):
         else:
             self._refresh_sidebar()
             self._refresh_status()
+        self._persist_session()
 
     def _on_workspace_empty(self, workspace: Workspace) -> None:
         # The last pane of a workspace was closed. Drop the workspace, unless it
@@ -2198,13 +2327,14 @@ class TerminalPanel(QMainWindow):
         workspace.set_name(name)
         self._refresh_sidebar()
         self._refresh_status()
+        self._persist_session()
 
     def _reorder_workspaces(self, src: int, dst: int) -> None:
         """A sidebar row was dragged from position ``src`` to ``dst``.
 
-        Order is in-memory only -- workspaces are not persisted across
-        restarts -- so this just reorders the list and repaints. Ctrl+Tab
-        cycling and the sidebar both read this list, so they follow along.
+        Reorders the in-memory list and repaints; Ctrl+Tab cycling and the
+        sidebar both read this list, so they follow along. The new order is
+        saved to the session snapshot too.
         """
         n = len(self._workspaces)
         if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
@@ -2213,6 +2343,7 @@ class TerminalPanel(QMainWindow):
         self._workspaces.insert(dst, workspace)
         self._refresh_sidebar()
         self._refresh_status()
+        self._persist_session()
         self.statusBar().showMessage(
             f"Moved “{workspace.name}” to position {dst + 1}", 2000
         )
@@ -2220,6 +2351,7 @@ class TerminalPanel(QMainWindow):
     def _on_workspace_changed(self) -> None:
         self._refresh_sidebar()
         self._refresh_status()
+        self._persist_session()
 
     def _refresh_sidebar(self) -> None:
         on_nav_view = (
@@ -2678,6 +2810,7 @@ class TerminalPanel(QMainWindow):
         for workspace in self._workspaces:
             workspace.set_layout_mode(mode)
         self._save_settings()
+        self._persist_session()
 
     # -- status ------------------------------------------------------------
 
@@ -2689,6 +2822,11 @@ class TerminalPanel(QMainWindow):
 
         for workspace in self._workspaces:
             workspace.poll()
+
+        # Re-classify every pane and raise a desktop notification for the ones
+        # that just started needing attention (waiting on input / finished /
+        # crashed) -- unless it's the pane the user is already looking at.
+        self._poll_pane_attention()
 
         # Light the sidebar's glow dot on any workspace with an agent working.
         self._sidebar.refresh_activity()
@@ -2720,6 +2858,73 @@ class TerminalPanel(QMainWindow):
             "Ctrl+B sidebar  ·  Ctrl+Tab next pane"
         )
         self._status_label.setText("   |   ".join(parts))
+
+    # -- pane attention + notifications --------------------------------------
+
+    def _focused_pane(self) -> Optional[TerminalPane]:
+        """The pane the user is actually looking at right now (or ``None``)."""
+        ws = self._active_ws
+        if ws is None or not self.isActiveWindow():
+            return None
+        if ws.is_zoomed:
+            return ws._zoomed
+        return ws.active_pane
+
+    def _poll_pane_attention(self) -> None:
+        """Drive the sidebar badges + notifications from each pane's state.
+
+        Called every second from ``_refresh_status``. Refreshing is always
+        done (the badge needs it even with notifications off); the toast is
+        gated on the feature switch and skips the focused pane.
+        """
+        focused = self._focused_pane()
+        notify_on = self._notifier.enabled
+        for ws in self._workspaces:
+            for pane, _old, new in ws.refresh_attention():
+                if new not in pane_state.ATTENTION_STATES:
+                    # Left an attention state -- clear its notify latch so the
+                    # next entry toasts again.
+                    self._pane_attn_notified.pop(pane.pane_id, None)
+                    continue
+                if not notify_on or pane is focused:
+                    continue
+                if self._pane_attn_notified.get(pane.pane_id) == new:
+                    continue
+                self._pane_attn_notified[pane.pane_id] = new
+                self._toast_pane(ws, pane, new)
+
+    def _toast_pane(self, ws: Workspace, pane: TerminalPane, state: str) -> None:
+        where = f"{ws.name} · terminal {pane.index + 1}"
+        titles = {
+            pane_state.AWAITING_INPUT: "A terminal is waiting for you",
+            pane_state.DONE: "An agent finished",
+            pane_state.ERROR: "A terminal exited",
+        }
+        self._notifier.notify(pane.pane_id, titles.get(state, "AgentDeck"), where)
+
+    def _focus_pane_by_id(self, pane_id: str) -> None:
+        """Raise AgentDeck and put the cursor in the pane a toast pointed at."""
+        if not pane_id:
+            self._raise_self()
+            return
+        for ws in self._workspaces:
+            for pane in ws.panes:
+                if pane.pane_id != pane_id:
+                    continue
+                self._raise_self()
+                if ws is not self._active_ws:
+                    self._select_workspace(ws)
+                ws.set_active(pane)
+                QTimer.singleShot(0, pane.focus_terminal)
+                return
+        self._raise_self()
+
+    def _raise_self(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # -- active-workspace proxies ----------------------------------------------
     #
@@ -3271,12 +3476,28 @@ class TerminalPanel(QMainWindow):
         if cloud is not None and pro:
             cloud.pull_soon()
 
+        # Desktop notifications (not plan-gated -- a courtesy like the theme).
+        self._configure_notifications()
+
+        # Open any workspaces the session restore deferred while the plan was
+        # still resolving (a Pro user's 2nd..Nth workspace).
+        self._resume_pending_restore()
+
         # Re-arm the "expire at plan_expires_at" timer for whatever we now know.
         self._arm_plan_expiry_timer()
         # ... and the trial gate + its warning surfaces.
         self._arm_trial_timer()
         self._refresh_trial_banner()
         self._maybe_trial_last_day_modal()
+
+    def _configure_notifications(self) -> None:
+        notifier = getattr(self, "_notifier", None)
+        if notifier is None:
+            return
+        notifier.configure(
+            enabled=bool(self.config.get("notify_on_attention", True)),
+            sound=bool(self.config.get("notify_sound", False)),
+        )
 
     def _auto_check_updates(self) -> None:
         """One quiet check for a newer release — Pro only, once per run."""
@@ -3402,6 +3623,11 @@ class TerminalPanel(QMainWindow):
 
     def _shutdown_all(self) -> None:
         self._watchdog.stop()
+        # Flush the session snapshot now, synchronously -- the debounce timer
+        # won't get another tick.
+        if getattr(self, "_session_save_timer", None) is not None:
+            self._session_save_timer.stop()
+        self._do_persist_session()
         if getattr(self, "_notes_panel", None) is not None:
             self._notes_panel.flush()
         if getattr(self, "_routines_panel", None) is not None:
@@ -3417,6 +3643,8 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "_trial_timer", None) is not None:
             self._trial_timer.stop()
         self._set_update_glow(False)
+        if getattr(self, "_notifier", None) is not None:
+            self._notifier.shutdown()
         if getattr(self, "_global_hotkey", None) is not None:
             self._global_hotkey.dispose(QApplication.instance())
         self._voice_engine.shutdown()

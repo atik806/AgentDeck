@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import pane_state
 import theme
 from notes_panel import note_icon
 from plugins_panel import plugin_icon
@@ -128,14 +129,33 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
 
-class _ActivityDot(QWidget):
-    """A small dot that glows while an agent is working in its workspace.
+#: How each pane state paints in the sidebar. ``(colour token, pulse?)`` --
+#: ``None`` means the dot is dark (nothing to show).
+_DOT_STYLE: dict[str, "tuple[str, bool] | None"] = {
+    pane_state.WORKING: ("activity", True),
+    pane_state.AWAITING_INPUT: ("attention", True),
+    pane_state.ERROR: ("danger", False),
+    pane_state.DONE: ("activity", False),
+    pane_state.IDLE: None,
+}
 
-    Idle it paints nothing -- the row simply shows no dot. Busy it paints a
-    solid dot wrapped in a soft halo whose radius and opacity breathe on a
-    loop, so a workspace with an agent mid-task stands out in the list even
-    when it is not the one on screen. The widget keeps its slot in the row
-    layout either way, so switching between the two never shifts the badge.
+_DOT_TOOLTIP: dict[str, str] = {
+    pane_state.WORKING: "An agent is working in this workspace",
+    pane_state.AWAITING_INPUT: "A terminal here is waiting for your input",
+    pane_state.ERROR: "A terminal here has exited",
+    pane_state.DONE: "An agent here just finished",
+}
+
+
+class _ActivityDot(QWidget):
+    """A small dot that reports what the workspace's panes are doing.
+
+    Idle it paints nothing. Otherwise it paints a solid dot in a state colour
+    -- green while an agent works, amber while one waits on the user, red when
+    a shell has exited -- wrapped in a soft halo that breathes on a loop for
+    the two states worth glancing at (``working`` / ``awaiting_input``). The
+    widget keeps its slot in the row layout either way, so the badge never
+    shifts as the state changes.
     """
 
     _SIZE = 16
@@ -145,6 +165,8 @@ class _ActivityDot(QWidget):
         self.setFixedSize(self._SIZE, self._SIZE)
         # A dot over a clickable row must not eat the click that selects it.
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._state = pane_state.IDLE
+        #: kept for callers / tests that think in terms of "is the dot lit".
         self._busy = False
         self._phase = 0.0
 
@@ -161,39 +183,50 @@ class _ActivityDot(QWidget):
         self.update()
 
     def set_busy(self, busy: bool) -> None:
-        busy = bool(busy)
-        if busy == self._busy:
+        """Back-compat shim: ``True`` == working, ``False`` == idle."""
+        self.set_state(pane_state.WORKING if busy else pane_state.IDLE)
+
+    def set_state(self, state: str) -> None:
+        state = state if state in _DOT_STYLE else pane_state.IDLE
+        if state == self._state:
             return
-        self._busy = busy
-        if busy:
-            self.setToolTip("An agent is working in this workspace")
-            self._pulse.start()
+        self._state = state
+        style = _DOT_STYLE.get(state)
+        self._busy = style is not None
+        should_pulse = bool(style and style[1])
+        if should_pulse:
+            if self._pulse.state() != QVariantAnimation.State.Running:
+                self._pulse.start()
         else:
             self._pulse.stop()
-            self.setToolTip("")
+            self._phase = 0.0
+        self.setToolTip(_DOT_TOOLTIP.get(state, ""))
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not self._busy:
+        style = _DOT_STYLE.get(self._state)
+        if style is None:
             return
+        token, pulses = style
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
 
         centre = QPointF(self.width() / 2, self.height() / 2)
-        base = QColor(theme.color("activity"))
+        base = QColor(theme.color(token))
 
-        # Halo: swells from ~4px to ~8px and fades as it grows.
-        halo_r = 4.0 + 4.0 * self._phase
-        glow = QColor(base)
-        glow.setAlpha(int(150 * (1.0 - self._phase)) + 25)
-        transparent = QColor(base)
-        transparent.setAlpha(0)
-        gradient = QRadialGradient(centre, halo_r)
-        gradient.setColorAt(0.0, glow)
-        gradient.setColorAt(1.0, transparent)
-        painter.setBrush(gradient)
-        painter.drawEllipse(centre, halo_r, halo_r)
+        if pulses:
+            # Halo: swells from ~4px to ~8px and fades as it grows.
+            halo_r = 4.0 + 4.0 * self._phase
+            glow = QColor(base)
+            glow.setAlpha(int(150 * (1.0 - self._phase)) + 25)
+            transparent = QColor(base)
+            transparent.setAlpha(0)
+            gradient = QRadialGradient(centre, halo_r)
+            gradient.setColorAt(0.0, glow)
+            gradient.setColorAt(1.0, transparent)
+            painter.setBrush(gradient)
+            painter.drawEllipse(centre, halo_r, halo_r)
 
         # Core dot: steady, always fully opaque.
         painter.setBrush(base)
@@ -293,9 +326,18 @@ class _WorkspaceRow(QFrame):
         return self._ws
 
     def _sync_activity(self) -> None:
-        """Light or clear the glow dot from the workspace's live busy state."""
-        probe = getattr(self._ws, "is_busy", None)
-        self._dot.set_busy(bool(probe()) if callable(probe) else False)
+        """Drive the dot from the workspace's live pane state.
+
+        Prefers the richer ``attention_state()`` (working / awaiting / error /
+        done / idle); falls back to the plain ``is_busy()`` boolean for older
+        callers and the test fakes.
+        """
+        state_probe = getattr(self._ws, "attention_state", None)
+        if callable(state_probe):
+            self._dot.set_state(state_probe())
+            return
+        busy_probe = getattr(self._ws, "is_busy", None)
+        self._dot.set_busy(bool(busy_probe()) if callable(busy_probe) else False)
 
     # -- interaction -----------------------------------------------------------
 

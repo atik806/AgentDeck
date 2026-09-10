@@ -63,6 +63,7 @@ _CATEGORIES = [
     ("Appearance", "_build_appearance_page"),
     ("Startup", "_build_startup_page"),
     ("Updates", "_build_updates_page"),
+    ("Notifications", "_build_notifications_page"),
     ("Agents", "_build_agents_page"),
     ("Voice input", "_build_voice_page"),
 ]
@@ -84,6 +85,8 @@ class SettingsPanel(QWidget):
     #: Any voice_* setting changed -- the caller re-syncs the (already built)
     #: voice engine / global hotkey / overlay against the new config.
     voice_settings_changed = Signal()
+    #: A notify_* setting changed -- the caller re-configures its notifier.
+    notifications_changed = Signal()
 
     def __init__(
         self,
@@ -312,6 +315,21 @@ class SettingsPanel(QWidget):
         )
         self._wizard.toggled.connect(lambda v: self._set("skip_wizard", bool(v)))
 
+        self._restore = self._check(
+            outer, "Reopen my workspaces from last time",
+            self._config.get("restore_session", True),
+        )
+        self._restore.toggled.connect(lambda v: self._set("restore_session", bool(v)))
+
+        hint = QLabel(
+            "Restores the workspace list — names, pane counts, the agent each "
+            "ran, and the layout. Terminal history and running commands aren't "
+            "restored; each pane relaunches its agent."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
     # -- Updates ----------------------------------------------------------------
 
     def _build_updates_page(self, outer: QVBoxLayout) -> None:
@@ -350,6 +368,36 @@ class SettingsPanel(QWidget):
         self._upd_status.setObjectName("hint")
         self._upd_status.setWordWrap(True)
         outer.addWidget(self._upd_status)
+
+    # -- Notifications --------------------------------------------------------
+
+    def _build_notifications_page(self, outer: QVBoxLayout) -> None:
+        self._notify = self._check(
+            outer,
+            "Notify me when a terminal I'm not watching needs attention",
+            self._config.get("notify_on_attention", True),
+        )
+        self._notify.toggled.connect(self._on_notify_changed)
+
+        self._notify_sound = self._check(
+            outer, "Also play a short sound",
+            self._config.get("notify_sound", False),
+        )
+        self._notify_sound.toggled.connect(self._on_notify_changed)
+
+        hint = QLabel(
+            "A desktop toast and a taskbar flash when a pane stops to ask a "
+            "question, finishes a task, or its shell exits — never for the "
+            "pane you're already looking at."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+    def _on_notify_changed(self, _v: bool) -> None:
+        self._set("notify_on_attention", bool(self._notify.isChecked()))
+        self._set("notify_sound", bool(self._notify_sound.isChecked()))
+        self.notifications_changed.emit()
 
     # -- Agents -----------------------------------------------------------------
 
