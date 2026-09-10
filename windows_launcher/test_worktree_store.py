@@ -102,13 +102,30 @@ def main() -> int:
             ]
         }
         (root / "stray-wt").mkdir()
-        changed = s3.reconcile(live_by_repo)
+        # a repo that wasn't successfully scanned must not orphan its records
+        # (nor adopt strays "seen" only in a failed scan)
+        changed0 = s3.reconcile(live_by_repo, scanned=set())
+        check(s3.get(gone.id).status == "active",
+              "reconcile leaves records alone when their repo wasn't scanned")
+        check(changed0 == [],
+              "unscanned reconcile changes nothing")
+
+        changed = s3.reconcile(live_by_repo, scanned={str(root / "repo")})
         check(s3.get(gone.id).status == "orphaned",
               "reconcile marks a vanished dir orphaned")
         check(s3.get(live.id).status == "active",
               "reconcile leaves a live registered worktree alone")
         check(any(r.workspace_name == "(imported)" for r in changed),
               "reconcile adopts a stray agentdeck/* worktree")
+
+        # the vanished dir comes back -> recovered to detached, not left orphaned
+        (root / "does-not-exist").mkdir()
+        live_by_repo[str(root / "repo")].append(
+            {"path": str(root / "does-not-exist"), "branch": "agentdeck/x/p3"}
+        )
+        s3.reconcile(live_by_repo, scanned={str(root / "repo")})
+        check(s3.get(gone.id).status == "detached",
+              "reconcile recovers an orphaned record that reappears")
 
     print(f"\n{_PASS} passed, {_FAIL} failed")
     return 1 if _FAIL else 0
