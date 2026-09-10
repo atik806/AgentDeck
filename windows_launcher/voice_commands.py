@@ -15,8 +15,12 @@ __all__ = ["parse", "ACTIONS"]
 ACTIONS = ("submit", "newline", "scratch", "stop")
 
 _PHRASES = {
+    # NB: "enter" is deliberately *not* here. whisper.cpp hallucinates it on
+    # trailing breath/silence, and a lone "enter" firing `submit` runs whatever
+    # is on the prompt the instant the user stops dictating -- the "it
+    # automatically enters" report. Say "send" / "run it" to submit.
     "submit":  {"send", "send it", "run that", "run it", "submit", "submit that",
-                "go ahead", "execute", "execute that", "enter"},
+                "go ahead", "execute", "execute that"},
     "newline": {"new line", "newline", "line break"},
     "scratch": {"scratch that", "delete that", "undo that", "erase that",
                 "cancel that"},

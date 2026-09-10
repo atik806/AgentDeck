@@ -139,7 +139,7 @@ check("Ctrl+Shift+X is left for the panel", len(toggles) == 2)
 submits = []
 overlay.submit_requested.connect(lambda: submits.append(1))
 overlay.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier, "\r"))
-check("bare Enter -> submit_requested (Enter still stops dictation from here)",
+check("bare Enter -> submit_requested (panel stops dictation, does not run the line)",
       submits == [1])
 overlay.keyPressEvent(QKeyEvent(
     QEvent.KeyPress, Qt.Key_Return, Qt.ShiftModifier, "\r"))

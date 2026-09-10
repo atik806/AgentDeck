@@ -39,6 +39,10 @@ for phrase in ("scratch that", "delete that", "undo that", "Erase that!"):
 for phrase in ("stop listening", "stop dictation", "never mind", "nevermind"):
     check(f"{phrase!r} -> stop", act(phrase) == "stop")
 
+print("[1b] 'enter' is NOT a submit phrase (whisper hallucinates it on silence)")
+check("'enter' -> literal text", act("enter") is None)
+check("'Enter.' -> literal text", act("Enter.") is None)
+
 print("[2] a phrase is only a command when it's the WHOLE utterance")
 check("'send the email' is literal text", act("send the email") is None)
 check("'run that script now' is literal", act("run that script now") is None)

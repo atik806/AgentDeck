@@ -368,8 +368,9 @@ class VoiceOverlay(QWidget):
     dismiss_requested = Signal()
 
     #: A bare Enter was pressed while the strip held keyboard focus (it steals
-    #: focus on a click/drag). The panel routes this to the active pane so
-    #: "press Enter to stop dictation" still works from here.
+    #: focus on a click/drag). The panel treats this as "stop dictating and give
+    #: the pane its focus back" -- Enter on a floating chip must not run a shell
+    #: command, so it does NOT submit the terminal line.
     submit_requested = Signal()
 
     #: The widget was dragged; carries its new top-left in parent coordinates.

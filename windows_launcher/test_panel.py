@@ -600,7 +600,9 @@ def _():
     pane = panel._active or panel._panes[0]
     panel._set_active(pane)
     before = text(pane)
+    panel._voice_engine._listening = True  # a decode only lands while listening
     panel._voice_engine.transcription.emit("echo VOICE_TYPED")
+    panel._voice_engine._listening = False
 
 
 @step
@@ -688,6 +690,9 @@ def _():
     v.erase_text = lambda n: spy["erase"].append(n)
     v.submit = lambda: spy.__setitem__("submit", spy["submit"] + 1)
 
+    eng = panel._voice_engine
+    eng._listening = True  # _on_voice_text only ever runs while a session is live
+
     panel._voice_engine.transcription.emit("git status")
     check("plain phrase was typed",
           bool(spy["insert"]) and "git status" in spy["insert"][-1], True)
@@ -699,17 +704,31 @@ def _():
     panel._voice_engine.transcription.emit("run that")
     check("'run that' pressed Enter", spy["submit"], 1)
 
-    eng = panel._voice_engine
+    # A decode that lands after the user stopped is ignored -- no stray text,
+    # and above all no auto-submit ("it automatically enters").
+    eng._listening = False
+    panel._voice_engine.transcription.emit("enter")
+    check("late transcription after stop is dropped", spy["submit"], 1)
+    check("  ...and types nothing", len(spy["insert"]), 1)
+
     eng._listening = True
     panel._voice_engine.transcription.emit("stop listening")
     check("'stop listening' ended the session", eng.is_listening, False)
     eng._listening = False
 
+    # a bare "enter" is literal text now, not a submit (whisper hallucinates it)
+    eng._listening = True
+    panel._voice_engine.transcription.emit("enter")
+    check("spoken 'enter' is typed, not submitted", spy["submit"], 1)
+    eng._listening = False
+
     # auto-send
+    eng._listening = True
     panel.config["voice_auto_send"] = True
     panel._voice_engine.transcription.emit("echo hi")
     check("auto-send ran the phrase", spy["submit"], 2)
     panel.config["voice_auto_send"] = False
+    eng._listening = False
 
 
 # -- 7. wizard startup: working folder + agent command --------------------

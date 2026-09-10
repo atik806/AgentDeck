@@ -190,12 +190,19 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    partial would need overlapping-window re-decode (out of scope).
    **Spoken commands + punctuation:** `voice_commands.parse(text, cfg)` →
    `(action, rest)` where a *whole* utterance matching a phrase set is
-   `submit`/`newline`/`scratch`/`stop` (mid-sentence "send" stays literal).
+   `submit`/`newline`/`scratch`/`stop` (mid-sentence "send" stays literal;
+   **"enter" is NOT a submit phrase** — whisper hallucinates it on trailing
+   silence and it was auto-running the prompt).
    `terminal_panel._on_voice_text` dispatches: `submit`/auto-send →
    `TerminalView.submit()` (writes `\r` + emits `submitted`), `scratch` →
    `TerminalView.erase_text(_last_voice_len)` (DEL bytes, best-effort, never
-   crosses `\n`), `stop` → `stop_listening()`. The **engine now emits the raw
-   utterance**; all clean-up moved to the panel via `voice_postprocess.apply`
+   crosses `\n`), `stop` → `stop_listening()`. `_on_voice_text` **bails when
+   `engine.is_listening` is False** — a decode that resolves after the user hit
+   Ctrl+Shift+X / Enter / "stop" is dropped GUI-side too (not just in
+   `_emit_transcription`), so a stop never leaks stray text or an auto-submit.
+   The floating overlay's own bare-Enter (`submit_requested` →
+   `_on_overlay_submit`) just **stops dictation + refocuses the pane**, it does
+   not run the line. The **engine now emits the raw utterance**; all clean-up moved to the panel via `voice_postprocess.apply`
    (no auto-capitalise — feeds a shell; opt-in `voice_spoken_punctuation`
    "period"→"." and experimental `voice_command_fixups` "get"→"git").
    `voice_auto_send` (default off) presses Enter after each phrase unless it

@@ -1926,11 +1926,22 @@ class TerminalPanel(QMainWindow):
             self._voice_overlay.set_state("idle")
 
     def _on_overlay_submit(self) -> None:
-        """A bare Enter while the capsule held focus -- run the active pane's line
-        (which also ends the dictation session via ``_on_pane_submitted``)."""
+        """A bare Enter while the floating capsule held keyboard focus (it grabs
+        focus on a click/drag).
+
+        This is *not* the terminal -- pressing Enter on a control chip should
+        never run a shell command. So here Enter just ends the dictation
+        session and hands focus back to the pane; the user still presses Enter
+        *in the terminal* to actually run the line.
+        """
+        self._fg_hwnd = None
+        if self._voice_engine.is_listening:
+            self._toggle_voice_engine()
+        else:
+            self._voice_overlay.set_state("idle")
         pane = self._active
         if pane is not None:
-            pane.view.submit()
+            pane.view.setFocus()
 
     def _set_overlay_visible(self, show: bool) -> None:
         self._voice_overlay.setVisible(show)
@@ -2041,6 +2052,16 @@ class TerminalPanel(QMainWindow):
 
     def _on_voice_text(self, text: str) -> None:
         self._voice_overlay.set_partial("")     # drop the interim view
+
+        # A decode that lands *after* the user already stopped -- Ctrl+Shift+X,
+        # a bare Enter, or "stop listening" -- must not touch the prompt, and
+        # above all must never auto-run a command. VoiceEngine._emit_transcription
+        # guards this on the worker thread, but a transcription can pass that
+        # check microseconds before stop() flips the flag and still arrive here
+        # on the GUI thread. Re-check on this side so the stop is always clean.
+        engine = getattr(self, "_voice_engine", None)
+        if engine is not None and not engine.is_listening:
+            return
 
         action, rest = voice_commands.parse(text, self.config)
         pane = self._active
