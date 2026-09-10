@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import secrets
+import time
 from typing import Optional
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
@@ -203,6 +204,12 @@ class TerminalPane(QFrame):
         # panel's notification both read it, and the classifier needs it as the
         # "previous" state so ``done`` fires exactly once.
         self._attn_state = pane_state.IDLE
+        # Continuous-output bookkeeping for the ``done`` guard (see
+        # pane_state.MIN_WORK_FOR_DONE_S): ``_busy_since`` is when the current
+        # busy run began (0 when idle), ``_work_streak`` its length as of the
+        # last poll.
+        self._busy_since = 0.0
+        self._work_streak = 0.0
 
         self.setFrameShape(QFrame.NoFrame)
         # Accept another pane being dropped onto this one (header-drag reorder).
@@ -453,12 +460,20 @@ class TerminalPane(QFrame):
         """
         view = self.view
         busy = view.is_busy()
+        now = time.monotonic()
+        if busy:
+            if not self._busy_since:
+                self._busy_since = now
+            self._work_streak = now - self._busy_since
+        else:
+            self._busy_since = 0.0
         sig = pane_state.PaneSignals(
             alive=view.is_alive(),
             error=view.error or "",
             busy=busy,
             quiet_for=view.seconds_since_output(),
             agent_started_at=self.agent_started_at,
+            work_streak=self._work_streak,
             # Reading the screen is cheap, but skip it while output is streaming
             # -- a mid-render frame is noise and can't be a settled prompt.
             screen_tail=view.screen_tail(6) if not busy else [],

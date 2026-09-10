@@ -56,6 +56,12 @@ ATTENTION_STATES = frozenset({AWAITING_INPUT, DONE, ERROR})
 #: doesn't read as "finished".
 DONE_AFTER_QUIET_S = 6.0
 
+#: A pane must have been *continuously* working at least this long for its going
+#: quiet to count as ``done``. Stops an interactive agent's startup banner (a
+#: second or two of output, then it sits at its prompt) from firing a spurious
+#: "an agent finished" the moment it launches.
+MIN_WORK_FOR_DONE_S = 8.0
+
 #: A pane that has been silent longer than this is ``idle`` even if the tail
 #: still shows an old prompt -- the user has clearly seen it.
 STALE_PROMPT_S = 20.0
@@ -132,6 +138,9 @@ class PaneSignals:
     #: Epoch seconds the pane started an agent -- 0 for a plain shell. A plain
     #: shell never raises an ``awaiting_input`` / ``done`` notification.
     agent_started_at: float = 0.0
+    #: How long the pane was *continuously* producing output, up to the moment
+    #: it last went quiet -- gates ``done`` (see :data:`MIN_WORK_FOR_DONE_S`).
+    work_streak: float = 0.0
     #: The visible screen's lines (or just its tail). Only read when settled.
     screen_tail: "list[str]" = field(default_factory=list)
 
@@ -165,8 +174,14 @@ def classify(sig: PaneSignals, previous: Optional[str] = None) -> str:
     # An agent that was working and is now quiet with nothing to answer has
     # finished. Fires once: next poll ``previous`` is DONE, so this drops to
     # IDLE. Only ``working`` precedes ``done`` -- a stale ``awaiting_input``
-    # decays straight to idle (the user was already told).
-    if has_agent and previous == WORKING and sig.quiet_for >= DONE_AFTER_QUIET_S:
+    # decays straight to idle (the user was already told). A too-short work
+    # streak (a startup banner) decays straight to idle instead of "finished".
+    if (
+        has_agent
+        and previous == WORKING
+        and sig.quiet_for >= DONE_AFTER_QUIET_S
+        and sig.work_streak >= MIN_WORK_FOR_DONE_S
+    ):
         return DONE
 
     return IDLE

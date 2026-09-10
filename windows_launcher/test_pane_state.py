@@ -71,7 +71,10 @@ check(
 )
 
 print("[5] classify -- done fires once")
-after = PaneSignals(quiet_for=ps.DONE_AFTER_QUIET_S + 1, agent_started_at=1.0, screen_tail=["wrote 4 files"])
+after = PaneSignals(
+    quiet_for=ps.DONE_AFTER_QUIET_S + 1, agent_started_at=1.0,
+    work_streak=ps.MIN_WORK_FOR_DONE_S + 1, screen_tail=["wrote 4 files"],
+)
 check("working -> done", classify(after, previous=ps.WORKING) == ps.DONE)
 check("done -> idle next poll", classify(after, previous=ps.DONE) == ps.IDLE)
 check(
@@ -81,6 +84,14 @@ check(
 check(
     "awaiting -> not done (already notified)",
     classify(after, previous=ps.AWAITING_INPUT) == ps.IDLE,
+)
+short = PaneSignals(
+    quiet_for=ps.DONE_AFTER_QUIET_S + 1, agent_started_at=1.0,
+    work_streak=2.0, screen_tail=["Welcome to the agent"],
+)
+check(
+    "short work streak (startup banner) -> idle, not done",
+    classify(short, previous=ps.WORKING) == ps.IDLE,
 )
 
 print("[6] ATTENTION_STATES membership")
