@@ -137,13 +137,28 @@ def main() -> int:
 
         # -- commit_all + merge_to_base --
         gw.commit_all(dest, "wt changes")
+        # main is checked out in `repo` and dirty here would block the in-place
+        # merge -- prove that path first, then clean up and merge for real.
+        (repo / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        try:
+            gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
+            check(False, "merge_to_base raises DirtyWorktree when base checkout is dirty")
+        except gw.DirtyWorktree:
+            check(True, "merge_to_base raises DirtyWorktree when base checkout is dirty")
+        (repo / "dirty.txt").unlink()
+
         res = gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
         check(res.ok, "merge_to_base ok")
         merged_main = _git(repo, "log", "--oneline", "main")
         check("wt changes" in merged_main, "base branch now contains the worktree commit")
-        # user's checkout untouched (still on main, working tree clean of the merge)
+        # user's checkout still on main *and* not left showing the merge as a
+        # pile of pending deletions (the whole point of the in-place path).
         check(_git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main",
               "user checkout still on main")
+        check(_git(repo, "status", "--porcelain") == "",
+              "user checkout clean after merge (not desynced from the moved ref)")
+        check(_git(repo, "rev-parse", "HEAD") == _git(repo, "rev-parse", "main"),
+              "user checkout HEAD == merged main")
 
         # -- conflict path --
         cdest = wt_root / "pc"
