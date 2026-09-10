@@ -137,15 +137,18 @@ def main() -> int:
 
         # -- commit_all + merge_to_base --
         gw.commit_all(dest, "wt changes")
-        # main is checked out in `repo` and dirty here would block the in-place
-        # merge -- prove that path first, then clean up and merge for real.
-        (repo / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        # main is checked out in `repo`; an uncommitted *tracked* change here
+        # must block the in-place merge. Prove that, then revert and merge for
+        # real. (An untracked file must NOT block -- git merge guards those.)
+        (repo / "untracked.txt").write_text("scratch\n", encoding="utf-8")
+        (repo / "c.txt").write_text("locally edited\n", encoding="utf-8")
         try:
             gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
             check(False, "merge_to_base raises DirtyWorktree when base checkout is dirty")
         except gw.DirtyWorktree:
             check(True, "merge_to_base raises DirtyWorktree when base checkout is dirty")
-        (repo / "dirty.txt").unlink()
+        _git(repo, "checkout", "--", "c.txt")
+        (repo / "untracked.txt").unlink()
 
         res = gw.merge_to_base(info, branch=st.branch, base="main", scratch_root=str(wt_root))
         check(res.ok, "merge_to_base ok")

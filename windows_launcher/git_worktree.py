@@ -506,6 +506,22 @@ def is_dirty(worktree_path: "str | os.PathLike") -> "tuple[bool, list[str]]":
     return bool(files), files
 
 
+def _tracked_changes(worktree_path: str) -> "list[str]":
+    """Modified/staged tracked paths only -- untracked (``??``) files excluded.
+
+    ``git merge`` handles untracked files itself (it only aborts when one would
+    be clobbered), so they should not block an in-place merge.
+    """
+    if not os.path.isdir(worktree_path):
+        return []
+    out = _out(["status", "--porcelain"], worktree_path, check=False)
+    return [
+        ln[3:].strip()
+        for ln in out.splitlines()
+        if ln.strip() and not ln.startswith("??")
+    ]
+
+
 def _ahead_behind(worktree_path: str, base_ref: str) -> "tuple[int, int]":
     """``(ahead, behind)`` of HEAD relative to ``base_ref``."""
     if not base_ref:
@@ -755,15 +771,16 @@ def _merge_in_place(
     """Merge ``branch`` into ``base`` directly in the worktree that has ``base``
     checked out. Keeps that worktree's index/tree consistent with the moved ref.
 
-    Refuses (``DirtyWorktree``) if the host worktree has uncommitted changes --
-    a merge there would collide with the user's own work.
+    Refuses (``DirtyWorktree``) if the host worktree has uncommitted changes to
+    *tracked* files -- a merge there would collide with the user's own work.
+    Untracked files are left for ``git merge`` itself to guard.
     """
-    dirty, files = is_dirty(host)
-    if dirty:
+    changed = _tracked_changes(host)
+    if changed:
         raise DirtyWorktree(
             f"your checkout of {base!r} has uncommitted changes — commit or "
             "stash them before merging a worktree into it",
-            files,
+            changed,
         )
     proc = _run(_merge_args(branch, base, mode, message), host, check=False, timeout=120.0)
     if proc.returncode != 0:
