@@ -1137,6 +1137,62 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       `test_panel_account.py` "signed-out controller" fails on `main` too
       (pre-existing, unrelated).
 
+38. **"A terminal needs you" — pane attention states + desktop notifications +
+    session restore (v0.18.0, 2026-09-10, `feat/attention-and-persistence` →
+    `main`)** — with 4–16 panes open you can't watch them all, and closing the
+    app used to lose the whole workspace setup. Two coupled halves, both
+    **free** (not plan-gated — a courtesy like the theme).
+    - **New modules:** `pane_state.py` (Qt-free — `classify(PaneSignals)` folds
+      `alive` / `is_busy()` / seconds-since-output / `agent_started_at` / the
+      visible screen tail into one of `working` / `awaiting_input` / `done` /
+      `idle` / `error`; `looks_like_prompt` matches y-n / menu / "press enter" /
+      Claude's permission box, with a veto list for diff headers & URLs; `done`
+      fires once then decays to `idle`), `notifications.py` (`AttentionNotifier`
+      — `QSystemTrayIcon.showMessage` toast + `QApplication.alert` taskbar flash
+      + optional `QApplication.beep`, no extra dependency; per-key 12 s throttle;
+      click → focus that pane), `workspaces_store.py` (Qt-free JSON at
+      `%APPDATA%\multi-terminal\workspaces.json` — shared folder + layout +
+      per-workspace name / pane count / agent; machine-local, not cloud-synced;
+      shell history & running processes are not restored).
+    - **Panes / workspaces:** `TerminalView.seconds_since_output()` +
+      `screen_tail(n)`; `TerminalPane.refresh_attention()` caches the classifier
+      result (the badge and the notifier both read it, and it's the `previous`
+      arg that makes `done` one-shot); `Workspace.refresh_attention()` returns
+      the panes that changed state this tick + `attention_state()` (worst pane
+      wins, for the sidebar dot).
+    - **Sidebar:** `_ActivityDot` gains state colours — green pulsing (working),
+      amber pulsing (awaiting input, new `theme` token `attention`), red steady
+      (exited), green steady (just finished); `set_busy` kept as a back-compat
+      shim.
+    - **`TerminalPanel`:** `_poll_pane_attention()` on the 1 s `_watchdog` tick
+      raises a toast for any pane that *entered* an attention state and isn't
+      the one on screen (`_focused_pane()` = active pane of the active window);
+      `_pane_attn_notified` latches so a pane sitting in `awaiting_input`
+      doesn't re-toast; debounced `_persist_session()` (500 ms) fires on every
+      workspace add / close / rename / reorder / layout change, and a
+      synchronous flush in `_shutdown_all`; `_restore_session()` opens the first
+      workspace immediately and defers the 2nd..Nth to `_apply_entitlements`
+      (the plan is still resolving at construction) — `_pending_restore` /
+      `_restore_active_index` are initialised *before* `_wire_account()` so a
+      synchronously-resolved account can't hit them unset.
+    - **Settings:** a new "Notifications" category (toast on/off, sound on/off)
+      and a "Reopen my workspaces from last time" toggle on the Startup page.
+    - **`main.py`:** the setup wizard is skipped when a usable session will
+      restore; `--fresh` forces the wizard and a blank start.
+    - **`config.py`:** `restore_session`, `notify_on_attention`, `notify_sound`
+      (no `CONFIG_VERSION` bump — new keys merge in).
+    - Tests: `test_pane_state.py` (classifier table + prompt detection),
+      `test_notifications.py` (`offscreen` — throttle, focus skip, tray),
+      `test_workspaces_store.py` (round-trip / clamp / clear); `test_panel.py`
+      exercises the restore button + badge renumbering. Full offline suite +
+      `test_panel.py` green bar the pre-existing `test_panel_account.py`
+      "signed-out controller" and `test_panel.py` "drop moved focus" offscreen
+      flakes (both fail on `main` too).
+    - **Not done here:** per-pane cwd / splitter sizes / window geometry aren't
+      in the snapshot yet (just the shape — names, counts, agent, layout);
+      isolated-worktree panes reopen in the repo folder, not their worktree;
+      no "jump to next pane needing attention" shortcut yet.
+
 ## Running / testing
 
 ```cmd

@@ -122,6 +122,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # a folder that isn't a git repo.
     "worktree_isolate_default": False,
 
+    # --- Session restore ---
+    # Reopen the workspace list (names, pane counts, agents, layout) on the
+    # next launch instead of starting from one blank workspace. Shell history
+    # and running processes are not restored -- each pane re-launches its agent.
+    "restore_session": True,
+
+    # --- Desktop notifications ("a terminal needs you") ---
+    # A toast + taskbar flash when a pane you're not looking at starts waiting
+    # on input, finishes, or its shell exits. Not plan-gated.
+    "notify_on_attention": True,
+    # Add a short beep to the toast.
+    "notify_sound": False,
+
     # --- Appearance ---
     "theme": "system",
     # Named colour scheme -- see theme._SCHEMES. "catppuccin" is the default
@@ -245,6 +258,9 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "skills_materialize_agents_md": bool,
     "skills_improve_agent": str,
     "worktree_isolate_default": bool,
+    "restore_session": bool,
+    "notify_on_attention": bool,
+    "notify_sound": bool,
     "theme": str,
     "color_scheme": str,
     "window_width": int,

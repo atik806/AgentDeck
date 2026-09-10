@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import agents
+import pane_state
 import theme
 from terminal_view import TerminalView
 
@@ -198,6 +199,10 @@ class TerminalPane(QFrame):
         self._pane_id = pane_id or ("p_" + secrets.token_hex(4))
         self._active = False
         self._expanded = False
+        # Last result of :meth:`refresh_attention` -- the sidebar badge and the
+        # panel's notification both read it, and the classifier needs it as the
+        # "previous" state so ``done`` fires exactly once.
+        self._attn_state = pane_state.IDLE
 
         self.setFrameShape(QFrame.NoFrame)
         # Accept another pane being dropped onto this one (header-drag reorder).
@@ -433,6 +438,33 @@ class TerminalPane(QFrame):
     def is_busy(self) -> bool:
         """True while this pane's shell is actively producing output."""
         return self.view.is_busy()
+
+    @property
+    def attention_state(self) -> str:
+        """This pane's last-computed :mod:`pane_state` value (cheap read)."""
+        return self._attn_state
+
+    def refresh_attention(self) -> str:
+        """Re-run the :mod:`pane_state` classifier and cache the result.
+
+        Called once a second from ``Workspace.poll`` → ``TerminalPanel.
+        _refresh_status``. Returns the new state; the caller compares it with
+        the value it held to decide whether to raise a notification.
+        """
+        view = self.view
+        busy = view.is_busy()
+        sig = pane_state.PaneSignals(
+            alive=view.is_alive(),
+            error=view.error or "",
+            busy=busy,
+            quiet_for=view.seconds_since_output(),
+            agent_started_at=self.agent_started_at,
+            # Reading the screen is cheap, but skip it while output is streaming
+            # -- a mid-render frame is noise and can't be a settled prompt.
+            screen_tail=view.screen_tail(6) if not busy else [],
+        )
+        self._attn_state = pane_state.classify(sig, previous=self._attn_state)
+        return self._attn_state
 
     def apply_theme(self) -> None:
         """Repaint the pane chrome + its terminal for the current theme."""
@@ -973,6 +1005,35 @@ class Workspace(QWidget):
         and glows the workspace's activity dot while it holds.
         """
         return any(pane.is_alive() and pane.is_busy() for pane in self._panes)
+
+    #: Aggregate precedence for the sidebar badge -- the most urgent pane wins.
+    _ATTN_RANK = {
+        pane_state.ERROR: 4,
+        pane_state.AWAITING_INPUT: 3,
+        pane_state.WORKING: 2,
+        pane_state.DONE: 1,
+        pane_state.IDLE: 0,
+    }
+
+    def refresh_attention(self) -> "list[tuple[TerminalPane, str, str]]":
+        """Re-classify every pane. Returns ``(pane, old_state, new_state)`` for
+        the panes whose state changed this tick, for the panel to notify on."""
+        changes: list[tuple[TerminalPane, str, str]] = []
+        for pane in self._panes:
+            old = pane.attention_state
+            new = pane.refresh_attention()
+            if new != old:
+                changes.append((pane, old, new))
+        return changes
+
+    def attention_state(self) -> str:
+        """The workspace's worst pane state, for the sidebar dot."""
+        if not self._panes:
+            return pane_state.IDLE
+        return max(
+            (p.attention_state for p in self._panes),
+            key=lambda s: self._ATTN_RANK.get(s, 0),
+        )
 
     def shutdown(self) -> None:
         for pane in self._panes:

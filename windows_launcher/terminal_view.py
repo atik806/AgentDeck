@@ -1612,6 +1612,30 @@ class TerminalView(QWidget):
             return False
         return (time.monotonic() - self._last_output_at) < _BUSY_WINDOW_S
 
+    def seconds_since_output(self) -> float:
+        """Wall-time since the last byte of output, or ``inf`` if none yet.
+
+        Feeds :mod:`pane_state` -- "settled" and "done" both key off this.
+        """
+        if not self._last_output_at:
+            return float("inf")
+        return time.monotonic() - self._last_output_at
+
+    def screen_tail(self, lines: int = 6) -> "list[str]":
+        """The last ``lines`` rows of the *visible* screen, as plain strings.
+
+        Whatever buffer is showing -- so a full-screen agent's permission box
+        (drawn on the alternate screen) is what :mod:`pane_state` inspects.
+        Trailing whitespace kept off; fully blank rows are still returned so
+        the caller sees the real shape.
+        """
+        try:
+            display = self._screen.display
+        except Exception:  # noqa: BLE001 - a screen mid-resize, never fatal here
+            return []
+        n = max(1, int(lines))
+        return [row.rstrip() for row in display[-n:]]
+
     @property
     def error(self) -> Optional[str]:
         """Why the shell failed to spawn, or ``None`` if it started."""

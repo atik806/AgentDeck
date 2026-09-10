@@ -68,6 +68,8 @@ _DARK = {
     "danger_hover": "#f38ba8",
     # the sidebar "an agent is working here" glow dot
     "activity": "#a6e3a1",
+    # sidebar badge: a pane is waiting on the user (a prompt / y-n / menu)
+    "attention": "#f9e2af",
     # sidebar
     "sidebar_bg": "#181825",
     "sidebar_hover": "#232333",
@@ -137,6 +139,7 @@ _LIGHT = {
     "danger": "#d20f39",
     "danger_hover": "#b00c30",
     "activity": "#40a02b",
+    "attention": "#df8e1d",
     "sidebar_bg": "#dce0e8",
     "sidebar_hover": "#ccd0da",
     "sidebar_active": "#dce7fd",
@@ -246,6 +249,7 @@ def _expand(s: dict) -> dict:
         "danger": s["danger"],
         "danger_hover": s["danger"],
         "activity": s["ok"],
+        "attention": s["warn"],
         "sidebar_bg": s["mantle"],
         "sidebar_hover": s["surface"],
         "sidebar_active": s["accent_soft"],

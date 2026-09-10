@@ -321,9 +321,26 @@ def main() -> int:
                 return 0
 
     # The setup wizard is the next front door. --no-wizard (or config.skip_wizard)
-    # opens straight from saved settings, for run.bat / scripted use.
+    # opens straight from saved settings, for run.bat / scripted use. It is also
+    # skipped when there's a saved session to restore -- the panel reopens the
+    # workspace list itself. `--fresh` forces the wizard and a blank start.
     startup = None
-    if "--no-wizard" not in sys.argv and not config.get("skip_wizard", False):
+    _have_session = False
+    if "--fresh" not in sys.argv and config.get("restore_session", True):
+        try:
+            from workspaces_store import WorkspacesStore
+
+            _have_session = WorkspacesStore().load().is_usable()
+        except Exception:  # noqa: BLE001
+            _have_session = False
+    elif "--fresh" in sys.argv:
+        startup = {"fresh": True}
+
+    if (
+        "--no-wizard" not in sys.argv
+        and not config.get("skip_wizard", False)
+        and not _have_session
+    ):
         from setup_wizard import SetupWizard
 
         wizard = SetupWizard(config)
