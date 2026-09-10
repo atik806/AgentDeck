@@ -440,6 +440,25 @@ class GitHubController(QObject):
 
         self._run(_do, lambda _r: None, on_fail=lambda _m: None)
 
+    def create_pull_request(
+        self, repo: str, *, head: str, base: str, title: str, body: str = ""
+    ) -> dict:
+        """Open (or find) a PR for ``head`` on ``owner/name``. Blocking.
+
+        Used by the Worktrees panel's "Open PR". Returns ``{number, html_url}``;
+        raises ``github_auth.GitHubAuthError`` on failure.
+        """
+        from github_api import create_pull_request as _api_create
+
+        token = self._valid_token_blocking() or (
+            self._token.access_token if self._token else None
+        )
+        if not token:
+            raise github_auth.GitHubAuthError("GitHub isn't connected.")
+        pr = _api_create(token, repo, head=head, base=base, title=title, body=body)
+        self.log_run("worktree.pr_opened", head, pr.get("html_url", ""))
+        return pr
+
     def log_run(self, action: str, target: str = "", summary: str = "") -> None:
         """Append a row to ``public.plugin_runs`` -- the automation audit trail."""
         acc = self._account

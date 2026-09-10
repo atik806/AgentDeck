@@ -140,6 +140,27 @@ check("count carried", r["count"] == 4)
 
 d = NewWorkspaceDialog()
 check("no result before accept", d.result_choice() is None)
+check("isolate checkbox unchecked by default", d._isolate.isChecked() is False)
+
+
+# ---------------------------------------------------------------------------
+print("[5] isolate-each-pane checkbox")
+d = NewWorkspaceDialog(allow_isolation=False, isolation_reason="not a git repo")
+check("checkbox disabled when isolation not allowed", not d._isolate.isEnabled())
+d._accept()
+check("isolate_panes forced False when not allowed",
+      d.result_choice()["isolate_panes"] is False)
+check("isolation reason surfaced in the note", "not a git repo" in d._note.text())
+
+d = NewWorkspaceDialog(allow_isolation=True)
+check("checkbox enabled when isolation allowed", d._isolate.isEnabled())
+d._isolate.setChecked(True)
+d._accept()
+check("isolate_panes True when checked + allowed",
+      d.result_choice()["isolate_panes"] is True)
+
+d = NewWorkspaceDialog(allow_isolation=True, default_isolate=True)
+check("default_isolate pre-checks the box", d._isolate.isChecked())
 
 
 print()

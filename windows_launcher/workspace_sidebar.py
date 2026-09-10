@@ -44,6 +44,7 @@ from notes_panel import note_icon
 from plugins_panel import plugin_icon
 from routines_panel import routine_icon
 from skills_panel import skill_icon
+from worktree_panel import worktree_icon
 
 __all__ = ["WorkspaceSidebar"]
 
@@ -493,6 +494,8 @@ class WorkspaceSidebar(QWidget):
     routines_selected = Signal()
     #: The "Skills" nav button was pressed.
     skills_selected = Signal()
+    #: The "Worktrees" nav button was pressed.
+    worktrees_selected = Signal()
     #: The "+" button was pressed.
     created = Signal()
     #: A row's close button was pressed. Carries the workspace.
@@ -568,6 +571,9 @@ class WorkspaceSidebar(QWidget):
         )
         self._skills_btn = _nav_button(
             "Skills", skill_icon, lambda: self.skills_selected.emit()
+        )
+        self._worktrees_btn = _nav_button(
+            "Worktrees", worktree_icon, lambda: self.worktrees_selected.emit()
         )
 
         # The nav strip is pinned to the top of the sidebar, above the
@@ -673,3 +679,7 @@ class WorkspaceSidebar(QWidget):
     def set_skills_active(self, active: bool) -> None:
         """Reflect whether the SKILLS view (not a workspace) is on screen."""
         self._skills_btn.setChecked(bool(active))
+
+    def set_worktrees_active(self, active: bool) -> None:
+        """Reflect whether the WORKTREES view (not a workspace) is on screen."""
+        self._worktrees_btn.setChecked(bool(active))

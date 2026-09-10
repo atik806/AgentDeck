@@ -54,6 +54,9 @@ check("routines: pro only",
       e.routines_enabled("pro") and not e.routines_enabled("free"))
 check("skills: pro only",
       e.skills_enabled("pro") and not e.skills_enabled("free"))
+check("worktrees: pro only",
+      e.worktrees_enabled("pro") and e.worktrees_enabled("team")
+      and not e.worktrees_enabled("free") and not e.worktrees_enabled(None))
 
 print("[4] upgrade hint carries the pricing URL")
 check("hint mentions the feature", "Voice" in e.upgrade_hint("Voice"))

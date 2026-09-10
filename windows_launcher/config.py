@@ -116,6 +116,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # picker next time. Machine-local.
     "skills_improve_agent": "",
 
+    # --- Isolated worktrees (Pro; the "Isolate each terminal" checkbox) ---
+    # Remembers the last state of the new-workspace dialog's checkbox, so a
+    # user who works this way gets it pre-ticked next time. Never forces it on
+    # a folder that isn't a git repo.
+    "worktree_isolate_default": False,
+
     # --- Appearance ---
     "theme": "system",
     # Named colour scheme -- see theme._SCHEMES. "catppuccin" is the default
@@ -238,6 +244,7 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "handoff_max_transcript_chars": int,
     "skills_materialize_agents_md": bool,
     "skills_improve_agent": str,
+    "worktree_isolate_default": bool,
     "theme": str,
     "color_scheme": str,
     "window_width": int,
