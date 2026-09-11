@@ -47,80 +47,104 @@ check("modifier-only -> None", parse_hotkey("Ctrl+Shift") is None)
 check("garbage -> None", parse_hotkey("Ctrl+Frobnicate") is None)
 
 
-# ---------------------------------------------------------------------------
-print("[2] bind unregisters the old then registers the new; failure surfaces")
+# GlobalHotkey.__init__ sets self._supported = sys.platform == "win32", and
+# bind()/unbind() both check it *before* touching ctypes.windll at all -- so
+# off Windows, faking ctypes.windll.user32 (below) would never actually be
+# exercised by the real code, just by the test. Split on platform: Windows
+# gets the original ctypes-faking coverage of the real RegisterHotKey/
+# UnregisterHotKey calls; everywhere else gets what the module's own
+# docstring promises instead -- "non-Windows... is reported on failed and
+# never raises", with RegisterHotKey never called at all.
+if sys.platform == "win32":
+    # -----------------------------------------------------------------------
+    print("[2] bind unregisters the old then registers the new; failure surfaces")
 
+    class FakeUser32:
+        def __init__(self, ok=True):
+            self.ok = ok
+            self.registered = []
+            self.unregistered = 0
 
-class FakeUser32:
-    def __init__(self, ok=True):
-        self.ok = ok
-        self.registered = []
-        self.unregistered = 0
+        def RegisterHotKey(self, hwnd, hk_id, mods, vk):
+            self.registered.append((hk_id, mods, vk))
+            return 1 if self.ok else 0
 
-    def RegisterHotKey(self, hwnd, hk_id, mods, vk):
-        self.registered.append((hk_id, mods, vk))
-        return 1 if self.ok else 0
+        def UnregisterHotKey(self, hwnd, hk_id):
+            self.unregistered += 1
+            return 1
 
-    def UnregisterHotKey(self, hwnd, hk_id):
-        self.unregistered += 1
-        return 1
+    class FakeCtypes:
+        def __init__(self, u32):
+            self.windll = type("W", (), {"user32": u32})()
 
+    u32 = FakeUser32(ok=True)
+    global_hotkey.ctypes = FakeCtypes(u32)
 
-class FakeCtypes:
-    def __init__(self, u32):
-        self.windll = type("W", (), {"user32": u32})()
+    gk = GlobalHotkey()
+    fails = []
+    gk.failed.connect(fails.append)
 
+    check("bind returns True", gk.bind("Ctrl+Shift+X") is True)
+    check("registered with parsed args", u32.registered[-1] == (_HOTKEY_ID, 0x2 | 0x4 | NOREPEAT, 0x58))
 
-u32 = FakeUser32(ok=True)
-global_hotkey.ctypes = FakeCtypes(u32)
+    check("re-bind unregisters first", gk.bind("F9") is True and u32.unregistered >= 1)
+    check("second register used F9", u32.registered[-1] == (_HOTKEY_ID, NOREPEAT, 0x78))
 
-gk = GlobalHotkey()
-fails = []
-gk.failed.connect(fails.append)
+    u32.ok = False
+    check("a taken combo -> bind False + failed()", gk.bind("Ctrl+Alt+P") is False and fails)
 
-check("bind returns True", gk.bind("Ctrl+Shift+X") is True)
-check("registered with parsed args", u32.registered[-1] == (_HOTKEY_ID, 0x2 | 0x4 | NOREPEAT, 0x58))
+    gk.unbind()
+    check("unbind unregisters", u32.unregistered >= 2)
 
-check("re-bind unregisters first", gk.bind("F9") is True and u32.unregistered >= 1)
-check("second register used F9", u32.registered[-1] == (_HOTKEY_ID, NOREPEAT, 0x78))
+    # -------------------------------------------------------------------
+    print("[3] nativeEventFilter emits activated only for our WM_HOTKEY")
+    global_hotkey.ctypes = ctypes            # restore real ctypes for _MSG.from_address
+    u32.ok = True
+    global_hotkey.ctypes = FakeCtypes(u32)   # bind still stubbed
+    gk2 = GlobalHotkey()
+    gk2.bind("Ctrl+Shift+X")
+    hits = []
+    gk2.activated.connect(lambda: hits.append(1))
 
-u32.ok = False
-check("a taken combo -> bind False + failed()", gk.bind("Ctrl+Alt+P") is False and fails)
+    def feed(message_id, wparam):
+        m = _MSG()
+        m.message = message_id
+        m.wParam = wparam
+        # from_address needs a real address; _MSG is a real ctypes.Structure
+        return gk2.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(m))
 
-gk.unbind()
-check("unbind unregisters", u32.unregistered >= 2)
+    feed(_WM_HOTKEY, _HOTKEY_ID)
+    check("our hotkey fires activated", hits == [1])
+    feed(_WM_HOTKEY, 0x1234)
+    check("a different hotkey id is ignored", hits == [1])
+    feed(0x0100, _HOTKEY_ID)   # WM_KEYDOWN
+    check("a non-hotkey message is ignored", hits == [1])
+    feed(_WM_HOTKEY, _HOTKEY_ID)
+    check("a second press fires again", hits == [1, 1])
 
+    res = feed(_WM_HOTKEY, _HOTKEY_ID)
+    check("filter returns (False, 0) — never eats the message", res == (False, 0))
 
-# ---------------------------------------------------------------------------
-print("[3] nativeEventFilter emits activated only for our WM_HOTKEY")
-global_hotkey.ctypes = ctypes            # restore real ctypes for _MSG.from_address
-u32.ok = True
-global_hotkey.ctypes = FakeCtypes(u32)   # bind still stubbed
-gk2 = GlobalHotkey()
-gk2.bind("Ctrl+Shift+X")
-hits = []
-gk2.activated.connect(lambda: hits.append(1))
+else:
+    # -----------------------------------------------------------------------
+    print("[2] non-Windows: bind()/unbind() self-report unsupported")
 
+    gk = GlobalHotkey()
+    fails = []
+    gk.failed.connect(fails.append)
 
-def feed(message_id, wparam):
-    m = _MSG()
-    m.message = message_id
-    m.wParam = wparam
-    # from_address needs a real address; _MSG is a real ctypes.Structure
-    return gk2.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(m))
+    check("_supported is False off Windows", gk._supported is False)
+    check("bind returns False", gk.bind("Ctrl+Shift+X") is False)
+    check("failed() explains why", fails and "Windows-only" in fails[-1])
+    check("nothing got bound", gk._bound is None)
+    gk.unbind()  # must be a safe no-op, not raise
+    check("unbind() is a safe no-op", gk._bound is None)
 
-
-feed(_WM_HOTKEY, _HOTKEY_ID)
-check("our hotkey fires activated", hits == [1])
-feed(_WM_HOTKEY, 0x1234)
-check("a different hotkey id is ignored", hits == [1])
-feed(0x0100, _HOTKEY_ID)   # WM_KEYDOWN
-check("a non-hotkey message is ignored", hits == [1])
-feed(_WM_HOTKEY, _HOTKEY_ID)
-check("a second press fires again", hits == [1, 1])
-
-res = feed(_WM_HOTKEY, _HOTKEY_ID)
-check("filter returns (False, 0) — never eats the message", res == (False, 0))
+    # -------------------------------------------------------------------
+    print("[3] nativeEventFilter is inert with nothing ever bound")
+    res = gk.nativeEventFilter(b"windows_generic_MSG", 0)
+    check("filter returns (False, 0) — never eats the message, never raises",
+          res == (False, 0))
 
 
 print()

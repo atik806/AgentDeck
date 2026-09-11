@@ -38,9 +38,22 @@ def main() -> int:
               f"branch_name shape (got {b})")
         check(ws.slugify("  Some / Weird __ Name  ") == "some-weird-name",
               "slugify collapses junk")
-        k1 = ws.repo_key_for("E:\\Code\\MyApp")
-        k2 = ws.repo_key_for("e:/code/myapp")
-        check(k1 == k2, "repo_key is case/-separator insensitive")
+        # repo_key_for is built on os.path.normcase, which is deliberately
+        # OS-dependent: Windows' filesystem is case-insensitive (so folding
+        # case there prevents two spellings of the same repo getting
+        # different worktree keys), Linux's is case-sensitive (so two
+        # differently-cased paths really are two different repos, and
+        # collapsing them would cause real worktree collisions). Assert
+        # whichever behaviour is actually correct for the platform running
+        # this test, not a single hardcoded expectation.
+        if sys.platform == "win32":
+            k1 = ws.repo_key_for("E:\\Code\\MyApp")
+            k2 = ws.repo_key_for("e:/code/myapp")
+            check(k1 == k2, "repo_key is case/-separator insensitive on Windows")
+        else:
+            k1 = ws.repo_key_for("/tmp/Code/MyApp")
+            k2 = ws.repo_key_for("/tmp/code/myapp")
+            check(k1 != k2, "repo_key is case-sensitive on a case-sensitive filesystem")
         check(len(k1) == 12, "repo_key is 12 hex chars")
 
         wt_dir = ws.worktree_dir(root, k1, "agentdeck/x/p1-abc")

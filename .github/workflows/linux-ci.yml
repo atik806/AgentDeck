@@ -28,6 +28,10 @@ permissions:
 
 jobs:
   test:
+    # A manual dispatch is normally for re-running the spike (below) in
+    # isolation; without this guard it would also re-run the full suite for
+    # no reason, doubling CI minutes on every spike re-run.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -45,14 +49,46 @@ jobs:
       # so without a keyring daemon those two files would fail here not because
       # of a bug but because the CI environment has nothing to store the secret
       # in. gnome-keyring + dbus-x11 give it one.
+      #
+      # libxkbcommon-x11-0 (distinct from libxkbcommon0) is required by Qt's
+      # xcb platform plugin but not obvious from Qt's own error text -- a
+      # first CI run without it failed with "xcb-cursor0 or libxcb-cursor0 is
+      # needed" even with libxcb-cursor0 already installed; that message names
+      # the most common culprit generically and isn't reliable diagnostics.
       - name: Install Qt/X11 runtime libraries + keyring backend
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
-            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
-            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb \
+            libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0 \
+            libxcb-sync1 libx11-xcb1 libdbus-1-3 xvfb \
             gnome-keyring dbus-x11
+
+      # gnome-keyring's default "login" collection doesn't exist yet on a
+      # fresh runner, and `gnome-keyring-daemon --unlock` unlocks an
+      # *existing* locked keyring -- it doesn't create one, so the first
+      # `keyring.set_password()` call falls through to gnome-keyring's
+      # interactive creation/unlock flow (the "SystemPrompter" GTK dialog),
+      # which then fails outright since there's no real display for it (a
+      # first CI run confirmed exactly this: "cannot open display", the
+      # secret never gets stored). Pre-seeding an explicitly UNENCRYPTED
+      # collection (a [keyring] section with no hash-algo/salt -- gnome-
+      # keyring's own on-disk marker for "not password-protected") sidesteps
+      # the prompt entirely: there's nothing to unlock, so nothing needs
+      # confirming.
+      - name: Pre-seed an unlocked (unencrypted) default keyring collection
+        run: |
+          mkdir -p ~/.local/share/keyrings
+          cat > ~/.local/share/keyrings/login.keyring <<'EOF'
+          [keyring]
+          display-name=Login
+          ctime=0
+          mtime=0
+          lock-on-idle=false
+          lock-after=false
+          EOF
+          echo -n "login" > ~/.local/share/keyrings/default
 
       - name: Install dependencies
         run: |

@@ -128,7 +128,15 @@ finally:
 print("[5] is_claude_command")
 check("bare claude", is_claude_command("claude"))
 check("claude with args", is_claude_command("claude --resume"))
-check("quoted path to claude", is_claude_command('"C:\\bin\\claude.exe" --foo'))
+# pathlib.Path only treats "\" as a separator on Windows (WindowsPath) -- on
+# POSIX (PosixPath) it's a literal character, so a backslash-quoted Windows
+# path and a forward-slash-quoted POSIX one are each the platform-correct way
+# to exercise the same "quoted absolute path" case.
+_quoted_claude = (
+    '"C:\\bin\\claude.exe" --foo' if sys.platform == "win32"
+    else '"/usr/local/bin/claude" --foo'
+)
+check("quoted path to claude", is_claude_command(_quoted_claude))
 check("not claude", not is_claude_command("codex"))
 check("empty", not is_claude_command(""))
 check("claude as a substring only -> no", not is_claude_command("claudex"))
@@ -187,7 +195,11 @@ print("[*] agent_key_for_command / installed_agent_keys")
 check("bare command -> key", agents.agent_key_for_command("claude") == "claude")
 check("command with args -> key", agents.agent_key_for_command("claude --foo bar") == "claude")
 check("antigravity's command 'agy' -> key", agents.agent_key_for_command("agy") == "antigravity")
-check("a full path still resolves", agents.agent_key_for_command(r'"C:\tools\codex.exe" -q') == "codex")
+_quoted_codex = (
+    r'"C:\tools\codex.exe" -q' if sys.platform == "win32"
+    else '"/opt/tools/codex" -q'
+)
+check("a full path still resolves", agents.agent_key_for_command(_quoted_codex) == "codex")
 check("empty -> ''", agents.agent_key_for_command("") == "")
 check("unknown -> ''", agents.agent_key_for_command("totally-made-up") == "")
 _installed = set(agents.installed_agent_keys())
