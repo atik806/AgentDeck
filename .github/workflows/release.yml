@@ -287,7 +287,7 @@ jobs:
           --token ${{ secrets.GITHUB_TOKEN }}
           --outputDir linux-v4/packaging/Releases
           --publish true
-          --merge
+          --merge true
           --releaseName "AgentDeck ${{ github.ref_name }}"
           --tag ${{ github.ref_name }}
 
