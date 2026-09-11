@@ -51,9 +51,13 @@ Layered bottom-up:
   `QStackedWidget` of workspaces, toolbar, shortcuts. Routes toolbar + shortcuts
   to the **active** workspace. Keeps `_panes` / `_relayout` / `_zoomed` / … as
   thin proxies onto the active workspace (older callers + tests use them).
-- `config.py` — settings at `%APPDATA%\multi-terminal\config.json`.
+- `config.py` — settings; `config_dir()`/`cache_dir()`/`data_dir()` (built on
+  `platformdirs`) are the canonical per-OS locations, Windows unchanged at
+  `%APPDATA%\multi-terminal\config.json`, Linux under XDG dirs.
 - `launcher.py`, `main_window.py` — the *older* external-window feature, bolted
-  in the same folder, independent of the panel. Leave alone.
+  in the same folder, independent of the panel. **Deleted 2026-09-11** as part
+  of the Linux port (confirmed unused by two audits: nothing imported
+  `main_window.py`, only it imported `launcher.py`) — see `linux-v4/context.md`.
 
 Entry point: `windows_launcher/main.py` (also `run.bat` → `pythonw.exe`, no
 console — hence the crash-to-MessageBox handler in `main.py`).

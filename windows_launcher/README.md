@@ -265,9 +265,11 @@ Layered bottom-up:
 | `voice_engine.py` | Qt bridge over the `voice_capture` sibling project's capture / VAD / transcription pipeline. Worker threads behind `state` / `level` / `transcription` / `error` signals. All deps optional — a failed import just sets `available = False`. |
 | `voice_overlay.py` | The floating, draggable voice strip: mic button, a 40-bar mirrored waveform (`_Waveform`, custom `paintEvent` + one 28 ms timer) that swells centre-out to the mic level, a fading transcript line, and a `×` dismiss affordance. Monochrome grey wave; the red strip edge is the "on air" cue. Parented to the window, kept over the panes by `set_bounds()`. |
 
-`config.py` handles settings. `launcher.py` and `main_window.py` are a separate,
-older feature that tiles *external* terminal windows with the Win32 API; they are
-independent of the panel.
+`config.py` handles settings (`config_dir()`/`cache_dir()`/`data_dir()`, per-OS via
+`platformdirs`). `launcher.py` and `main_window.py` were a separate, older feature
+that tiled *external* terminal windows with the Win32 API, independent of the
+panel; deleted during the Linux port (confirmed dead code — nothing imported them
+outside each other).
 
 ### Notes for anyone changing this
 

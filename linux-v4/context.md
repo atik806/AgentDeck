@@ -29,7 +29,7 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 | 1 | POSIX PTY backend (`ptyprocess`-based) | code + tests written; verified importable/dispatching correctly on Windows; **not yet run on real Linux/CI** |
 | 2 | XDG path helper + store migration | done, verified locally on Windows (every migrated path is byte-identical to the pre-refactor path); Linux XDG paths unverified until CI runs |
 | 3 | Linux secret storage (`keyring`) | not started |
-| 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | not started |
+| 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
 | 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | not started |
 
 ## Phase 1-2 implementation notes
