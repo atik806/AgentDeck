@@ -3,7 +3,7 @@
 The whole surface the rest of the app touches:
 
     run_velopack_bootstrap()   -- call once, first thing in main()
-    is_packaged()              -- True only for a Velopack-installed build
+    is_packaged()              -- True only when frozen (see its docstring)
     UpdateController(QObject)   -- the "Update" button's controller
 
 Design notes:
@@ -13,16 +13,27 @@ Design notes:
   folder. :attr:`UpdateController.enabled` is then False and the button is hidden.
 * ``import velopack`` is wrapped: a missing or broken binding disables the button
   but never stops the app.
+* Whether this is a *real, installed* Velopack build is no longer decided by a
+  hand-rolled path check -- it's decided by Velopack itself. Both
+  ``velopack.App().run()`` and ``velopack.UpdateManager(...)`` do their own
+  cross-platform install-manifest auto-detection internally (a Rust core that
+  knows every supported platform's real on-disk conventions, which a
+  hand-written per-OS path check can only ever approximate) and are safe to
+  call unconditionally: ``App().run()`` logs a warning and returns normally
+  when not installed; ``UpdateManager(...)`` raises a plain ``RuntimeError``
+  ("This application is not properly installed: ...") that the existing
+  ``try/except`` below already catches. Verified empirically (see
+  linux-v4/context.md) -- this replaced an earlier Windows-only
+  ``Update.exe``-path check that had no Linux equivalent.
 * Velopack's ``UpdateManager`` calls block, so they run on a ``QThread``; results
   come back as Qt signals on the GUI thread.
-* Velopack installs per-user to ``%LOCALAPPDATA%\\AgentDeck\\`` with no UAC, which
-  is what lets the running app replace its own files.
+* Velopack installs per-user to ``%LOCALAPPDATA%\\AgentDeck\\`` with no UAC (on
+  Windows) which is what lets the running app replace its own files.
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -45,45 +56,30 @@ except Exception as exc:  # noqa: BLE001 - any import problem disables the butto
 # ---------------------------------------------------------------------------
 
 def is_packaged() -> bool:
-    """True only when running as a Velopack-installed build.
+    """True only when running as a frozen (PyInstaller) build, on any platform.
 
-    Windows: Velopack lays out ``Update.exe`` one directory above the app
-    executable (``%LOCALAPPDATA%\\AgentDeck\\Update.exe`` beside
-    ``current\\AgentDeck.exe``).
-
-    Linux: **always False for now.** Velopack's on-disk layout for an
-    installed AppImage isn't confirmed yet -- that's exactly what the Phase 0
-    Velopack-Linux spike (see linux-v4/context.md and
-    .github/workflows/linux-ci.yml's velopack-spike job) exists to determine,
-    and guessing at a path here risks either a false "packaged" (pointing the
-    updater at a layout that doesn't exist) or silently never enabling
-    updates once the real layout is known. Returning False just means the
-    in-app updater stays dormant -- ``UpdateController.unavailable_reason``
-    already surfaces that as "updates are managed by the installed build"
-    rather than hiding the Settings section outright. Fill this branch in
-    once the spike reports back.
-
-    Anything else -- source checkout, a bare ``pyinstaller`` folder -- returns
-    False and the updater stays dormant, on every platform.
+    This is deliberately weaker than "is a real Velopack install" -- it's
+    just the cheap, platform-agnostic first filter (a source checkout is
+    never a real install, so there's no point even trying Velopack's own
+    detection then). Whether updates are *actually* available is decided by
+    :class:`UpdateController` attempting to construct a real
+    ``velopack.UpdateManager`` and letting Velopack's own cross-platform
+    auto-detection succeed or fail -- see the module docstring.
     """
-    if not getattr(sys, "frozen", False):
-        return False
-    if sys.platform.startswith("linux"):
-        return False
-    try:
-        return (Path(sys.executable).resolve().parent.parent / "Update.exe").is_file()
-    except OSError:
-        return False
+    return bool(getattr(sys, "frozen", False))
 
 
 def run_velopack_bootstrap() -> None:
     """Run Velopack's startup hook. Call once, as early as possible in ``main()``.
 
     Nearly instant on a normal launch; just after an update it runs
-    first-run/cleanup work and may restart the process. No-op when the app is not
-    a Velopack install or the binding is missing.
+    first-run/cleanup work and may restart the process. Safe to call
+    unconditionally -- ``velopack.App().run()`` is self-protecting when this
+    isn't a real Velopack install (see the module docstring), and the
+    ``try/except`` here is only extra insurance. No-op if the binding failed
+    to import at all.
     """
-    if _VELOPACK_OK and is_packaged():
+    if _VELOPACK_OK:
         try:
             velopack.App().run()
         except Exception:  # noqa: BLE001 - never let bootstrap stop startup

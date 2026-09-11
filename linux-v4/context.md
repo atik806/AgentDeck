@@ -30,7 +30,7 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 | 2 | XDG path helper + store migration | **DONE — verified on real Linux CI** (the whole suite ran under real XDG-shaped `$HOME`) |
 | 3 | Linux secret storage (`keyring`) | **DONE — verified on real Linux CI.** The real (unmocked) `EncryptedJsonStore` round trip in `test_github_auth.py`/`test_github_controller.py`/`test_supabase_auth.py` passes against a real `gnome-keyring` daemon in CI |
 | 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
-| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **Velopack-Linux spike CONFIRMED WORKING** (see Phase 0) — `is_packaged()`'s real on-disk layout still needs determining from a full AgentDeck build (the spike used a throwaway hello-world app), and the `build-linux` release job still isn't wired into `.github/workflows/release.yml` (see Open follow-ups) |
+| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **Velopack-Linux spike CONFIRMED WORKING**; `updater.py::is_packaged()` **no longer needs a hand-rolled Linux path check at all** — see below; a real end-to-end build via `build_linux.py` + `linux-ci.yml`'s new `build-real-app` job is in progress; `build-linux` release job still isn't wired into `.github/workflows/release.yml` (see Open follow-ups) |
 
 ## 🎉 Full Linux CI green — 2026-09-11
 
@@ -201,14 +201,43 @@ Commits (all on `main`, pushed): `b8f0b34` (Phase 0-1), `a8d256b` (Phase 2), `23
 - Verified on Windows: `test_updater.py` (11 checks) unaffected by the
   `is_packaged()` change; full `--smoke` app launch still clean.
 
+## `is_packaged()` no longer needs a Linux-specific layout check — 2026-09-11
+
+Investigated by inspecting the pip-installed `velopack` package directly (no CI
+round trip needed — reachable on Windows too, `.venv-build` already had it):
+`velopack.UpdateManager(feed_url)`'s constructor does its **own cross-platform
+install-manifest auto-detection** internally, and raises a plain `RuntimeError`
+("This application is not properly installed: Could not auto-locate app
+manifest") when there isn't one — already caught by `UpdateController`'s
+existing `try/except`. `velopack.App().run()` is even more forgiving: it logs a
+warning and returns normally (verified: does not raise, does not exit) when
+called outside a real install. Both are safe to call unconditionally on every
+platform, matching Velopack's documented "call at the top of main()
+unconditionally" usage pattern for every language they support.
+
+This means the original plan's goal ("determine the real Velopack-Linux
+on-disk layout and hand-write a check for it") was based on a wrong premise —
+there's no need to reimplement Velopack's own locator logic at all. `updater.py`
+was simplified: `is_packaged()` is now just `bool(getattr(sys, "frozen",
+False))` (a cheap, genuinely cross-platform pre-filter, replacing the old
+Windows-only `Update.exe`-path check), `run_velopack_bootstrap()` calls
+`velopack.App().run()` unconditionally, and `UpdateController.__init__`'s
+existing `try/except` around `UpdateManager(...)` construction is now the
+*real* arbiter of whether updates are available, on every platform. No
+behavior change on Windows (verified: `test_updater.py` all green, a real
+installed build already worked via the same `UpdateManager` construction
+attempt, just previously gated by a redundant pre-check).
+
 ## Open follow-ups
 
-- **Run a full `AgentDeck-linux.spec` build via `build_linux.py`** (not yet done —
-  the spike only packed a throwaway hello-world app) to determine the real Velopack
-  Linux AppImage on-disk layout, then fill in `updater.py::is_packaged()`'s Linux
-  branch (currently hardcoded `False`) and confirm/adjust `build_linux.py`'s
-  `vpk pack`/`vpk upload` invocations against it.
-- Once that's done, add a `build-linux` job to `.github/workflows/release.yml`
+- **Run a full `AgentDeck-linux.spec` build via `build_linux.py`** against the
+  real app (not yet confirmed — the spike only packed a throwaway hello-world
+  app) via `linux-ci.yml`'s new `build-real-app` manual job, to prove the real
+  spec/build script produces a working AppImage end to end (including the now-
+  unconditional `run_velopack_bootstrap()` call actually running inside it).
+  `is_packaged()` itself no longer needs anything from this (see above) — this
+  step is now about proving the *build*, not reverse-engineering a path check.
+- Once that's confirmed, add a `build-linux` job to `.github/workflows/release.yml`
   (tag-triggered, parallel to the Windows `build` job) — still deliberately not
   added yet, to avoid firing an unverified packaging path on the next real
   Windows version tag.
