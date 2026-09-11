@@ -261,18 +261,24 @@ and the AppImage itself ran and exited cleanly.
   manifest on the shared release (`gh release upload --clobber` overwrites by
   name).
 - No signing step, no winget-equivalent step (out of v1 scope, per the plan).
-- **Not yet exercised against a real `v*` tag push** — verified thoroughly in
-  isolation (the `build-real-app` job above proves the build+pack+run
-  end-to-end; the `vpk upload`/"already published" logic mirrors the
-  long-proven Windows pattern exactly) but the actual combined Windows+Linux
-  publish to one real release is unverified until the next real version tag.
+- **Exercised for real — v0.19.0 and v0.19.1.** v0.19.0's Windows build
+  published fine; `build-linux` failed at the actual publish step: `vpk
+  upload github` refuses to publish into a release that already exists
+  (Windows, run first via `needs: build`, always creates it first), erroring
+  "There is already an existing release tagged '...'. Please delete this
+  release or provide a new version number." Fixed with `--merge true`
+  (verified as a real flag via `vpk upload github --help` on CI before
+  trusting it — it takes a value like `--publish` does, a bare `--merge`
+  wasn't confirmed safe). Re-cut as v0.19.1 rather than force-moving the
+  already-public v0.19.0 tag. **v0.19.1 published successfully with both
+  platforms' assets on one release**: `AgentDeck-win-Setup.exe`,
+  `AgentDeck-win-Portable.zip`, `AgentDeck.AppImage`,
+  `AgentDeck-0.19.1-linux-full.nupkg`, `releases.win.json`,
+  `releases.linux.json`, `SHA256SUMS.txt`, `SHA256SUMS-linux.txt`. v0.19.0
+  stays live as a Windows-only release (harmless, not deleted).
 
 ## Open follow-ups
 
-- **The next real `vX.Y.Z` tag push is the true end-to-end test** of
-  `build-linux` publishing alongside Windows to one real release — watch it
-  when it happens, don't assume it's flawless just because the pieces were
-  each verified individually.
 - De-dup `secret_store.py` and `supabase_auth.py`'s inline copy (see the
   `TODO(linux-port)` comment in `supabase_auth.py`) — both are now proven
   stable on real Linux CI (the real keyring round trip passes), so this is
