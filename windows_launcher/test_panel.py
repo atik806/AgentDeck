@@ -76,7 +76,9 @@ def _pro_account(cfg):
     return acc
 
 
-_p_cfg = {"default_count": 4, "default_shell": "cmd", "font_size": 11, "layout": "grid"}
+_p_cfg = {"default_count": 4,
+          "default_shell": "cmd" if sys.platform == "win32" else "auto",
+          "font_size": 11, "layout": "grid"}
 panel = TerminalPanel(
     _p_cfg,
     persist_settings=False,
@@ -288,6 +290,11 @@ def _():
 
 @step
 def _():
+    pass  # let the splitter's resize settle before reading geometry back
+
+
+@step
+def _():
     widths = [screen_geom(p)[1] for p in panel._panes]
     check("the dragged pane is narrower", widths[0] < widths[1], True)
     for i, pane in enumerate(panel._panes):
@@ -350,8 +357,16 @@ def _():
     print("== 15. dropping plain text pastes it ==")
     words = QMimeData()
     words.setText("echo hi\r\nsecond line")
+    pasted = drop(words)
+    # _as_paste() wraps the text in bracketed-paste markers (ESC[200~...
+    # ESC[201~) iff the shell itself requested bracketed-paste mode
+    # (ESC[?2004h) -- a property of which shell is running, not something
+    # this check cares about: bash's readline enables it by default, cmd/
+    # PowerShell don't. Strip the wrapper if present before comparing.
+    if pasted and pasted.startswith("\x1b[200~") and pasted.endswith("\x1b[201~"):
+        pasted = pasted[len("\x1b[200~"):-len("\x1b[201~")]
     check("newlines normalised to CR, no trailing Enter",
-          drop(words), "echo hi\rsecond line")
+          pasted, "echo hi\rsecond line")
 
     canvas.input_requested.disconnect(typed.append)
 
