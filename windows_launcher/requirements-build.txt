@@ -15,4 +15,11 @@ pyinstaller>=6.10,<7.0
 
 # In-app update client. Pairs with the `vpk` CLI that builds the installer and
 # publishes releases. Pin exact once a known-good version is confirmed.
-velopack>=0.0.1,<1.0
+#
+# NOTE: was `>=0.0.1,<1.0` -- PyPI no longer publishes anything in that range
+# (velopack crossed 1.0 since this was written; a fresh install of the old
+# constraint fails outright with "No matching distribution found"). Verified
+# 2026-09-11 that the same App/UpdateManager API surface this project uses
+# (velopack.App().run(), velopack.UpdateManager(feed_url) -- see updater.py)
+# behaves identically on 1.2.0: same exceptions, same messages.
+velopack>=1.0,<2.0

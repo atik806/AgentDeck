@@ -1,6 +1,8 @@
 # Exact versions for a reproducible release build -- the full dependency
 # closure of requirements.txt + requirements-build.txt + ./voice_capture, as
-# resolved on Windows / CPython 3.11 (the only supported build target).
+# resolved on Windows / CPython 3.11 (this file's own build target -- the
+# Linux build installs straight from requirements.txt with no constraints
+# file of its own; see linux-v4/packaging/README.md).
 #
 # The release workflow installs with `-c constraints.txt`, so a new upstream
 # release inside a requirements.txt range can't silently change what ships.
@@ -14,11 +16,18 @@
 # generated with pip-tools against this same platform.
 
 altgraph==0.17.5
+backports.tarfile==1.2.0
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
 colorama==0.4.6
 idna==3.19
+importlib_metadata==9.0.1
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+keyring==25.7.0
+more-itertools==11.1.0
 numpy==1.26.4
 packaging==26.3
 pefile==2024.8.26
@@ -41,6 +50,7 @@ sounddevice==0.5.6
 tomlkit==0.15.1
 tqdm==4.70.0
 urllib3==2.7.0
-velopack==0.0.1589.dev41669
+velopack==1.2.0
 wcwidth==0.8.3
 webrtcvad-wheels==2.0.14
+zipp==4.1.0
