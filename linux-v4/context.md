@@ -30,7 +30,7 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 | 2 | XDG path helper + store migration | done, verified locally on Windows (every migrated path is byte-identical to the pre-refactor path); Linux XDG paths unverified until CI runs |
 | 3 | Linux secret storage (`keyring`) | done — `secret_store.py` + `supabase_auth.py`'s inline copy both branch to a `keyring`-backed store on Linux; dispatch logic verified via mock in `test_secret_store.py`; real-keyring round trip via the existing `test_github_auth.py`/`test_supabase_auth.py` checks is **not yet run on real Linux CI** |
 | 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
-| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | not started |
+| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **NOT added to `.github/workflows/release.yml`** — waiting on a real Velopack-Linux spike run before wiring a tag-triggered job that would fire on real releases; see `linux-v4/packaging/README.md` |
 
 ## Phase 1-2 implementation notes
 
@@ -125,8 +125,47 @@ successor, once copied into the repo if the user wants that) holds the *design*.
   `test_supabase_auth.py` (59 checks) still pass as before on the Windows dev
   machine; a full `--smoke` app launch is clean after these changes.
 
+## Phase 5 implementation notes
+
+- `linux-v4/packaging/AgentDeck-linux.spec` + `build_linux.py` mirror the
+  Windows `packaging/` pair structurally. **Voice is deliberately excluded**
+  from the Linux bundle for v1 (native-dependency-heavy, out of scope, and
+  the app already degrades gracefully without it); **plugins ARE still
+  bundled** even though wiring/testing them on Linux is also deferred,
+  because unlike voice there's no "missing gracefully" story for the Plugins
+  nav item — leaving them out would trade "untested" for "crashes on click".
+- `updater.py::is_packaged()` got a Linux branch that is **hardcoded `False`**
+  with a docstring explaining why (the real Velopack-installed-AppImage
+  on-disk layout isn't known without running the spike) — deliberately not
+  guessed at, per the plan. `UpdateController.unavailable_reason` already
+  surfaces this reasonably ("updates are managed by the installed build")
+  rather than the Settings section silently vanishing.
+- **Explicitly NOT done this phase**: adding a `build-linux` job to
+  `.github/workflows/release.yml`. That workflow is tag-triggered and shared
+  with the real Windows release pipeline — wiring an unverified `vpk pack
+  --channel linux` invocation into it risks either breaking or just noisily
+  failing on the next real `vX.Y.Z` tag push. The Velopack-Linux spike
+  (`linux-ci.yml`'s `velopack-spike` job, `workflow_dispatch`) needs to
+  actually run and confirm the CLI surface first — see
+  `linux-v4/packaging/README.md`'s "Known unknowns" section for exactly
+  what's still open.
+- Verified on Windows: `test_updater.py` (11 checks) unaffected by the
+  `is_packaged()` change; full `--smoke` app launch still clean.
+
 ## Open follow-ups
 
+- **Run the Velopack-Linux spike** (`workflow_dispatch` on `linux-ci.yml`'s
+  `velopack-spike` job) and update `linux-v4/packaging/README.md` +
+  `updater.py::is_packaged()` + `build_linux.py`'s `vpk pack` call with what
+  it finds. This is the next concrete step to unblock the rest of Phase 5.
+- Push this branch and let `linux-ci.yml`'s `test` job actually run on
+  `ubuntu-latest` for the first time — every phase above was verified as
+  thoroughly as possible on the Windows dev machine (imports resolve, the
+  dispatch logic is correct, the full existing test suite + a real `--smoke`
+  app launch stay green), but the Linux-specific code paths themselves
+  (`_pty_backend_posix.py`'s real spawn/read/write cycle, the real keyring
+  round trip, the `dbus-run-session`/`gnome-keyring-daemon --unlock` CI
+  wrapper) have never actually executed anywhere yet.
 - De-dup `secret_store.py` and `supabase_auth.py`'s inline copy (see the
   `TODO(linux-port)` comment in `supabase_auth.py`) once both are proven
   stable on real Linux CI.
@@ -134,3 +173,6 @@ successor, once copied into the repo if the user wants that) holds the *design*.
   (`pip freeze`) once `ptyprocess`/`platformdirs`/`keyring` should be pinned
   for a release build — not done as part of this port (constraints.txt is a
   Windows-build-machine artifact, regenerated per `packaging/README.md`).
+- Once Linux CI is green and the spike is confirmed, add the `build-linux`
+  job to `.github/workflows/release.yml` (see this phase's notes above for
+  why it wasn't added yet).

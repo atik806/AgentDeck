@@ -47,12 +47,28 @@ except Exception as exc:  # noqa: BLE001 - any import problem disables the butto
 def is_packaged() -> bool:
     """True only when running as a Velopack-installed build.
 
-    Velopack lays out ``Update.exe`` one directory above the app executable
-    (``%LOCALAPPDATA%\\AgentDeck\\Update.exe`` beside ``current\\AgentDeck.exe``).
+    Windows: Velopack lays out ``Update.exe`` one directory above the app
+    executable (``%LOCALAPPDATA%\\AgentDeck\\Update.exe`` beside
+    ``current\\AgentDeck.exe``).
+
+    Linux: **always False for now.** Velopack's on-disk layout for an
+    installed AppImage isn't confirmed yet -- that's exactly what the Phase 0
+    Velopack-Linux spike (see linux-v4/context.md and
+    .github/workflows/linux-ci.yml's velopack-spike job) exists to determine,
+    and guessing at a path here risks either a false "packaged" (pointing the
+    updater at a layout that doesn't exist) or silently never enabling
+    updates once the real layout is known. Returning False just means the
+    in-app updater stays dormant -- ``UpdateController.unavailable_reason``
+    already surfaces that as "updates are managed by the installed build"
+    rather than hiding the Settings section outright. Fill this branch in
+    once the spike reports back.
+
     Anything else -- source checkout, a bare ``pyinstaller`` folder -- returns
-    False and the updater stays dormant.
+    False and the updater stays dormant, on every platform.
     """
     if not getattr(sys, "frozen", False):
+        return False
+    if sys.platform.startswith("linux"):
         return False
     try:
         return (Path(sys.executable).resolve().parent.parent / "Update.exe").is_file()
