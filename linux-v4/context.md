@@ -30,7 +30,7 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 | 2 | XDG path helper + store migration | **DONE — verified on real Linux CI** (the whole suite ran under real XDG-shaped `$HOME`) |
 | 3 | Linux secret storage (`keyring`) | **DONE — verified on real Linux CI.** The real (unmocked) `EncryptedJsonStore` round trip in `test_github_auth.py`/`test_github_controller.py`/`test_supabase_auth.py` passes against a real `gnome-keyring` daemon in CI |
 | 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
-| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **Velopack-Linux spike CONFIRMED WORKING**; `updater.py::is_packaged()` **no longer needs a hand-rolled Linux path check at all** — see below; a real end-to-end build via `build_linux.py` + `linux-ci.yml`'s new `build-real-app` job is in progress; `build-linux` release job still isn't wired into `.github/workflows/release.yml` (see Open follow-ups) |
+| 5 | Linux packaging pipeline (Velopack AppImage) | **DONE — full real pipeline verified + wired into the actual release workflow.** `linux-ci.yml`'s `build-real-app` job built the *real* AgentDeck app via `AgentDeck-linux.spec`/`build_linux.py`, packed a real `AgentDeck.AppImage` (95.9 MB), and ran it end to end under `xvfb-run` with a clean exit. `.github/workflows/release.yml` now has a `build-linux` job (`needs: build`, runs after Windows publishes, to avoid a race on the shared GitHub Release) — **not yet exercised against a real `v*` tag**, that's the next actual release |
 
 ## 🎉 Full Linux CI green — 2026-09-11
 
@@ -228,30 +228,61 @@ behavior change on Windows (verified: `test_updater.py` all green, a real
 installed build already worked via the same `UpdateManager` construction
 attempt, just previously gated by a redundant pre-check).
 
+## Real build + release-pipeline wiring — 2026-09-11
+
+`linux-ci.yml` gained a `build-real-app` job (manual dispatch): builds and
+packs the *actual* AgentDeck app via `AgentDeck-linux.spec` + `build_linux.py`
+(not the throwaway hello-world `velopack-spike` uses), then extracts and runs
+the real produced AppImage end to end under `xvfb-run`. First run hit a real,
+pre-existing bug: `requirements-build.txt` pinned `velopack>=0.0.1,<1.0`, and
+PyPI no longer publishes anything in that range (the package crossed 1.0)
+— a fresh install failed outright. Fixed (widened to `>=1.0,<2.0`, verified
+the exact `App()`/`UpdateManager` API surface behaves identically on 1.2.0,
+`constraints.txt` regenerated from a freshly-synced `.venv-build`, a real
+Windows `packaging/build.py --no-pack` PyInstaller build confirmed clean with
+the new dependency set). Second run: **fully green** — real
+`AgentDeck.AppImage` (95.9 MB) + `AgentDeck-<ver>-linux-full.nupkg` +
+`releases.linux.json` + `SHA256SUMS.txt` produced, uploaded as a CI artifact,
+and the AppImage itself ran and exited cleanly.
+
+`.github/workflows/release.yml` now has a `build-linux` job wired in:
+- **Runs after `build` (`needs: build`), not in parallel** — both jobs
+  `vpk upload github --tag <same tag>` into the *same* release, and there's
+  no verified-safe way to run two concurrent uploads against one release
+  without risking a race on its creation. A Linux failure never undoes or
+  blocks the Windows publish.
+- Its own "already published?" check (not shared with Windows' — by the time
+  it runs the release already has Windows assets, so "any assets at all"
+  would always read true) — looks specifically for an asset named with
+  "linux" in it or ending `.AppImage`.
+- `checksums.py`'s output is renamed `SHA256SUMS-linux.txt` before upload —
+  both jobs' checksums.py calls produce a file literally named
+  `SHA256SUMS.txt`; uploading that as-is would have clobbered the Windows
+  manifest on the shared release (`gh release upload --clobber` overwrites by
+  name).
+- No signing step, no winget-equivalent step (out of v1 scope, per the plan).
+- **Not yet exercised against a real `v*` tag push** — verified thoroughly in
+  isolation (the `build-real-app` job above proves the build+pack+run
+  end-to-end; the `vpk upload`/"already published" logic mirrors the
+  long-proven Windows pattern exactly) but the actual combined Windows+Linux
+  publish to one real release is unverified until the next real version tag.
+
 ## Open follow-ups
 
-- **Run a full `AgentDeck-linux.spec` build via `build_linux.py`** against the
-  real app (not yet confirmed — the spike only packed a throwaway hello-world
-  app) via `linux-ci.yml`'s new `build-real-app` manual job, to prove the real
-  spec/build script produces a working AppImage end to end (including the now-
-  unconditional `run_velopack_bootstrap()` call actually running inside it).
-  `is_packaged()` itself no longer needs anything from this (see above) — this
-  step is now about proving the *build*, not reverse-engineering a path check.
-- Once that's confirmed, add a `build-linux` job to `.github/workflows/release.yml`
-  (tag-triggered, parallel to the Windows `build` job) — still deliberately not
-  added yet, to avoid firing an unverified packaging path on the next real
-  Windows version tag.
+- **The next real `vX.Y.Z` tag push is the true end-to-end test** of
+  `build-linux` publishing alongside Windows to one real release — watch it
+  when it happens, don't assume it's flawless just because the pieces were
+  each verified individually.
 - De-dup `secret_store.py` and `supabase_auth.py`'s inline copy (see the
   `TODO(linux-port)` comment in `supabase_auth.py`) — both are now proven
   stable on real Linux CI (the real keyring round trip passes), so this is
   lower-risk to attempt now.
-- `windows_launcher/constraints.txt` needs regenerating from a real build venv
-  (`pip freeze`) once `ptyprocess`/`platformdirs`/`keyring` should be pinned
-  for a release build — not done as part of this port (constraints.txt is a
-  Windows-build-machine artifact, regenerated per `packaging/README.md`).
 - A real Linux desktop smoke pass (GNOME/KDE, X11/Wayland) is still needed —
   CI proves the code runs correctly, not that the UI/UX feels right on a real
   desktop (theming, notifications, tray icon, window decorations, HiDPI, etc.).
+- `linux-v4/packaging/README.md`'s "Known unknowns" section is now stale
+  (everything it flagged is resolved) — update it to reflect the confirmed
+  state rather than leaving it reading as still-open questions.
 - `linux-v4/packaging/README.md`'s "Known unknowns" section is now partly
   stale (the spike succeeded) — update it alongside the `is_packaged()` work
   above rather than leaving both half-done.
