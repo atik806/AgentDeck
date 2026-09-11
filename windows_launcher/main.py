@@ -43,11 +43,19 @@ def _ensure_streams() -> None:
 def _log_path() -> Path:
     """Where to write a crash report.
 
-    Deliberately does not import ``config`` for the directory: this runs when
-    something has already failed, and ``config`` is one of the things that could
-    have. It resolves to the same folder ``config.get_config_path()`` uses.
+    Deliberately does not import ``config`` (or ``platformdirs``) for the
+    directory: this runs when something has already failed, and either of
+    those is a thing that could have failed. It resolves to the same folder
+    ``config.get_config_path()`` uses -- on Windows via ``%APPDATA%``
+    (unchanged), on Linux via ``$XDG_CONFIG_HOME`` or its ``~/.config``
+    default, matching what ``platformdirs`` would compute without importing it.
     """
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
     return Path(base) / "multi-terminal" / _ERROR_LOG
 
 

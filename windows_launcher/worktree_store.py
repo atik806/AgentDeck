@@ -102,24 +102,36 @@ def default_worktrees_path() -> Path:
 
         return Path(CONFIG_DIR) / "worktrees.json"
     except Exception:  # noqa: BLE001
-        base = os.environ.get("APPDATA") or str(Path.home())
+        base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") \
+            or str(Path.home() / ".config")
         return Path(base) / "multi-terminal" / "worktrees.json"
 
 
 def default_worktrees_root() -> Path:
-    """Directory that holds the scratch worktree trees (LOCALAPPDATA, not roaming).
+    """Directory that holds the scratch worktree trees.
 
-    Overridable with ``ADK_WORKTREES_ROOT`` for tests.
+    Windows: ``%LOCALAPPDATA%\\multi-terminal\\worktrees`` (not roaming -- these
+    are large, machine-local scratch checkouts, not settings to sync). Linux:
+    ``~/.local/share/multi-terminal/worktrees`` (``config.data_dir()`` -- not
+    ``cache_dir()``, which adds a Windows-only ``Cache`` segment that would
+    change the existing Windows path). Overridable with ``ADK_WORKTREES_ROOT``
+    for tests.
     """
     override = os.environ.get("ADK_WORKTREES_ROOT")
     if override:
         return Path(override)
-    base = (
-        os.environ.get("LOCALAPPDATA")
-        or os.environ.get("APPDATA")
-        or str(Path.home())
-    )
-    return Path(base) / "multi-terminal" / "worktrees"
+    try:
+        from config import data_dir
+
+        return data_dir() / "worktrees"
+    except Exception:  # noqa: BLE001
+        base = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or os.environ.get("XDG_DATA_HOME")
+            or str(Path.home() / ".local" / "share")
+        )
+        return Path(base) / "multi-terminal" / "worktrees"
 
 
 def repo_key_for(repo_root: str | os.PathLike) -> str:

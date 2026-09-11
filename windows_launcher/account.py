@@ -27,7 +27,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 import entitlements
 import supabase_auth
 from supabase_auth import AuthError
-from config import _get_config_dir, save_config
+from config import config_dir, save_config
 
 try:
     from version import __version__ as _APP_VERSION
@@ -678,7 +678,7 @@ class AccountController(QObject):
     # -- avatar cache ------------------------------------------------------------
 
     def _avatar_path(self):
-        return _get_config_dir() / _AVATAR_CACHE
+        return config_dir() / _AVATAR_CACHE
 
     def _read_cached_avatar(self) -> bytes:
         try:

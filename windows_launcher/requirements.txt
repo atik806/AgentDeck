@@ -1,6 +1,11 @@
 # The GUI. 6.11 is what this was built and tested against.
 PySide6>=6.11,<7.0
 
+# Per-OS config/cache/data directories (config.py's config_dir()/cache_dir()/
+# data_dir()). Windows keeps its existing %APPDATA%\multi-terminal layout
+# unchanged; Linux gets real XDG dirs (~/.config, ~/.cache, ~/.local/share).
+platformdirs>=4.0,<5.0
+
 # Pseudo-terminal bindings. Without one a shell knows it isn't talking to a
 # terminal: no colour, no line editing, no full-screen programs. Windows uses
 # ConPTY via pywinpty; Linux/macOS use ptyprocess (see

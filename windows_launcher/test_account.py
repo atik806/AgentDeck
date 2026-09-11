@@ -176,7 +176,7 @@ from account import AccountController, CLOUD_KEYS, _filter_cloud
 
 # keep the real config file untouched, and cache the avatar in a temp dir
 _TMP = pathlib.Path(tempfile.mkdtemp(prefix="agentdeck-acct-"))
-account._get_config_dir = lambda: _TMP
+account.config_dir = lambda: _TMP
 account.save_config = lambda cfg: None
 
 # fake requests.get so avatar fetch never hits the network

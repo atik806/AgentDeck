@@ -1,7 +1,17 @@
 """
-Configuration management for Windows Multi-Terminal Launcher.
+Configuration management for AgentDeck.
 
-Config location: %APPDATA%\multi-terminal\config.json
+Config location:
+    Windows: %APPDATA%\\multi-terminal\\config.json
+    Linux:   ~/.config/multi-terminal/config.json
+
+config_dir() / cache_dir() / data_dir() are the canonical per-OS locations --
+every other store in this codebase (notes_store.py, routines_store.py,
+skills_store.py, workspaces_store.py, worktree_store.py, plugin_store.py,
+mcp_targets.py, github_auth.py, skills_sync.py, main.py's log files) imports
+these instead of re-deriving its own %APPDATA%-or-home fallback. Keep it that
+way -- a store with its own copy of this logic is how a path mistake on one
+platform goes unnoticed.
 """
 
 import json
@@ -9,22 +19,56 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from platformdirs import user_cache_dir, user_config_dir, user_data_dir
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-def _get_config_dir() -> Path:
-    """Get Windows config directory."""
-    return Path(os.environ.get("APPDATA", Path.home())) / "multi-terminal"
+#: platformdirs' folder name. Kept as "multi-terminal" (not "AgentDeck") so
+#: every existing install's on-disk config is found unchanged after this
+#: refactor -- see the AgentDeck rename note in ../context.md.
+_APP_NAME = "multi-terminal"
 
-def _get_cache_dir() -> Path:
-    """Get Windows cache directory."""
-    localappdata = os.environ.get("LOCALAPPDATA", os.environ.get("APPDATA", Path.home()))
-    return Path(localappdata) / "multi-terminal" / "Cache"
 
-CONFIG_DIR = _get_config_dir()
+def config_dir() -> Path:
+    """Per-user config directory.
+
+    Windows: %APPDATA%\\multi-terminal (byte-identical to the pre-platformdirs
+    path -- verified locally: ``user_config_dir(appauthor=False, roaming=True)``
+    resolves to exactly this). Linux: ~/.config/multi-terminal.
+
+    ``appauthor=False`` is required on Windows: platformdirs' default
+    ``Company\\App`` convention would otherwise insert an extra path segment
+    and orphan every existing user's config.
+    """
+    return Path(user_config_dir(_APP_NAME, appauthor=False, roaming=True))
+
+
+def cache_dir() -> Path:
+    """Per-user cache directory.
+
+    Windows: %LOCALAPPDATA%\\multi-terminal\\Cache (byte-identical to before --
+    platformdirs appends "Cache" on Windows by default when asked for a cache
+    dir, verified locally). Linux: ~/.cache/multi-terminal.
+    """
+    return Path(user_cache_dir(_APP_NAME, appauthor=False))
+
+
+def data_dir() -> Path:
+    """Per-user data directory (as opposed to user-editable config).
+
+    Nothing on Windows has ever distinguished this from config_dir() or
+    cache_dir(), so it's a new location there (%LOCALAPPDATA%\\multi-terminal,
+    non-roaming) rather than a migration of anything existing. Linux:
+    ~/.local/share/multi-terminal.
+    """
+    return Path(user_data_dir(_APP_NAME, appauthor=False))
+
+
+CONFIG_DIR = config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
-CACHE_DIR = _get_cache_dir()
+CACHE_DIR = cache_dir()
 
 # ---------------------------------------------------------------------------
 # Default configuration

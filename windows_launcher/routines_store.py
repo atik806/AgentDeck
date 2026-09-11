@@ -67,7 +67,8 @@ def default_routines_path() -> Path:
 
         return Path(CONFIG_DIR) / "routines.json"
     except Exception:  # noqa: BLE001 - fall back to a sane per-user location
-        base = os.environ.get("APPDATA") or str(Path.home())
+        base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") \
+            or str(Path.home() / ".config")
         return Path(base) / "multi-terminal" / "routines.json"
 
 

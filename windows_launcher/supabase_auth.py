@@ -657,11 +657,12 @@ else:  # pragma: no cover - non-Windows fallback
 
 def _default_store_path() -> Path:
     try:
-        from config import _get_config_dir
+        from config import config_dir
 
-        return _get_config_dir() / "session.bin"
+        return config_dir() / "session.bin"
     except Exception:  # noqa: BLE001 - config import must never block auth
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") \
+            or os.path.join(os.path.expanduser("~"), ".config")
         return Path(base) / "multi-terminal" / "session.bin"
 
 
