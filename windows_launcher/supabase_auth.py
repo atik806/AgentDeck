@@ -606,12 +606,22 @@ def rest_insert(
 
 
 # ---------------------------------------------------------------------------
-# Session persistence (DPAPI on Windows, plaintext fallback elsewhere)
+# Session persistence (DPAPI on Windows, OS keyring on Linux)
+#
+# This is an inline copy of secret_store.EncryptedJsonStore's exact pattern
+# (DPAPI / keyring / magic-header scheme), not an import of it -- kept
+# separate so the accounts flow doesn't gain a new failure mode from a shared
+# module while the two are hardened in parallel during the Linux port.
+# TODO(linux-port): de-dup with secret_store.py once both are proven stable.
 # ---------------------------------------------------------------------------
 
 _IS_WINDOWS = os.name == "nt"
+_IS_LINUX = sys.platform.startswith("linux")
 _MAGIC_DPAPI = b"ADK1D"
-_MAGIC_PLAIN = b"ADK1P"
+_MAGIC_PLAIN = b"ADK1P"  # legacy: still *read* for back-compat, never written
+_MAGIC_LINUX = b"ADK1L"
+_KEYRING_SERVICE = "AgentDeck"
+_KEYRING_USERNAME = "agentdeck:session.bin"
 
 if _IS_WINDOWS:  # pragma: no cover - platform specific
     import ctypes
@@ -655,6 +665,46 @@ else:  # pragma: no cover - non-Windows fallback
         raise OSError("DPAPI is Windows-only")
 
 
+if _IS_LINUX:  # pragma: no cover - platform specific
+
+    def _keyring_save(blob: bytes) -> bool:
+        try:
+            import keyring
+
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, blob.decode("utf-8"))
+            return True
+        except Exception:  # noqa: BLE001 - no keyring daemon, locked, etc.
+            return False
+
+    def _keyring_load() -> Optional[bytes]:
+        try:
+            import keyring
+
+            value = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
+        except Exception:  # noqa: BLE001
+            return None
+        return value.encode("utf-8") if value is not None else None
+
+    def _keyring_delete() -> None:
+        try:
+            import keyring
+
+            keyring.delete_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
+        except Exception:  # noqa: BLE001 - already gone, or no keyring -- fine
+            pass
+
+else:  # pragma: no cover - non-Linux
+
+    def _keyring_save(blob: bytes) -> bool:
+        return False
+
+    def _keyring_load() -> Optional[bytes]:
+        return None
+
+    def _keyring_delete() -> None:
+        pass
+
+
 def _default_store_path() -> Path:
     try:
         from config import config_dir
@@ -668,8 +718,9 @@ def _default_store_path() -> Path:
 
 class SessionStore:
     """Reads / writes the stored session. On Windows the blob is DPAPI-encrypted
-    (bound to the OS user); elsewhere, or if DPAPI fails, it falls back to plain
-    JSON. :meth:`load` never raises."""
+    (bound to the OS user); on Linux it's handed to the OS keyring. Anywhere
+    else, or if the platform's backend fails, the write is refused rather than
+    ever falling back to plaintext. :meth:`load` never raises."""
 
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path is not None else _default_store_path()
@@ -682,7 +733,14 @@ class SessionStore:
         try:
             if raw.startswith(_MAGIC_DPAPI):
                 blob = _unprotect(raw[len(_MAGIC_DPAPI):])
+            elif raw.startswith(_MAGIC_LINUX):
+                blob = _keyring_load()
+                if blob is None:
+                    return None
             elif raw.startswith(_MAGIC_PLAIN):
+                # Legacy: written before this store refused to write
+                # plaintext. Still readable so an existing install doesn't
+                # get signed out on upgrade; never written again.
                 blob = raw[len(_MAGIC_PLAIN):]
             else:
                 blob = raw  # tolerate a legacy / hand-written plain JSON file
@@ -696,23 +754,43 @@ class SessionStore:
     def save(self, session: Session) -> None:
         """Persist the session.
 
-        On Windows the blob **must** encrypt with DPAPI; if that fails we refuse
-        to write rather than drop long-lived refresh tokens onto disk in the
-        clear (callers treat a missing store as "sign in again"). The plaintext
-        form is only ever used off Windows, where DPAPI does not exist.
+        The blob **must** land in a real OS-backed secret store -- DPAPI on
+        Windows, the keyring on Linux. If that fails, the write is refused
+        entirely rather than ever falling back to plaintext (callers treat a
+        missing store as "sign in again").
         """
         blob = json.dumps(session.to_dict()).encode("utf-8")
-        try:
-            payload = _MAGIC_DPAPI + _protect(blob)
-        except Exception:  # noqa: BLE001
-            if _IS_WINDOWS:
+
+        if _IS_WINDOWS:
+            try:
+                payload = _MAGIC_DPAPI + _protect(blob)
+            except Exception:  # noqa: BLE001
                 print(
                     "[AgentDeck] WARNING: DPAPI encryption of the session failed; "
                     "not saving it (you'll be asked to sign in again next launch).",
                     file=sys.stderr,
                 )
                 return
-            payload = _MAGIC_PLAIN + blob
+        elif _IS_LINUX:
+            if not _keyring_save(blob):
+                print(
+                    "[AgentDeck] WARNING: no OS keyring available; not saving the "
+                    "session (you'll be asked to sign in again next launch). "
+                    "Install/start a Secret Service provider (GNOME Keyring, "
+                    "KWallet, ...).",
+                    file=sys.stderr,
+                )
+                return
+            payload = _MAGIC_LINUX + _KEYRING_USERNAME.encode("utf-8")
+        else:
+            print(
+                "[AgentDeck] WARNING: no supported secret store on this platform; "
+                "not saving the session (you'll be asked to sign in again next "
+                "launch).",
+                file=sys.stderr,
+            )
+            return
+
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + ".tmp")
@@ -722,6 +800,13 @@ class SessionStore:
             pass
 
     def clear(self) -> None:
+        if _IS_LINUX:
+            try:
+                raw = self.path.read_bytes()
+            except OSError:
+                raw = b""
+            if raw.startswith(_MAGIC_LINUX):
+                _keyring_delete()
         try:
             self.path.unlink()
         except OSError:

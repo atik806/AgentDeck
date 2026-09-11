@@ -6,6 +6,13 @@ PySide6>=6.11,<7.0
 # unchanged; Linux gets real XDG dirs (~/.config, ~/.cache, ~/.local/share).
 platformdirs>=4.0,<5.0
 
+# Linux secret storage (secret_store.py / supabase_auth.py's SessionStore):
+# wraps GNOME Keyring / KWallet / libsecret via the freedesktop Secret Service
+# D-Bus API. Windows keeps using DPAPI directly (no dependency needed there);
+# harmless to install everywhere since it's only imported on sys.platform
+# "linux".
+keyring>=25.0,<26.0
+
 # Pseudo-terminal bindings. Without one a shell knows it isn't talking to a
 # terminal: no colour, no line editing, no full-screen programs. Windows uses
 # ConPTY via pywinpty; Linux/macOS use ptyprocess (see

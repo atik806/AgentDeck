@@ -28,7 +28,7 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 | 0 | CI scaffolding (`linux-ci.yml`) + Velopack-Linux spike | workflow written; spike not yet run (needs a push + manual dispatch) |
 | 1 | POSIX PTY backend (`ptyprocess`-based) | code + tests written; verified importable/dispatching correctly on Windows; **not yet run on real Linux/CI** |
 | 2 | XDG path helper + store migration | done, verified locally on Windows (every migrated path is byte-identical to the pre-refactor path); Linux XDG paths unverified until CI runs |
-| 3 | Linux secret storage (`keyring`) | not started |
+| 3 | Linux secret storage (`keyring`) | done — `secret_store.py` + `supabase_auth.py`'s inline copy both branch to a `keyring`-backed store on Linux; dispatch logic verified via mock in `test_secret_store.py`; real-keyring round trip via the existing `test_github_auth.py`/`test_supabase_auth.py` checks is **not yet run on real Linux CI** |
 | 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
 | 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | not started |
 
@@ -91,6 +91,46 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 - macOS is out of scope and not audited; new platform branches must not silently
   misclassify it into either the Windows or Linux path.
 
+## Phase 3 implementation notes
+
+- `secret_store.EncryptedJsonStore` and `supabase_auth.SessionStore` (its own
+  inline DPAPI copy, per its docstring's "new code should use secret_store")
+  both got a parallel `_MAGIC_LINUX` branch backed by the `keyring` package
+  (freedesktop Secret Service — GNOME Keyring / KWallet). Neither was merged
+  into one shared implementation this pass — see the `TODO(linux-port)`
+  comment left in `supabase_auth.py`.
+- **The security-regression fix the audit flagged**: `save()` used to fall
+  back to writing plain JSON on *any* non-Windows platform. It no longer does
+  — Windows uses DPAPI, Linux uses the keyring, and anything else (or a Linux
+  box with no keyring daemon) now refuses the write entirely, matching the
+  posture DPAPI-failure already had on Windows. A `_MAGIC_PLAIN` file from
+  before this change is still *read* for backward compatibility, just never
+  written again.
+- **Verified via `test_secret_store.py`** (new, monkeypatches
+  `_IS_WINDOWS`/`_IS_LINUX`/`_keyring_*` so the dispatch logic is checked
+  regardless of which OS runs it): a working keyring round-trips
+  save/load/clear and the on-disk marker never contains the secret in the
+  clear; a keyring failure writes nothing at all (not even a stub file) and
+  `save()` returns `False`; an unsupported platform behaves the same way; a
+  legacy plaintext file still loads.
+- **Not yet verified**: the *real* keyring backend on real Linux. This needs
+  the `linux-ci.yml` "test" job's `dbus-run-session` + `gnome-keyring-daemon
+  --unlock` wrapper (added this phase) to actually work on its first CI run —
+  it's a well-known pattern for headless Secret Service testing but was
+  authored without a Linux machine to confirm it against. If it doesn't work,
+  `test_github_auth.py`'s "token vault round-trip" section and
+  `test_supabase_auth.py` will fail on `ubuntu-latest` specifically at
+  "save reports success" — that's the first thing to debug.
+- Windows behavior confirmed unchanged: `test_github_auth.py` (21 checks) and
+  `test_supabase_auth.py` (59 checks) still pass as before on the Windows dev
+  machine; a full `--smoke` app launch is clean after these changes.
+
 ## Open follow-ups
 
-(none yet — filled in as phases land)
+- De-dup `secret_store.py` and `supabase_auth.py`'s inline copy (see the
+  `TODO(linux-port)` comment in `supabase_auth.py`) once both are proven
+  stable on real Linux CI.
+- `windows_launcher/constraints.txt` needs regenerating from a real build venv
+  (`pip freeze`) once `ptyprocess`/`platformdirs`/`keyring` should be pinned
+  for a release build — not done as part of this port (constraints.txt is a
+  Windows-build-machine artifact, regenerated per `packaging/README.md`).

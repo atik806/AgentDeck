@@ -37,15 +37,22 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # Qt6/xcb runtime libraries the PySide6 wheel does not vendor. Without these,
-      # even `import PySide6.QtWidgets` fails on a bare ubuntu-latest image.
-      - name: Install Qt/X11 runtime libraries
+      # Qt6/xcb runtime libraries the PySide6 wheel does not vendor, plus a real
+      # (if ephemeral) Secret Service provider: test_github_auth.py /
+      # test_supabase_auth.py's existing token/session round-trip checks call
+      # secret_store.EncryptedJsonStore for real (no mocking) -- on Linux that's
+      # a genuine keyring.set_password/get_password call (see secret_store.py),
+      # so without a keyring daemon those two files would fail here not because
+      # of a bug but because the CI environment has nothing to store the secret
+      # in. gnome-keyring + dbus-x11 give it one.
+      - name: Install Qt/X11 runtime libraries + keyring backend
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
-            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb
+            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb \
+            gnome-keyring dbus-x11
 
       - name: Install dependencies
         run: |
@@ -64,18 +71,29 @@ jobs:
       # `QT_QPA_PLATFORM=offscreen` for a handful of checks (see test_panel.py's
       # "drop moved focus" / real-display notes) -- a virtual X server keeps this
       # closer to what a real desktop exercises than offscreen-only.
+      #
+      # dbus-run-session + gnome-keyring-daemon --unlock: a bare CI runner has no
+      # logged-in desktop session (no D-Bus session bus, no auto-unlocked login
+      # keyring), so this starts both by hand -- an empty-password "login" that
+      # gnome-keyring accepts as the unlock, matching the well-known headless-
+      # testing pattern for apps built on the Secret Service API. UNVERIFIED
+      # until this workflow's first real run -- see linux-v4/context.md Phase 3.
       - name: Run tests
         working-directory: windows_launcher
         run: |
-          fail=0
-          for f in test_*.py; do
-            echo "=== $f ==="
-            if ! xvfb-run -a python "$f"; then
-              echo "::error::$f failed"
-              fail=1
-            fi
-          done
-          exit $fail
+          dbus-run-session -- bash -c '
+            eval "$(printf "" | gnome-keyring-daemon --unlock --daemonize --components=secrets)"
+            export GNOME_KEYRING_CONTROL
+            fail=0
+            for f in test_*.py; do
+              echo "=== $f ==="
+              if ! xvfb-run -a python "$f"; then
+                echo "::error::$f failed"
+                fail=1
+              fi
+            done
+            exit $fail
+          '
 
   velopack-spike:
     # Manual only -- this doesn't gate every push, it's a one-off verification step
