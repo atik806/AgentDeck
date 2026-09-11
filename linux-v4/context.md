@@ -25,12 +25,61 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | CI scaffolding (`linux-ci.yml`) + Velopack-Linux spike | workflow written; spike not yet run (needs a push + manual dispatch) |
-| 1 | POSIX PTY backend (`ptyprocess`-based) | code + tests written; verified importable/dispatching correctly on Windows; **not yet run on real Linux/CI** |
-| 2 | XDG path helper + store migration | done, verified locally on Windows (every migrated path is byte-identical to the pre-refactor path); Linux XDG paths unverified until CI runs |
-| 3 | Linux secret storage (`keyring`) | done — `secret_store.py` + `supabase_auth.py`'s inline copy both branch to a `keyring`-backed store on Linux; dispatch logic verified via mock in `test_secret_store.py`; real-keyring round trip via the existing `test_github_auth.py`/`test_supabase_auth.py` checks is **not yet run on real Linux CI** |
+| 0 | CI scaffolding (`linux-ci.yml`) + Velopack-Linux spike | **DONE — both green.** `test` job fully passes on `ubuntu-latest`; `velopack-spike` job passed outright on its first run, confirming Velopack does support a Linux AppImage (`vpk pack --channel linux`) |
+| 1 | POSIX PTY backend (`ptyprocess`-based) | **DONE — verified on real Linux CI.** `test_pty_backend_posix.py` (real spawn/write/read/resize/close/exit-code against `/bin/sh`, real `/proc` child-probe) green on `ubuntu-latest` |
+| 2 | XDG path helper + store migration | **DONE — verified on real Linux CI** (the whole suite ran under real XDG-shaped `$HOME`) |
+| 3 | Linux secret storage (`keyring`) | **DONE — verified on real Linux CI.** The real (unmocked) `EncryptedJsonStore` round trip in `test_github_auth.py`/`test_github_controller.py`/`test_supabase_auth.py` passes against a real `gnome-keyring` daemon in CI |
 | 4 | Dead-code removal (`main_window.py`/`launcher.py`) + misc | done — both deleted, `context.md`/README updated; full `--smoke` app launch verified clean on Windows after the deletion |
-| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **NOT added to `.github/workflows/release.yml`** — waiting on a real Velopack-Linux spike run before wiring a tag-triggered job that would fire on real releases; see `linux-v4/packaging/README.md` |
+| 5 | Linux packaging pipeline (Velopack AppImage or tarball fallback) | spec + build script written (`linux-v4/packaging/`); **Velopack-Linux spike CONFIRMED WORKING** (see Phase 0) — `is_packaged()`'s real on-disk layout still needs determining from a full AgentDeck build (the spike used a throwaway hello-world app), and the `build-linux` release job still isn't wired into `.github/workflows/release.yml` (see Open follow-ups) |
+
+## 🎉 Full Linux CI green — 2026-09-11
+
+After 6 push iterations, `.github/workflows/linux-ci.yml`'s `test` job passes
+completely on `ubuntu-latest` (all 65 `test_*.py` files, real Qt rendering via a
+real Xvfb + fluxbox window manager, real `gnome-keyring` secret storage), and the
+`velopack-spike` job passed on its very first run. Every failure hit along the way
+traced to one of two categories, **none of them bugs in the ported app code**:
+
+**CI environment gaps** (fixed in `linux-ci.yml`):
+- Qt's xcb platform plugin needs `libxkbcommon-x11-0` (distinct from `libxkbcommon0`,
+  and not clearly named in Qt's own error text).
+- `gnome-keyring`'s default collection doesn't exist on a fresh runner and
+  `--unlock` doesn't create one — pre-seeding an explicitly unencrypted collection
+  file sidesteps the interactive "SystemPrompter" prompt that has nowhere to display.
+- `hasFocus()`/window-activation semantics need an actual window manager — a bare
+  Xvfb has none. Added `fluxbox` and restructured from per-file `xvfb-run` to one
+  shared Xvfb(1920x1080)+fluxbox session for the whole run.
+
+**Pre-existing tests that hardcoded Windows-only assumptions**, never exercised on
+another platform until this session (fixed in the relevant `test_*.py`, not in the
+app code they test — in every case the underlying app logic was already correct/
+already platform-aware):
+- `test_worktree_store.py`: `repo_key_for()`'s case-insensitivity is deliberately
+  OS-dependent (`os.path.normcase`); the test asserted only the Windows case.
+- `test_agents.py`: quoted-path fixtures were Windows backslash paths, which
+  `pathlib.Path` (correctly) parses differently as `PosixPath`.
+- `test_global_hotkey.py`: unconditionally faked `ctypes.windll.user32`, but
+  `GlobalHotkey.bind()` checks `self._supported` (Windows-only) *before* ever
+  touching `ctypes.windll` — the fakes were simply unreachable off Windows.
+- `test_panel.py` (the deepest one, five separate issues): a Windows-path file-drop
+  fixture (same `QUrl`/`pathlib` platform-awareness as above); a hardcoded
+  Windows-only `default_shell: "cmd"` key; a bracketed-paste-mode assertion that
+  didn't account for bash enabling it by default (cmd/PowerShell don't); a
+  tilde-abbreviated-`$HOME` prompt (bash's `\w` shows `~/...` for anything under
+  `$HOME`, so a literal-absolute-path substring check silently failed even though
+  the shell's real cwd was correct); and a splitter-drag width check that had
+  enough "flexible" pixel budget beyond each pane's minimum size on Windows but not
+  under Linux's specific toolbar/font-metric-driven minimum window width — fixed by
+  giving the check a much wider window rather than relying on a coincidental margin.
+
+The one remaining occasional flake — "the drop moved focus to the pane" — is the
+SAME check already documented as environment-dependent throughout this project's
+Windows-only history (a stray window stealing focus mid-test); it reproduces
+identically on Windows itself and is left as-is, not treated as a Linux-specific bug.
+
+Commits (all on `main`, pushed): `b8f0b34` (Phase 0-1), `a8d256b` (Phase 2), `234cf0d`
+(Phase 4), `d669f5f` (Phase 3), `da8eb61` (Phase 5 skeleton), `a1f4fc4`/`2ca95a7`/
+`6c8226f`/`64864b1` (the four CI-iteration fix commits).
 
 ## Phase 1-2 implementation notes
 
@@ -154,25 +203,26 @@ successor, once copied into the repo if the user wants that) holds the *design*.
 
 ## Open follow-ups
 
-- **Run the Velopack-Linux spike** (`workflow_dispatch` on `linux-ci.yml`'s
-  `velopack-spike` job) and update `linux-v4/packaging/README.md` +
-  `updater.py::is_packaged()` + `build_linux.py`'s `vpk pack` call with what
-  it finds. This is the next concrete step to unblock the rest of Phase 5.
-- Push this branch and let `linux-ci.yml`'s `test` job actually run on
-  `ubuntu-latest` for the first time — every phase above was verified as
-  thoroughly as possible on the Windows dev machine (imports resolve, the
-  dispatch logic is correct, the full existing test suite + a real `--smoke`
-  app launch stay green), but the Linux-specific code paths themselves
-  (`_pty_backend_posix.py`'s real spawn/read/write cycle, the real keyring
-  round trip, the `dbus-run-session`/`gnome-keyring-daemon --unlock` CI
-  wrapper) have never actually executed anywhere yet.
+- **Run a full `AgentDeck-linux.spec` build via `build_linux.py`** (not yet done —
+  the spike only packed a throwaway hello-world app) to determine the real Velopack
+  Linux AppImage on-disk layout, then fill in `updater.py::is_packaged()`'s Linux
+  branch (currently hardcoded `False`) and confirm/adjust `build_linux.py`'s
+  `vpk pack`/`vpk upload` invocations against it.
+- Once that's done, add a `build-linux` job to `.github/workflows/release.yml`
+  (tag-triggered, parallel to the Windows `build` job) — still deliberately not
+  added yet, to avoid firing an unverified packaging path on the next real
+  Windows version tag.
 - De-dup `secret_store.py` and `supabase_auth.py`'s inline copy (see the
-  `TODO(linux-port)` comment in `supabase_auth.py`) once both are proven
-  stable on real Linux CI.
+  `TODO(linux-port)` comment in `supabase_auth.py`) — both are now proven
+  stable on real Linux CI (the real keyring round trip passes), so this is
+  lower-risk to attempt now.
 - `windows_launcher/constraints.txt` needs regenerating from a real build venv
   (`pip freeze`) once `ptyprocess`/`platformdirs`/`keyring` should be pinned
   for a release build — not done as part of this port (constraints.txt is a
   Windows-build-machine artifact, regenerated per `packaging/README.md`).
-- Once Linux CI is green and the spike is confirmed, add the `build-linux`
-  job to `.github/workflows/release.yml` (see this phase's notes above for
-  why it wasn't added yet).
+- A real Linux desktop smoke pass (GNOME/KDE, X11/Wayland) is still needed —
+  CI proves the code runs correctly, not that the UI/UX feels right on a real
+  desktop (theming, notifications, tray icon, window decorations, HiDPI, etc.).
+- `linux-v4/packaging/README.md`'s "Known unknowns" section is now partly
+  stale (the spike succeeded) — update it alongside the `is_packaged()` work
+  above rather than leaving both half-done.
