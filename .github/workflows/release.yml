@@ -268,6 +268,17 @@ jobs:
           echo "already=$already" >> "$GITHUB_OUTPUT"
           echo "already published: $already"
 
+      # --merge: this job always runs after `build` (needs: build), so by the
+      # time it gets here a release for this tag already exists (Windows just
+      # created it) -- without --merge, `vpk upload` refuses outright ("There
+      # is already an existing release tagged '...'. Please delete this
+      # release or provide a new version number."), confirmed for real on the
+      # v0.19.0 release (Windows published fine, this step failed with
+      # exactly that error before --merge was added). Unlike the Windows
+      # job's own upload (which never touches an existing release at all --
+      # its "already published?" guard skips the attempt entirely), Linux
+      # publishing into an already-existing release is the intended case
+      # here, not a duplicate to avoid.
       - name: Publish to GitHub Releases
         if: steps.check.outputs.already != 'true'
         run: >
@@ -276,6 +287,7 @@ jobs:
           --token ${{ secrets.GITHUB_TOKEN }}
           --outputDir linux-v4/packaging/Releases
           --publish true
+          --merge
           --releaseName "AgentDeck ${{ github.ref_name }}"
           --tag ${{ github.ref_name }}
 
