@@ -281,6 +281,17 @@ def _():
     print("== 12. dragging a splitter reaches the pty ==")
     panel._layout_mode = "columns"
     panel._relayout()
+    # Each pane has a real minimum width (its own minimumSizeHint, plus
+    # whatever the window's toolbar/sidebar chrome forces as a floor -- both
+    # driven by font metrics, which aren't identical across platforms/fonts).
+    # At the 1000px width step 11 left the window, four panes' minimums can
+    # already eat the *entire* width with little to no flexible budget left
+    # for setSizes()'s weights to actually differentiate -- QSplitter clamps
+    # every child to at least its minimum first, so if there's no slack
+    # beyond that every pane ends up equal regardless of the requested
+    # ratio. Widen well past any plausible minimum so the 2000:8000:8000:8000
+    # weighting has real room to produce a visible difference on any platform.
+    panel.resize(2400, 900)
 
 
 @step
