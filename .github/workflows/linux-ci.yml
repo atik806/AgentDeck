@@ -1,0 +1,151 @@
+name: linux-ci
+
+# Linux port CI. Two independent jobs:
+#   * test          -- runs the existing pytest suite against windows_launcher/ on
+#                       ubuntu-latest, the only place Linux-side code in this repo can
+#                       actually be exercised (dev machine is Windows-only, no WSL2).
+#   * velopack-spike -- manual-dispatch only. Verifies Velopack's Linux/AppImage output
+#                       before the real packaging pipeline (see linux-v4/) is built on
+#                       top of it. See linux-v4/context.md for the spike's findings.
+#
+# Separate from .github/workflows/release.yml, which stays Windows-only and
+# tag-triggered.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "windows_launcher/**"
+      - ".github/workflows/linux-ci.yml"
+  pull_request:
+    paths:
+      - "windows_launcher/**"
+      - ".github/workflows/linux-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Qt6/xcb runtime libraries the PySide6 wheel does not vendor. Without these,
+      # even `import PySide6.QtWidgets` fails on a bare ubuntu-latest image.
+      - name: Install Qt/X11 runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb
+
+      - name: Install dependencies
+        run: |
+          python -m pip install "pip==24.3.1"
+          pip install -c windows_launcher/constraints.txt -r windows_launcher/requirements.txt
+
+      # This project's tests are standalone scripts, not pytest-collectible: each
+      # test_*.py prints PASS/FAIL per check and does `sys.exit(1 if fails else 0)`
+      # at module scope (see windows_launcher/README.md's "Testing" section, which
+      # documents running each one as `python test_X.py`). Reproduce that here
+      # rather than `pytest windows_launcher` -- pytest importing a module that
+      # calls sys.exit() at import time does not report results the way this
+      # convention expects.
+      #
+      # xvfb-run: Qt widget tests need a display server even under
+      # `QT_QPA_PLATFORM=offscreen` for a handful of checks (see test_panel.py's
+      # "drop moved focus" / real-display notes) -- a virtual X server keeps this
+      # closer to what a real desktop exercises than offscreen-only.
+      - name: Run tests
+        working-directory: windows_launcher
+        run: |
+          fail=0
+          for f in test_*.py; do
+            echo "=== $f ==="
+            if ! xvfb-run -a python "$f"; then
+              echo "::error::$f failed"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  velopack-spike:
+    # Manual only -- this doesn't gate every push, it's a one-off verification step
+    # for Phase 0 of the Linux port. Re-run by hand from the Actions tab when the
+    # spike's findings need refreshing (e.g. after a `vpk`/`velopack` version bump).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk
+
+      - name: Qt/X11 runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb
+
+      - name: vpk --help (confirm Linux flags exist)
+        run: vpk pack --help
+
+      - name: Build a throwaway PySide6 hello-world onedir app
+        run: |
+          python -m pip install "pip==24.3.1" pyinstaller "PySide6>=6.11,<7.0"
+          mkdir -p /tmp/spike
+          cat > /tmp/spike/hello.py <<'PY'
+          import sys
+          from PySide6.QtWidgets import QApplication, QLabel
+
+          app = QApplication(sys.argv)
+          label = QLabel("AgentDeck Linux spike")
+          label.show()
+          # Exit immediately in CI -- this only needs to prove the window opens.
+          from PySide6.QtCore import QTimer
+          QTimer.singleShot(500, app.quit)
+          sys.exit(app.exec())
+          PY
+          pyinstaller --onedir --windowed --name hello --distpath /tmp/spike/dist \
+            --workpath /tmp/spike/build /tmp/spike/hello.py
+
+      - name: vpk pack (Linux channel)
+        run: |
+          mkdir -p /tmp/spike/releases
+          vpk pack --packId AgentDeckSpike --packVersion 0.0.1 \
+            --packDir /tmp/spike/dist/hello --mainExe hello \
+            --packTitle "AgentDeck Spike" --channel linux \
+            --outputDir /tmp/spike/releases
+          ls -la /tmp/spike/releases
+
+      - name: Smoke-run the AppImage
+        run: |
+          APPIMAGE=$(find /tmp/spike/releases -iname '*.AppImage' | head -n1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::no .AppImage produced by vpk pack"
+            exit 1
+          fi
+          chmod +x "$APPIMAGE"
+          xvfb-run -a "$APPIMAGE" --appimage-extract-and-run &
+          PID=$!
+          sleep 3
+          kill "$PID" 2>/dev/null || true
+          echo "AppImage launched: $APPIMAGE"

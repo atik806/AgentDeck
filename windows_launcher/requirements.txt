@@ -1,9 +1,12 @@
 # The GUI. 6.11 is what this was built and tested against.
 PySide6>=6.11,<7.0
 
-# ConPTY bindings. Without a pseudo-console a shell knows it isn't talking to a
-# terminal: no colour, no line editing, no full-screen programs.
-pywinpty>=2.0.13
+# Pseudo-terminal bindings. Without one a shell knows it isn't talking to a
+# terminal: no colour, no line editing, no full-screen programs. Windows uses
+# ConPTY via pywinpty; Linux/macOS use ptyprocess (see
+# windows_launcher/pty_backend.py for the platform dispatch).
+pywinpty>=2.0.13 ; sys_platform == "win32"
+ptyprocess>=0.7,<1.0 ; sys_platform != "win32"
 
 # VT100/xterm escape-sequence parser driving the screen state.
 pyte>=0.8.1
