@@ -330,15 +330,20 @@ def _():
 
     print("== 14. dropping files onto a pane types their quoted paths ==")
     files = QMimeData()
-    files.setUrls(
-        [
-            QUrl.fromLocalFile(r"C:\tmp\a.txt"),
-            QUrl.fromLocalFile(r"C:\my dir\b (old).log"),
-        ]
-    )
+    # QUrl.fromLocalFile()/toLocalFile() are platform-aware: a Windows drive-
+    # letter path isn't a recognised absolute path on POSIX (it gets a
+    # leading "/" tacked on instead), so the two OSes need their own real
+    # absolute-path fixtures to exercise the identical bare/quoted-with-
+    # space-and-parens behaviour in _drop_text/_quote_path.
+    if sys.platform == "win32":
+        path_a, path_b = r"C:\tmp\a.txt", r"C:\my dir\b (old).log"
+        want = r'C:\tmp\a.txt "C:\my dir\b (old).log"'
+    else:
+        path_a, path_b = "/tmp/a.txt", "/tmp/my dir/b (old).log"
+        want = '/tmp/a.txt "/tmp/my dir/b (old).log"'
+    files.setUrls([QUrl.fromLocalFile(path_a), QUrl.fromLocalFile(path_b)])
     got = drop(files)
-    check("plain path bare, spaced/parenthesised path quoted",
-          got, r'C:\tmp\a.txt "C:\my dir\b (old).log"')
+    check("plain path bare, spaced/parenthesised path quoted", got, want)
     check("no Enter appended", (got or "").endswith(("\r", "\n")), False)
     check("the drop moved focus to the pane", canvas.hasFocus(), True)
 
@@ -743,6 +748,26 @@ def flat(pane):
     return "".join(text(pane).split())
 
 
+def folder_visible_in(folder: str, body: str) -> bool:
+    """Whether ``folder`` shows up in a pane's text, accounting for how each
+    platform's default shell prompt actually renders a cwd.
+
+    cmd/PowerShell always print the full path. Bash's default PS1 uses ``\\w``,
+    which abbreviates $HOME to ``~`` -- a folder under the CI runner's home
+    directory (as this test's own directory usually is) never appears as its
+    literal absolute path in the prompt even though the shell's real cwd is
+    exactly right, so a bare substring check would fail for a display
+    convention, not a cwd bug.
+    """
+    if folder in body:
+        return True
+    if sys.platform != "win32":
+        home = os.path.expanduser("~")
+        if folder.startswith(home):
+            return ("~" + folder[len(home):]) in body
+    return False
+
+
 @step
 def _():
     print("== 29. startup= opens panes in the folder and runs the agent ==")
@@ -750,8 +775,13 @@ def _():
 
     folder = os.path.dirname(os.path.abspath(__file__))
     state["startup_folder"] = folder
-    _p2_cfg = {"default_count": 2, "default_shell": "cmd", "font_size": 11,
-               "layout": "columns"}
+    # "cmd" is a Windows-only shell key; resolve_shell() falls back to
+    # whatever's first on non-Windows if asked for a key that doesn't exist
+    # there, which works but isn't what this config is trying to say --
+    # "auto" says it directly and resolves per-platform correctly on both.
+    _p2_cfg = {"default_count": 2,
+               "default_shell": "cmd" if sys.platform == "win32" else "auto",
+               "font_size": 11, "layout": "columns"}
     state["panel2"] = TerminalPanel(
         _p2_cfg,
         persist_settings=False,
@@ -792,7 +822,7 @@ def _():
     for i, pane in enumerate(p2._panes):
         body = flat(pane)
         check(f"pane {i + 1} shell started in the working folder",
-              folder in body, True)
+              folder_visible_in(folder, body), True)
         check(f"pane {i + 1} auto-ran the agent command",
               "AGENT_OK" in body, True)
     p2._panes[0].restart()
@@ -858,7 +888,7 @@ def _():
     check("a pane added after startup is a plain shell (no agent)",
           "AGENT_OK" not in flat(added), True)
     check("but it still opens in the working folder",
-          state["startup_folder"] in flat(added), True)
+          folder_visible_in(state["startup_folder"], flat(added)), True)
 
 
 # -- 30. conversation handoff -------------------------------------------------

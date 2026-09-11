@@ -62,7 +62,7 @@ jobs:
             libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0 \
-            libxcb-sync1 libx11-xcb1 libdbus-1-3 xvfb \
+            libxcb-sync1 libx11-xcb1 libdbus-1-3 xvfb fluxbox x11-utils \
             gnome-keyring dbus-x11
 
       # gnome-keyring's default "login" collection doesn't exist yet on a
@@ -103,31 +103,54 @@ jobs:
       # calls sys.exit() at import time does not report results the way this
       # convention expects.
       #
-      # xvfb-run: Qt widget tests need a display server even under
-      # `QT_QPA_PLATFORM=offscreen` for a handful of checks (see test_panel.py's
-      # "drop moved focus" / real-display notes) -- a virtual X server keeps this
-      # closer to what a real desktop exercises than offscreen-only.
+      # One shared Xvfb + fluxbox for the whole run, not `xvfb-run` per file:
+      # test_panel.py's real-window checks (documented as needing "a real
+      # window server... with no other GUI process alongside" even on
+      # Windows) depend on the window actually becoming the *WM-activated*
+      # window -- Qt's hasFocus()/window-activation semantics are gated on
+      # that, and a bare Xvfb has no window manager to grant it at all. A
+      # first CI run confirmed this exactly: canvas.setFocus() was called,
+      # but hasFocus() still read False. fluxbox (lightweight, common in
+      # headless-Qt-testing CI setups for this exact reason) gives windows
+      # something to be activated by. A generous 1920x1080 screen avoids a
+      # default Xvfb resolution clipping/resizing a test window and skewing
+      # geometry checks.
       #
       # dbus-run-session + gnome-keyring-daemon --unlock: a bare CI runner has no
       # logged-in desktop session (no D-Bus session bus, no auto-unlocked login
       # keyring), so this starts both by hand -- an empty-password "login" that
       # gnome-keyring accepts as the unlock, matching the well-known headless-
-      # testing pattern for apps built on the Secret Service API. UNVERIFIED
-      # until this workflow's first real run -- see linux-v4/context.md Phase 3.
+      # testing pattern for apps built on the Secret Service API. Confirmed
+      # working in this workflow's first real run (alongside the pre-seeded
+      # unencrypted keyring collection above) -- see linux-v4/context.md Phase 3.
       - name: Run tests
         working-directory: windows_launcher
         run: |
           dbus-run-session -- bash -c '
+            Xvfb :99 -screen 0 1920x1080x24 &
+            XVFB_PID=$!
+            export DISPLAY=:99
+            for i in $(seq 1 20); do
+              xdpyinfo -display :99 >/dev/null 2>&1 && break
+              sleep 0.25
+            done
+            fluxbox >/tmp/fluxbox.log 2>&1 &
+            FLUXBOX_PID=$!
+            sleep 1
+
             eval "$(printf "" | gnome-keyring-daemon --unlock --daemonize --components=secrets)"
             export GNOME_KEYRING_CONTROL
+
             fail=0
             for f in test_*.py; do
               echo "=== $f ==="
-              if ! xvfb-run -a python "$f"; then
+              if ! python "$f"; then
                 echo "::error::$f failed"
                 fail=1
               fi
             done
+
+            kill "$FLUXBOX_PID" "$XVFB_PID" 2>/dev/null || true
             exit $fail
           '
 
