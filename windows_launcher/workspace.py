@@ -27,9 +27,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMenu,
     QPushButton,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -75,6 +78,8 @@ _EXPAND_GLYPH = "⤢"
 _RESTORE_GLYPH = "⤡"
 #: Pane header "hand this conversation to another agent" button.
 _HANDOFF_GLYPH = "⤳"
+#: Pane header "open a new pane running a chosen agent" button.
+_ADD_GLYPH = "＋"
 
 #: Drag payload for reordering panes: the dragged pane's current index, as bytes.
 _PANE_MIME = "application/x-agentdeck-pane"
@@ -171,6 +176,11 @@ class TerminalPane(QFrame):
     #: Carries the pane.
     handoff_requested = Signal(object)
 
+    #: The user picked an agent from this pane's "+" menu to open a new sibling
+    #: pane running it. Carries (this pane, agent key, custom command text --
+    #: only set when the key is ``agents.CUSTOM_KEY``).
+    add_agent_requested = Signal(object, str, str)
+
     #: The user dropped another pane onto this one to reorder. Carries the
     #: dragged pane's original index and this pane (the drop target).
     reorder_requested = Signal(int, object)
@@ -251,6 +261,17 @@ class TerminalPane(QFrame):
         self._title.setObjectName("paneTitle")
         self._title.setTextInteractionFlags(Qt.NoTextInteraction)
 
+        self._add_btn = QToolButton(self._header)
+        self._add_btn.setObjectName("paneAdd")
+        self._add_btn.setText(_ADD_GLYPH)
+        self._add_btn.setCursor(Qt.PointingHandCursor)
+        self._add_btn.setFixedSize(26, 22)
+        self._add_btn.setToolTip("New pane with agent…")
+        self._add_btn.setPopupMode(QToolButton.InstantPopup)
+        self._add_menu = QMenu(self._add_btn)
+        self._add_menu.aboutToShow.connect(self._populate_add_menu)
+        self._add_btn.setMenu(self._add_menu)
+
         self._handoff_btn = QPushButton(_HANDOFF_GLYPH, self._header)
         self._handoff_btn.setObjectName("paneHandoff")
         self._handoff_btn.setCursor(Qt.PointingHandCursor)
@@ -285,6 +306,7 @@ class TerminalPane(QFrame):
 
         header_layout.addWidget(self._badge)
         header_layout.addWidget(self._title, 1)
+        header_layout.addWidget(self._add_btn)
         header_layout.addWidget(self._handoff_btn)
         header_layout.addWidget(self._expand_btn)
         header_layout.addWidget(self._restart_btn)
@@ -322,6 +344,36 @@ class TerminalPane(QFrame):
         view.submitted.connect(lambda: self.submitted.emit(self))
         self._set_title(view.shell_label)
         return view
+
+    def _populate_add_menu(self) -> None:
+        """Rebuild the "+" menu just before it opens, so a just-installed agent
+        (or one installed while AgentDeck was open) shows up without a restart."""
+        menu = self._add_menu
+        menu.clear()
+        agents.refresh_path()
+        installed = agents.available_agents()
+        if installed:
+            for key, label, command in installed:
+                menu.addAction(
+                    f"{label}  —  {command}",
+                    lambda *_, key=key: self.add_agent_requested.emit(self, key, ""),
+                )
+        else:
+            none_action = menu.addAction("No agents installed")
+            none_action.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(
+            "Plain shell",
+            lambda *_: self.add_agent_requested.emit(self, agents.PLAIN_KEY, ""),
+        )
+        menu.addAction("Custom command…", lambda *_: self._prompt_custom_command())
+
+    def _prompt_custom_command(self) -> None:
+        text, ok = QInputDialog.getText(
+            self, "Custom command", "Command to run in the new pane:"
+        )
+        if ok and text.strip():
+            self.add_agent_requested.emit(self, agents.CUSTOM_KEY, text.strip())
 
     def _on_title(self, title: str) -> None:
         # Shells set the title to the running command, which is genuinely
@@ -538,7 +590,7 @@ class TerminalPane(QFrame):
                 font-weight: {"bold" if self._active else "normal"};
             }}
             QPushButton#paneClose, QPushButton#paneRestart,
-            QPushButton#paneExpand, QPushButton#paneHandoff {{
+            QPushButton#paneExpand, QPushButton#paneHandoff, QToolButton#paneAdd {{
                 color: {t('text')};
                 background: {t('surface')};
                 border: 1px solid {t('border')};
@@ -551,10 +603,12 @@ class TerminalPane(QFrame):
                 background: {accent if self._expanded else t('surface')};
                 border-color: {accent if self._expanded else t('border')};
             }}
+            QToolButton#paneAdd::menu-indicator {{ image: none; width: 0; }}
             QPushButton#paneClose:hover {{ color: {on_accent}; background: {t('danger_hover')}; }}
             QPushButton#paneRestart:hover {{ color: {on_accent}; background: {accent}; }}
             QPushButton#paneExpand:hover {{ color: {on_accent}; background: {accent}; }}
             QPushButton#paneHandoff:hover {{ color: {on_accent}; background: {accent}; }}
+            QToolButton#paneAdd:hover {{ color: {on_accent}; background: {accent}; }}
             """
         )
 
@@ -647,6 +701,10 @@ class Workspace(QWidget):
 
     #: The user asked to hand a pane's agent conversation off. Carries the pane.
     pane_handoff_requested = Signal(object)
+
+    #: The user picked an agent from a pane's "+" menu. Carries
+    #: (pane, agent key, custom command text) -- see ``TerminalPane.add_agent_requested``.
+    pane_add_agent_requested = Signal(object, str, str)
 
     #: The user asked to close a pane that owns an isolated worktree (its
     #: ``pane_id`` is in ``_worktree_pane_ids``). The panel decides merge / keep
@@ -763,6 +821,7 @@ class Workspace(QWidget):
         pane.activated.connect(self.set_active)
         pane.submitted.connect(self.pane_submitted)
         pane.handoff_requested.connect(self.pane_handoff_requested)
+        pane.add_agent_requested.connect(self.pane_add_agent_requested)
         pane.reorder_requested.connect(self._reorder_pane)
         self._panes.append(pane)
         return pane

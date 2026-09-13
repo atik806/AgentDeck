@@ -1062,6 +1062,63 @@ def _():
 
 @step
 def _():
+    print("== 31c. pane \"+\" menu: add a sibling pane running a chosen agent ==")
+    import agents
+    p2 = state["panel2"]
+    ws = p2._active_ws
+    pane = ws.panes[0]
+
+    state["_real_resolve2"] = agents.resolve_agent
+    agents.resolve_agent = lambda key, custom="": (
+        "claude" if key == "claude" else (custom if key == agents.CUSTOM_KEY else "")
+    )
+
+    before = ws.pane_count
+    p2._on_add_agent_pane(pane, "claude", "")
+    check("installed-agent pick added a pane", ws.pane_count, before + 1)
+    check("new pane runs the agent command", ws.panes[-1].startup_command, "claude")
+
+
+@step
+def _():
+    import agents
+    p2 = state["panel2"]
+    ws = p2._active_ws
+    pane = ws.panes[0]
+
+    before = ws.pane_count
+    p2._on_add_agent_pane(pane, agents.CUSTOM_KEY, "echo custom-pane")
+    check("custom command added a pane", ws.pane_count, before + 1)
+    check("new pane runs the typed command",
+          ws.panes[-1].startup_command, "echo custom-pane")
+
+    before = ws.pane_count
+    p2._on_add_agent_pane(pane, agents.PLAIN_KEY, "")
+    check("plain shell added a pane", ws.pane_count, before + 1)
+    check("plain-shell pane has no startup command",
+          ws.panes[-1].startup_command, "")
+
+
+@step
+def _():
+    import agents
+    p2 = state["panel2"]
+    ws = p2._active_ws
+    pane = ws.panes[0]
+
+    # "codex" resolves to "" under the fake resolve_agent -> treated as not
+    # installed; the pane count must not move.
+    before = ws.pane_count
+    p2._on_add_agent_pane(pane, "codex", "")
+    check("an uninstalled agent pick adds no pane", ws.pane_count, before)
+    check("...and tells the user why",
+          "Codex" in p2.statusBar().currentMessage(), True)
+
+    agents.resolve_agent = state["_real_resolve2"]
+
+
+@step
+def _():
     print("== 32. skills: Pro gate, materialize, improve-with-agent re-import ==")
     import tempfile
     import terminal_panel as tpmod

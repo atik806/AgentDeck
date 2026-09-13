@@ -997,6 +997,7 @@ class TerminalPanel(QMainWindow):
         )
         workspace.pane_submitted.connect(self._on_pane_submitted)
         workspace.pane_handoff_requested.connect(self._start_handoff)
+        workspace.pane_add_agent_requested.connect(self._on_add_agent_pane)
 
         self._workspaces.append(workspace)
         self._ws_stack.addWidget(workspace)
@@ -2020,6 +2021,40 @@ class TerminalPanel(QMainWindow):
         QTimer.singleShot(7000, _seed)
         QTimer.singleShot(12000, _seed)
         QTimer.singleShot(20000, _give_up)
+
+    def _on_add_agent_pane(self, pane, agent_key: str, custom: str) -> None:
+        """A pane's "+" menu picked an agent: open a new sibling pane running it.
+
+        Same pretrust + plugin-wiring as ``_add_workspace`` / ``_do_handoff`` /
+        ``_run_routine`` -- this is just another way to pick "agent, folder" and
+        get a pane, so it gets the same treatment.
+        """
+        import agents
+
+        ws = next((w for w in self._workspaces if pane in w.panes), None)
+        if ws is None:
+            return
+
+        command = agents.resolve_agent(agent_key, custom)
+        if agent_key not in (agents.PLAIN_KEY, agents.CUSTOM_KEY) and not command:
+            self.statusBar().showMessage(
+                f"{agents.agent_label(agent_key)} isn't installed", 4000
+            )
+            return
+
+        if command and self.config.get("pretrust_agent_folder", False):
+            pretrust_folder(command, self._working_folder)
+        self._wire_github_for(self._working_folder, command)
+        self._wire_vercel_for(self._working_folder, command)
+        self._wire_jira_for(self._working_folder, command)
+        self._wire_gitlab_for(self._working_folder, command)
+        self._wire_linear_for(self._working_folder, command)
+        self._wire_supabase_for(self._working_folder, command)
+
+        if command:
+            ws.add_pane_with_command(command)
+        else:
+            ws.add_pane()
 
     def _show_plugins(self) -> None:
         """Swap the terminal area for the PLUGINS panel (sidebar nav strip)."""

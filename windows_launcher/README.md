@@ -176,6 +176,12 @@ their output is all there when you come back. Switching panes while one is
 expanded (`Ctrl+Tab`, `Alt+2`, …) moves the expansion to the pane you switch to,
 rather than focusing something you cannot see.
 
+A pane header also carries a **`＋`** button: a menu of every installed agent
+(plus "Plain shell" and "Custom command…") that opens a new sibling pane
+running whatever you pick, without going through the New Workspace dialog. The
+menu is rebuilt just before it opens, so an agent installed while AgentDeck is
+running shows up without a restart.
+
 ## Workspaces
 
 The **WORKSPACES** sidebar on the left holds independent groups of panes. Click a
