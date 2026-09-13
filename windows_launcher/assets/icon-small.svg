@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="AgentDeck">
+  <!--
+    Simplified rendition of icon.svg for small pixel sizes (16/24/32/48px
+    taskbar and Explorer icons). The full mark's stacked "deck" panes and thin
+    strokes turn into an indistinct dark blur once downscaled that small, so
+    this drops the panes/highlight/output-line details and uses one flat
+    tile + a single bold, oversized chevron+cursor glyph that still reads at
+    16px. Kept in sync with icon.svg's palette by eye; regenerate via
+    assets/build_icons.py (it renders <=32px frames from this file).
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2a3d"/>
+      <stop offset="1" stop-color="#181825"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#89b4fa"/>
+      <stop offset="1" stop-color="#89dceb"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#tile)"/>
+
+  <polyline points="80,80 140,128 80,176" fill="none" stroke="url(#prompt)"
+            stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="150" y="112" width="46" height="32" rx="7" fill="#a6e3a1"/>
+</svg>

@@ -7,6 +7,12 @@ Qt's own ICO writer only emits a single frame, so the .ico is assembled here
 by hand: every frame is stored as a PNG payload (supported by Windows Vista and
 later), which keeps the 256px frame small and the 16/32px frames sharp.
 
+Frames at SMALL_SIZES are rendered from ``icon-small.svg`` (same folder as
+``icon.svg``) instead of the main mark: the full mark's stacked "deck" panes
+and thin strokes downscale into an indistinct blur at 16-32px, which is
+exactly the "blurry taskbar icon" bug this split fixes. Falls back to the main
+SVG if no sibling ``icon-small.svg`` exists.
+
 Run with any of the project virtualenvs that have PySide6, e.g.
     windows_launcher/.venv/Scripts/python.exe assets/build_icons.py \
         windows_launcher/assets/icon.svg windows_launcher/assets
@@ -22,6 +28,7 @@ from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
+SMALL_SIZES = {16, 24, 32}
 
 
 def render(renderer: QSvgRenderer, size: int) -> QImage:
@@ -70,7 +77,21 @@ def main(argv: list[str]) -> int:
         print(f"error: could not load {src}")
         return 1
 
-    imgs = {s: render(renderer, s) for s in SIZES}
+    small_src = src.with_name("icon-small.svg")
+    small_renderer = renderer
+    if small_src.exists():
+        small_renderer = QSvgRenderer(str(small_src))
+        if not small_renderer.isValid():
+            print(f"error: could not load {small_src}")
+            return 1
+    else:
+        print(f"note: no {small_src.name} beside {src.name}, "
+              f"small frames rendered from the main mark")
+
+    imgs = {
+        s: render(small_renderer if s in SMALL_SIZES else renderer, s)
+        for s in SIZES
+    }
     frames = [png_bytes(imgs[s]) for s in SIZES]
     ico = build_ico(frames, SIZES)
 
