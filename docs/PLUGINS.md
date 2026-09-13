@@ -343,7 +343,7 @@ idempotent, prompt builder), `test_plugin_store.py`.
 | **P2 — GitHub review MVP** | `github_mcp.py` (Claude Code), `github_review_dialog.py`, spawn review pane, remote GitHub MCP, results in pane, manual "Post to GitHub" + confirm, `plugin_runs` audit. | P1 |
 | **P3 — Capabilities & audit** | Capability checklist → scoped toolsets, `Ask first` / `Autonomous` modes, Activity log viewer, local `github-mcp-server` fallback. | P2 |
 | **P4 — More automations & agents** | Create repo, open/merge PRs, dispatch & inspect Actions, issue triage. Codex + Gemini MCP writers. | P3 |
-| **P5 — More providers** | **GitLab + Linear shipped** (§15 / §16, thin OAuth plugins, v0.15.0). Bitbucket / Sentry / … next, same `plugin_store` model. | P4 |
+| **P5 — More providers** | **GitLab + Linear shipped** (§15 / §16, thin OAuth plugins, v0.15.0). **Supabase planned next** (§17, database review) — Bitbucket / Sentry after. | P4 |
 
 ## 10. Open questions
 
@@ -755,3 +755,122 @@ Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
 `test_plugins_panel.py` §8 (with a `FakeLinear` stub).
 
 ### Known: same "(re)start the agent then `/mcp`" caveat.
+
+---
+
+## 17. Supabase plugin (database review) — PLANNED, not yet built
+
+The sixth card, and the first **"Database"** category. Goal: an agent in a pane
+can inspect a user's *own* Supabase project — schema, tables, RLS policies,
+migrations, logs, advisors — to answer "review this database" without the user
+pasting SQL or screenshots. Scoped deliberately narrow (read-only) because a
+database is a much sharper edge than a repo or a Kanban board.
+
+> **⚠️ Naming disambiguation.** This plugin talks to the **user's own Supabase
+> project** (whatever they run their app on). It has nothing to do with
+> `supabase_auth.py`, `account.py` or the `plugin_connections` / `plugin_runs`
+> tables described in §4 — those belong to **AgentDeck's own backend Supabase
+> project**, which every AgentDeck install already talks to for accounts/sync.
+> New modules are named `supabase_mcp.py` / `supabase_controller.py` (not
+> `supabase_*_auth`) and both start with a docstring making this split explicit,
+> the same way `jira_mcp.py` clarifies its provider key vs. the wire name
+> `atlassian`.
+
+### Why it's "thin-ish", not fully thin
+
+Supabase's official **remote MCP server** is hosted and OAuth-only —
+`https://mcp.supabase.com/mcp`, dynamic client registration, no manual PAT
+needed. That part matches GitLab/Linear/Jira exactly: AgentDeck never handles a
+Supabase token, the agent runs the OAuth itself (`/mcp` for Claude, per-agent
+`oauth_hint()` for the rest), status is *"Enabled"*, not *"Connected as
+@user"*.
+
+The difference: Supabase's endpoint takes **URL query parameters** that meaningfully
+change what the agent can do, so — unlike the pure tokenless clones — this
+plugin needs a small settings form, not just a Connect button:
+
+| Param | Meaning | AgentDeck default |
+|---|---|---|
+| `project_ref=<id>` | Scope to one project; disables org/account-level management tools | **required in v1** (no blank/org-wide option — see below) |
+| `read_only=true` | All SQL runs under read-only Postgres permissions | **on, not exposed as a toggle in v1** |
+| `features=<groups>` | Comma-separated tool groups: `database, docs, debugging, development, functions, branching, storage` | unset (Supabase's own default group set — everything but `storage`) |
+
+Full URL AgentDeck builds:
+`https://mcp.supabase.com/mcp?project_ref=<ref>&read_only=true`
+
+**Why read-only is hard-locked in v1, not a checkbox:** the user asked for this
+specifically as a *database review* tool, and Supabase's own docs flag prompt
+injection via stored data as the primary risk of the write-capable tool surface. Shipping
+read-only-only removes an entire class of "the agent ran a destructive query"
+incidents for zero UX cost on a review workflow. A `read_only=false` toggle
+(behind a confirmation, like GitHub's `write`/`admin` capabilities) is explicit
+future work (§ Rollout, P2), not a day-one option.
+
+**Why `project_ref` is required, not optional:** omitting it leaves every project
+in the user's Supabase org reachable from one MCP connection — the opposite of
+the narrow, per-workspace scoping every other plugin gets from a repo/board
+picker. Connect is disabled until the field is filled; the detail page links out
+to the Supabase dashboard to copy it (`Project Settings → General → Reference
+ID`).
+
+### The injected block (root `mcpServers.supabase` of `~/.claude.json`)
+
+```json
+{
+  "type": "http",
+  "url": "https://mcp.supabase.com/mcp?project_ref=abcdefghijklmnop&read_only=true",
+  "x-agentdeck-managed": true
+}
+```
+
+Server name **`supabase`** — matches the provider key, `plugin_store.SUPABASE`,
+and (if mirrored) `plugin_connections.provider`.
+
+### New modules
+
+| File | Role | Notes |
+|---|---|---|
+| `supabase_mcp.py` | `canonical_server(settings)` builds the URL from `project_ref`/`read_only`/`features`; `inject()` / `remove()` — otherwise the same shape as `gitlab_mcp.py` (per-agent `agent_keys`, `mcp_targets.write_server`/`remove_server`, `McpLedger`). | Only injector in the family whose `canonical_server()` takes an argument — every other thin plugin's URL is a constant. |
+| `supabase_controller.py` | `SupabaseController(QObject)` — `start_connect(project_ref, read_only=True, features=None)` validates `project_ref` (non-empty, plausible 20-ish char id) before writing the store row + injecting; `update_settings(...)` re-injects (idempotent overwrite, no disconnect/reconnect needed — confirmed `write_server` overwrites a managed entry in place); `disconnect()`; `ensure_wired()`. | Same `_Worker`/busy/signal shape as `gitlab_controller.py`. |
+| `plugin_store.py` | Add `SUPABASE = "supabase"`. Add an optional `settings: Dict[str, str]` field to `PluginConnection` (default `{}`, included in `to_dict`/`from_dict` only when non-empty) — the first plugin that needs free-form per-connection config beyond the GitHub capability model. `CAPABILITIES`/`automation` stay unused noise for this provider, same as Vercel. | Backward compatible: existing rows with no `settings` key parse unchanged. |
+| `plugins_panel.py` | `_SupabaseDetail` — project-ref text field + "Copy from dashboard" link + a static "Read-only" badge (not a checkbox in v1) + Connect/Disconnect + a **Re-sync to agents** button (reuse the GitLab/Linear one) for when `project_ref` changes; `_supabase_icon`; `_CATALOG` entry with new tag `"Database"`; new stack page + `_open_detail`/`_sync_cards` branches. | New filter tab **"Database"** appears automatically (tabs are derived from the tags present in `_CATALOG`). |
+| `terminal_panel.py` | Builds `SupabaseController`, `supabase=` kwarg, `_wire_supabase_for`, `_on_supabase_connected/_disconnected` status nudges, teardown. | Same integration shape as every other plugin. |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='supabase'`. **No migration**
+for the connection row itself. `project_ref` is **local-only** (`plugins.json`),
+same trust boundary as GitHub's token — it does not roam to a second machine via
+the cloud mirror in v1 (mirroring just the presence flag, like the other thin
+plugins); a second machine reconnects and re-enters the ref. Revisit if users ask
+for it to sync. Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### Wiring / OAuth allowlist
+
+Reuses `mcp_targets.OAUTH_ALLOWLIST` as-is (all 11 MCP-capable agents) —
+Supabase's server needs the same DCR/PKCE dance every other hosted MCP here
+does, nothing new to teach `mcp_targets.py`.
+
+### Rollout
+
+| Phase | Ships |
+|---|---|
+| **P0** | `supabase_mcp.py` + `supabase_controller.py` + `plugin_store.SUPABASE` + `settings` field, unit tests (`test_supabase_mcp.py`, `test_supabase_controller.py`, `test_plugin_store.py` §10) — headless, no UI yet. |
+| **P1** | `_SupabaseDetail` (project-ref form, hard-locked read-only, Connect/Disconnect, Re-sync), catalog card live under "Database", `terminal_panel.py` wiring, `test_plugins_panel.py` §9 with a `FakeSupabase` stub. |
+| **P2** | Optional `read_only=false` toggle behind an explicit confirmation dialog (mirrors GitHub's write/admin gating); `features=` checklist (Database/Docs/Debugging/Development/Functions/Branching/Storage) so a connection can be narrowed further; consider mirroring `project_ref` to the cloud row if users ask for cross-machine sync. |
+
+### Known risks / open questions
+
+* **Prompt injection via stored data** is Supabase's own documented top risk for
+  this server (a comment or row value that looks like an instruction). Read-only
+  mode limits the blast radius to "wrong answer", not "wrong write" — still worth
+  a one-line warning in the detail page copy.
+* **`project_ref` format isn't validated server-side by us** — a typo just makes
+  the MCP connection fail per-tool-call in the pane; acceptable for v1, no need
+  for AgentDeck to special-case Supabase API errors.
+* **Same "(re)start the agent then `/mcp`" caveat** as every other thin plugin —
+  `.claude.json` is read at launch, so a running pane needs a restart (↻) after
+  connect, and again after any `update_settings()` change to `project_ref`.
+* **Self-hosted / local Supabase** (`http://localhost:54321/mcp`, per Supabase's
+  own docs) is out of scope for v1 — same "hosted only" call GitLab made for
+  self-managed instances; revisit if asked.

@@ -27,6 +27,7 @@ __all__ = [
     "JIRA",
     "GITLAB",
     "LINEAR",
+    "SUPABASE",
     "CAPABILITIES",
     "CAPABILITY_LABELS",
     "DEFAULT_CAPABILITIES",
@@ -57,6 +58,16 @@ GITLAB = "gitlab"
 #: Linear is thin too (``mcp.linear.app/mcp`` -- streamable HTTP, OAuth-only).
 #: No capability model. See ``linear_controller`` / ``linear_mcp``.
 LINEAR = "linear"
+
+#: Supabase -- hosted OAuth MCP (``mcp.supabase.com/mcp``) for *database review*
+#: of the user's own Supabase project(s). Thin like GitLab/Linear (no capability
+#: model, no token vault) but not toolset-free: the connection carries a small
+#: free-form ``settings`` dict (``project_ref``, ``read_only``, ``features``)
+#: that ``supabase_mcp.canonical_server`` turns into query params on the hosted
+#: URL. **Not to be confused with** ``supabase_auth.py`` / the ``plugin_connections``
+#: table this module writes to -- those are AgentDeck's *own* backend Supabase
+#: project. See ``supabase_controller`` / ``supabase_mcp``.
+SUPABASE = "supabase"
 
 #: Ordered capability keys. Each maps to one or more GitHub MCP toolsets and a
 #: tier of GitHub App permissions -- see docs/PLUGINS.md §5.
@@ -122,6 +133,7 @@ class PluginConnection:
         automation: Optional[Dict[str, str]] = None,
         transport: str = "remote",
         connected_at: float = 0.0,
+        settings: Optional[Dict[str, str]] = None,
     ):
         self.provider = provider
         self.login = login
@@ -133,19 +145,28 @@ class PluginConnection:
         }
         self.transport = "local" if transport == "local" else "remote"
         self.connected_at = float(connected_at or time.time())
+        #: Free-form per-connection config for providers that need more than the
+        #: GitHub capability model -- currently just Supabase (``project_ref``,
+        #: ``read_only``, ``features``). Unused (``{}``) by every other provider.
+        self.settings: Dict[str, str] = {
+            str(k): str(v) for k, v in (settings or {}).items()
+        }
 
     def automation_mode(self, capability: str) -> str:
         """`ask` (default) or `auto` for a capability."""
         return self.automation.get(capability, "ask")
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "login": self.login,
             "capabilities": list(self.capabilities),
             "automation": dict(self.automation),
             "transport": self.transport,
             "connected_at": _iso(self.connected_at),
         }
+        if self.settings:
+            out["settings"] = dict(self.settings)
+        return out
 
     @classmethod
     def from_dict(cls, provider: str, data: dict) -> "PluginConnection":
@@ -158,6 +179,7 @@ class PluginConnection:
             automation=data.get("automation") if isinstance(data.get("automation"), dict) else {},
             transport=str(data.get("transport") or "remote"),
             connected_at=_epoch(data.get("connected_at")),
+            settings=data.get("settings") if isinstance(data.get("settings"), dict) else {},
         )
 
 
@@ -261,6 +283,8 @@ class PluginStore:
             conn.login = str(changes["login"] or "")
         if "transport" in changes:
             conn.transport = "local" if changes["transport"] == "local" else "remote"
+        if "settings" in changes and isinstance(changes["settings"], dict):
+            conn.settings = {str(k): str(v) for k, v in changes["settings"].items()}
         self.put(conn)
         return conn
 

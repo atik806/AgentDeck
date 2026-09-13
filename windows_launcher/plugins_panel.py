@@ -2,12 +2,14 @@
 
 Two levels (see ``docs/PLUGINS.md`` §2):
 
-* **catalog** -- a vertical list of plugin cards, one per row. v1 ships five
-  live cards, **GitHub**, **Vercel**, **Jira**, **GitLab** and **Linear**; the
-  rest render disabled as "Coming soon".
+* **catalog** -- a vertical list of plugin cards, one per row. v1 ships six
+  live cards, **GitHub**, **Vercel**, **Jira**, **GitLab**, **Linear** and
+  **Supabase**; the rest render disabled as "Coming soon".
 * **detail** -- click GitHub to connect it, pick which capabilities the agent
   gets, list your repos, and kick off a **GitHub review**; click Vercel, Jira,
-  GitLab or Linear to enable its (thin, agent-owns-the-OAuth) MCP server.
+  GitLab or Linear to enable its (thin, agent-owns-the-OAuth) MCP server; click
+  Supabase to scope a project (required) and connect for read-only database
+  review (see docs/PLUGINS.md §17).
 
 Keep :func:`plugin_icon` -- the sidebar's "Plugins" nav button reuses it.
 """
@@ -206,6 +208,29 @@ def _gitlab_icon(px: int = 40) -> QPixmap:
     return pm
 
 
+def _supabase_icon(px: int = 40) -> QPixmap:
+    """The Supabase mark, drawn (no asset dependency): a lightning bolt."""
+    px = max(12, int(px))
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(theme.color("accent")))
+    u = px / 16.0
+    bolt = QPainterPath()
+    bolt.moveTo(9.5 * u, 1 * u)
+    bolt.lineTo(3.5 * u, 9.5 * u)
+    bolt.lineTo(7.2 * u, 9.5 * u)
+    bolt.lineTo(6.2 * u, 15 * u)
+    bolt.lineTo(12.8 * u, 6 * u)
+    bolt.lineTo(9 * u, 6 * u)
+    bolt.closeSubpath()
+    p.drawPath(bolt)
+    p.end()
+    return pm
+
+
 def _linear_icon(px: int = 40) -> QPixmap:
     """The Linear mark, drawn (no asset dependency): stacked diagonal bars."""
     px = max(12, int(px))
@@ -299,6 +324,8 @@ _CATALOG = [
     ("sentry", "Sentry", "Observability", "Coming soon", False),
     ("vercel", "Vercel", "Deploys",
      "Manage deployments, inspect build logs, roll back — your agent runs Vercel directly.", True),
+    ("supabase", "Supabase", "Database",
+     "Review your database schema, tables and RLS — read-only, scoped to one project.", True),
 ]
 
 
@@ -332,6 +359,8 @@ class _PluginCard(QFrame):
             icon.setPixmap(_gitlab_icon(28))
         elif key == "linear":
             icon.setPixmap(_linear_icon(28))
+        elif key == "supabase":
+            icon.setPixmap(_supabase_icon(28))
         else:
             icon.setPixmap(plugin_icon(24, theme.color("text_faint")).pixmap(24, 24))
         row.addWidget(icon, 0, Qt.AlignVCenter)
@@ -394,6 +423,27 @@ class _PluginCard(QFrame):
             self._pill.setText("NOT ENABLED")
             self._pill.setStyleSheet(
                 f"QLabel#pill {{ color:{theme.color('text_muted')}; background:{theme.color('surface')}; }}"
+            )
+
+    def set_scoped_status(self, project_ref: Optional[str]) -> None:
+        """Status for a plugin connected to one named scope (Supabase's
+        ``project_ref``) rather than a login. Same styling as :meth:`set_status`,
+        without the "@" (that's a username convention, not a project id)."""
+        if not self._live:
+            self._pill.setText("COMING SOON")
+            self._pill.setStyleSheet(
+                f"QLabel#pill {{ color:{theme.color('text_faint')}; background:{theme.color('surface')}; }}"
+            )
+            return
+        if not project_ref:
+            self._pill.setText("NOT CONNECTED")
+            self._pill.setStyleSheet(
+                f"QLabel#pill {{ color:{theme.color('text_muted')}; background:{theme.color('surface')}; }}"
+            )
+        else:
+            self._pill.setText(f"CONNECTED · {project_ref}")
+            self._pill.setStyleSheet(
+                f"QLabel#pill {{ color:{theme.color('on_accent')}; background:{theme.color('activity')}; }}"
             )
 
     def mouseReleaseEvent(self, event):  # noqa: N802
@@ -1276,6 +1326,201 @@ class _LinearDetail(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Supabase detail
+# ---------------------------------------------------------------------------
+
+class _SupabaseDetail(QWidget):
+    """Detail page: connect a Supabase project for database review.
+
+    Same hosted-OAuth shape as :class:`_GitLabDetail` -- Supabase's MCP server is
+    OAuth-only, the agent owns the OAuth. The one thing this page has that the
+    fully-thin clones don't: a required **project reference** field (the
+    connection is scoped to one project, never the whole org) and a fixed
+    **Read-only** badge -- v1 hard-locks read-only rather than exposing it as a
+    checkbox, see docs/PLUGINS.md §17. The field stays editable once connected;
+    saving a new value re-injects the server pointed at the new project without
+    a disconnect/reconnect.
+    """
+
+    back = Signal()
+
+    def __init__(self, supabase, account, config, agents_provider=None, parent=None):
+        super().__init__(parent)
+        self._supabase = supabase
+        self._account = account
+        self._config = config or {}
+        self._agents_provider = agents_provider
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        back = QPushButton("‹  All plugins")
+        back.setObjectName("link")
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(self.back.emit)
+        root.addWidget(back, 0, Qt.AlignLeft)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setPixmap(_supabase_icon(40))
+        head.addWidget(icon)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel("Supabase")
+        title.setObjectName("pluginsTitle")
+        self._sub = QLabel("")
+        self._sub.setObjectName("pluginsBody")
+        self._sub.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(self._sub)
+        head.addLayout(col, 1)
+        self._primary = QPushButton("Connect")
+        self._primary.setObjectName("primary")
+        self._primary.setCursor(Qt.PointingHandCursor)
+        self._primary.clicked.connect(self._on_primary)
+        head.addWidget(self._primary, 0, Qt.AlignTop)
+        root.addLayout(head)
+
+        # project scope -- required project_ref + a fixed "Read-only" badge.
+        scope = QHBoxLayout()
+        scope.setSpacing(8)
+        self._ref_field = QLineEdit()
+        self._ref_field.setPlaceholderText("Project reference, e.g. abcdefghijklmnopqrst")
+        scope.addWidget(self._ref_field, 1)
+        self._save_ref_btn = QPushButton("Save")
+        self._save_ref_btn.setCursor(Qt.PointingHandCursor)
+        self._save_ref_btn.clicked.connect(self._on_save_ref)
+        scope.addWidget(self._save_ref_btn, 0)
+        self._ro_badge = QLabel("Read-only")
+        self._ro_badge.setObjectName("pill")
+        self._ro_badge.setStyleSheet(
+            f"QLabel#pill {{ color:{theme.color('on_accent')}; background:{theme.color('accent')}; }}"
+        )
+        self._ro_badge.setToolTip(
+            "All queries run under read-only Postgres permissions. Not a toggle "
+            "in v1 -- database review only, no writes."
+        )
+        scope.addWidget(self._ro_badge, 0, Qt.AlignVCenter)
+        root.addLayout(scope)
+
+        hint = QLabel(
+            "Find the reference under Project Settings → General → Reference ID "
+            "in the Supabase dashboard. A connection is always scoped to one "
+            "project -- never your whole organisation."
+        )
+        hint.setObjectName("pluginsBody")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        # one-time-authorise instructions (shown once connected)
+        self._info = QFrame()
+        self._info.setObjectName("codeBox")
+        ib = QVBoxLayout(self._info)
+        ib.setContentsMargins(14, 12, 14, 12)
+        ib.setSpacing(4)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
+        self._info.setVisible(False)
+        root.addWidget(self._info)
+
+        drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the Supabase MCP server into every OAuth-capable agent "
+            "installed now (run this after installing a new agent)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
+        drow.addStretch(1)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.setObjectName("danger")
+        self._disconnect_btn.clicked.connect(self._on_disconnect)
+        drow.addWidget(self._disconnect_btn)
+        root.addLayout(drow)
+        root.addStretch(1)
+
+        if self._supabase is not None:
+            self._supabase.connected.connect(lambda _i: self.refresh())
+            self._supabase.disconnected.connect(self.refresh)
+            self._supabase.error.connect(self._on_error)
+            self._supabase.busy_changed.connect(lambda _b: self.refresh())
+
+        self.refresh()
+
+    def _plan_ok(self) -> bool:
+        if entitlements is None or self._account is None:
+            return True
+        try:
+            return entitlements.plugins_enabled(self._account.plan)
+        except Exception:  # noqa: BLE001
+            return True
+
+    def refresh(self) -> None:
+        s = self._supabase
+        connected = bool(s and s.is_connected)
+        busy = bool(s and s.is_busy)
+        pro = self._plan_ok()
+
+        self._primary.setVisible(not connected)
+        self._primary.setEnabled(pro and not busy)
+        self._primary.setText("Connect" if pro else "Connect  (Pro)")
+
+        self._ref_field.setEnabled(pro and not busy)
+        self._save_ref_btn.setVisible(connected)
+        self._save_ref_btn.setEnabled(pro and not busy)
+        self._info.setVisible(connected)
+        self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
+
+        if connected:
+            self._ref_field.setText(s.project_ref)
+            self._step.setText(_oauth_auth_html(self._agents_provider, "supabase"))
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            self._sub.setText(
+                "Enabled for: " + (", ".join(wired) if wired else "no installed agent yet")
+            )
+        else:
+            self._sub.setText(
+                "Review your database schema, tables and RLS — read-only, scoped "
+                "to one project. No tokens to copy."
+            )
+
+    def _on_primary(self) -> None:
+        if self._supabase is not None:
+            self._supabase.start_connect(self._ref_field.text())
+
+    def _on_save_ref(self) -> None:
+        if self._supabase is not None:
+            self._supabase.update_settings(project_ref=self._ref_field.text())
+
+    def _on_disconnect(self) -> None:
+        if self._supabase is not None:
+            self._supabase.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._supabase is None:
+            return
+        try:
+            self._supabase.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
+
+    def _on_error(self, message: str) -> None:
+        self._sub.setText(message)
+
+    def apply_theme(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
 
@@ -1285,7 +1530,7 @@ class PluginsPanel(QWidget):
     review_ready = Signal(dict)
 
     def __init__(self, parent: QWidget | None = None, *, github=None, vercel=None,
-                 jira=None, gitlab=None, linear=None, account=None,
+                 jira=None, gitlab=None, linear=None, supabase=None, account=None,
                  config: Optional[dict] = None, agents_provider=None):
         super().__init__(parent)
         self._github = github
@@ -1293,6 +1538,7 @@ class PluginsPanel(QWidget):
         self._jira = jira
         self._gitlab = gitlab
         self._linear = linear
+        self._supabase = supabase
         # () -> list[str] of agent keys the plugins will wire (installed + active).
         self._agents_provider = agents_provider
         self.setObjectName("pluginsPanel")
@@ -1410,6 +1656,19 @@ class PluginsPanel(QWidget):
         ln_host.setWidget(ln_inner)
         self._stack.addWidget(ln_host)
 
+        # -- supabase detail page (stack index 6) --
+        sb_host = QScrollArea()
+        sb_host.setWidgetResizable(True)
+        sb_host.setFrameShape(QFrame.NoFrame)
+        sb_inner = QWidget()
+        sbil = QVBoxLayout(sb_inner)
+        sbil.setContentsMargins(40, 28, 40, 24)
+        self._supabase_detail = _SupabaseDetail(supabase, account, config, agents_provider=agents_provider)
+        self._supabase_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
+        sbil.addWidget(self._supabase_detail)
+        sb_host.setWidget(sb_inner)
+        self._stack.addWidget(sb_host)
+
         if github is not None:
             github.connected.connect(lambda _i: self._sync_cards())
             github.disconnected.connect(self._sync_cards)
@@ -1425,6 +1684,9 @@ class PluginsPanel(QWidget):
         if linear is not None:
             linear.connected.connect(lambda _i: self._sync_cards())
             linear.disconnected.connect(self._sync_cards)
+        if supabase is not None:
+            supabase.connected.connect(lambda _i: self._sync_cards())
+            supabase.disconnected.connect(self._sync_cards)
         self._sync_cards()
 
     # -- helpers ------------------------------------------------------
@@ -1450,6 +1712,9 @@ class PluginsPanel(QWidget):
         elif key == "linear":
             self._stack.setCurrentIndex(5)
             self._linear_detail.refresh()
+        elif key == "supabase":
+            self._stack.setCurrentIndex(6)
+            self._supabase_detail.refresh()
 
     def _sync_cards(self) -> None:
         login = None
@@ -1459,6 +1724,11 @@ class PluginsPanel(QWidget):
         jira_on = bool(self._jira is not None and self._jira.is_connected)
         gitlab_on = bool(self._gitlab is not None and self._gitlab.is_connected)
         linear_on = bool(self._linear is not None and self._linear.is_connected)
+        supabase_ref = (
+            self._supabase.project_ref
+            if self._supabase is not None and self._supabase.is_connected
+            else None
+        )
         for card in self._cards:
             if card.key == "github":
                 card.set_status(login)
@@ -1470,6 +1740,8 @@ class PluginsPanel(QWidget):
                 card.set_toggle_status(gitlab_on)
             elif card.key == "linear":
                 card.set_toggle_status(linear_on)
+            elif card.key == "supabase":
+                card.set_scoped_status(supabase_ref)
 
     def show_catalog(self) -> None:
         self._stack.setCurrentIndex(0)

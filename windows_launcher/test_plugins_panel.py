@@ -608,6 +608,136 @@ check("Free plan labels Connect (Pro) and disables it",
       and not lnp_free._linear_detail._primary.isEnabled())
 
 
+# ---------------------------------------------------------------------------
+print("[9] Supabase card + detail (project_ref required, read-only badge fixed)")
+
+from plugin_store import SUPABASE
+
+_REF = "abcdefghijklmnopqrst"
+
+
+class FakeSupabase(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+
+    def __init__(self, connected=False, project_ref=""):
+        super().__init__()
+        self._connected = connected
+        self._ref = project_ref
+        self.is_busy = False
+        self.login = ""
+        self.started_with = None
+        self.updated_with = None
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def project_ref(self):
+        return self._ref if self._connected else ""
+
+    @property
+    def connection(self):
+        return PluginConnection(SUPABASE, settings={"project_ref": self._ref}) if self._connected else None
+
+    def start_connect(self, project_ref, *, read_only=True, features=""):
+        ref = (project_ref or "").strip()
+        if not ref:
+            self.error.emit("Enter a Supabase project reference before connecting.")
+            return False
+        self.started_with = ref
+        self._ref = ref
+        self._connected = True
+        self.connected.emit({})
+        return True
+
+    def update_settings(self, *, project_ref=None, read_only=None, features=None):
+        if project_ref is not None:
+            self.updated_with = project_ref
+            self._ref = project_ref
+        return True
+
+    def ensure_wired(self, *a, **k):
+        self.rewired = True
+        return True
+
+    def disconnect(self):
+        self._connected = False
+        self._ref = ""
+        self.disconnected.emit()
+
+
+# -- tolerates supabase=None
+sbp_none = PluginsPanel(github=FakeGitHub(), supabase=None, account=None, config={})
+sbp_none.resize(900, 640)
+sbp_none.grab()
+sb_card_none = [c for c in sbp_none._cards if c.key == "supabase"][0]
+check("supabase=None tolerated; card still renders", sb_card_none.property("interactive") == "true")
+check("supabase card shows NOT CONNECTED", "NOT CONNECTED" in sb_card_none._pill.text())
+
+# -- not connected: Connect is refused without a project_ref
+fsb = FakeSupabase(connected=False)
+sbp = PluginsPanel(github=FakeGitHub(), supabase=fsb, account=None, config={})
+sbp.resize(900, 640)
+sb_card = [c for c in sbp._cards if c.key == "supabase"][0]
+check("supabase card interactive", sb_card.property("interactive") == "true")
+sbp._open_detail("supabase")
+check("clicking supabase opens its detail page (stack index 6)", sbp._stack.currentIndex() == 6)
+sbd = sbp._supabase_detail
+check("detail shows Connect", not sbd._primary.isHidden())
+check("read-only badge always shown", not sbd._ro_badge.isHidden())
+check("info box hidden until connected", sbd._info.isHidden())
+
+sbd._ref_field.setText("")
+sbd._on_primary()
+check("empty ref -- controller refuses, nothing started", fsb.started_with is None)
+check("still not connected", not fsb.is_connected)
+
+sbd._ref_field.setText(_REF)
+sbd._on_primary()
+check("Connect calls the controller with the ref", fsb.started_with == _REF)
+check("card flips to CONNECTED · <ref>", _REF in sb_card._pill.text())
+sbd.refresh()
+check("detail hides Connect when connected", sbd._primary.isHidden())
+check("ref field shows the connected project", sbd._ref_field.text() == _REF)
+check("info box (authorise instructions) shown when connected", not sbd._info.isHidden())
+check("disconnect button shown", not sbd._disconnect_btn.isHidden())
+check("re-sync button shown when connected", not sbd._resync_btn.isHidden())
+check("save-ref button shown when connected", not sbd._save_ref_btn.isHidden())
+
+# -- editing the ref while connected re-injects via update_settings, no disconnect
+new_ref = "zzzzzzzzzzzzzzzzzzzz"
+sbd._ref_field.setText(new_ref)
+sbd._on_save_ref()
+check("Save calls update_settings with the new ref", fsb.updated_with == new_ref)
+check("still connected (no disconnect/reconnect needed)", fsb.is_connected)
+
+sbd._on_resync()
+check("re-sync button calls ensure_wired on the controller", getattr(fsb, "rewired", False))
+
+# -- search filter
+sbp.show_catalog()
+sbp._filter_cards("supabase")
+check("search 'supabase' keeps the card", not sb_card.isHidden())
+sbp._filter_cards("zzz")
+check("search 'zzz' hides the card", sb_card.isHidden())
+sbp._filter_cards("")
+
+# -- disconnect flips the card back
+sbd._on_disconnect()
+check("disconnect flips the card back to NOT CONNECTED", "NOT CONNECTED" in sb_card._pill.text())
+
+# -- Pro gate
+sbp_free = PluginsPanel(github=FakeGitHub(), supabase=FakeSupabase(), account=_FreeAccount(), config={})
+sbp_free._open_detail("supabase")
+check("Free plan labels Connect (Pro) and disables it",
+      sbp_free._supabase_detail._primary.text().endswith("(Pro)")
+      and not sbp_free._supabase_detail._primary.isEnabled())
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

@@ -66,6 +66,7 @@ from vercel_controller import VercelController
 from jira_controller import JiraController
 from gitlab_controller import GitLabController
 from linear_controller import LinearController
+from supabase_controller import SupabaseController
 from account_dialog import AccountDialog
 from agents import agent_label, installed_agent_keys, pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -162,6 +163,9 @@ class TerminalPanel(QMainWindow):
         # GitLab + Linear plugin surfaces -- thin, same shape (hosted OAuth MCP).
         self.gitlab = GitLabController(self.account, self.config, self)
         self.linear = LinearController(self.account, self.config, self)
+        # The Supabase plugin surface -- database review, scoped to one project
+        # (project_ref) and read-only by default. See docs/PLUGINS.md §17.
+        self.supabase = SupabaseController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -738,7 +742,7 @@ class TerminalPanel(QMainWindow):
         self._ws_stack = QStackedWidget(central)
         self._plugins_panel = PluginsPanel(
             central, github=self.github, vercel=self.vercel, jira=self.jira,
-            gitlab=self.gitlab, linear=self.linear,
+            gitlab=self.gitlab, linear=self.linear, supabase=self.supabase,
             account=self.account, config=self.config,
             agents_provider=lambda: self.github._target_agent_keys(self._startup_command),
         )
@@ -943,6 +947,7 @@ class TerminalPanel(QMainWindow):
             self._wire_jira_for(self._working_folder, startup_command)
             self._wire_gitlab_for(self._working_folder, startup_command)
             self._wire_linear_for(self._working_folder, startup_command)
+            self._wire_supabase_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -1593,6 +1598,19 @@ class TerminalPanel(QMainWindow):
         except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
             return False
 
+    def _wire_supabase_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the Supabase MCP server to every OAuth-capable agent's
+        config, scoped to the connected project. Mirrors :meth:`_wire_vercel_for`.
+        Returns True if any config changed.
+        """
+        s = getattr(self, "supabase", None)
+        if s is None:
+            return False
+        try:
+            return bool(s.is_connected and s.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
     def _start_github_review(self, payload: dict) -> None:
         """Open a workspace that runs a GitHub PR review (Plugins → Review a PR)."""
         import github_mcp
@@ -1826,6 +1844,7 @@ class TerminalPanel(QMainWindow):
         self._wire_jira_for(folder, base_command)
         self._wire_gitlab_for(folder, base_command)
         self._wire_linear_for(folder, base_command)
+        self._wire_supabase_for(folder, base_command)
 
         self._hlog(f"do: add_pane_with_command({command!r})")
         new_pane = ws.add_pane_with_command(command)
@@ -1915,6 +1934,7 @@ class TerminalPanel(QMainWindow):
         self._wire_jira_for(self._working_folder, command)
         self._wire_gitlab_for(self._working_folder, command)
         self._wire_linear_for(self._working_folder, command)
+        self._wire_supabase_for(self._working_folder, command)
 
         prompt = routine.prompt.strip()
 
@@ -2208,6 +2228,7 @@ class TerminalPanel(QMainWindow):
         self._wire_jira_for(folder, command)
         self._wire_gitlab_for(folder, command)
         self._wire_linear_for(folder, command)
+        self._wire_supabase_for(folder, command)
 
         target = skills_sync.agent_review_target(skill, folder, agent_key)
         prompt = (
@@ -3272,6 +3293,10 @@ class TerminalPanel(QMainWindow):
         if ln is not None:
             ln.connected.connect(lambda _i: self._on_linear_connected())
             ln.disconnected.connect(self._on_linear_disconnected)
+        sb = getattr(self, "supabase", None)
+        if sb is not None:
+            sb.connected.connect(lambda _i: self._on_supabase_connected())
+            sb.disconnected.connect(self._on_supabase_disconnected)
 
     def _on_github_connected(self) -> None:
         if self._wire_github_for(self._working_folder, self._startup_command):
@@ -3339,6 +3364,18 @@ class TerminalPanel(QMainWindow):
     def _on_linear_disconnected(self) -> None:
         self.statusBar().showMessage(
             "Linear disabled — restart the agent (↻) to drop the Linear tools", 6000
+        )
+
+    def _on_supabase_connected(self) -> None:
+        self._wire_supabase_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            f"Supabase enabled — restart the agent (↻) in a pane, then {self._oauth_hint('supabase')}",
+            8000,
+        )
+
+    def _on_supabase_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "Supabase disabled — restart the agent (↻) to drop the Supabase tools", 6000
         )
 
     def _recheck_plan(self) -> None:
@@ -3741,6 +3778,9 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "linear", None) is not None:
             self.linear.unwire_all()
             self.linear.shutdown()
+        if getattr(self, "supabase", None) is not None:
+            self.supabase.unwire_all()
+            self.supabase.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 

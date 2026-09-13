@@ -13,6 +13,7 @@ from plugin_store import (
     JIRA,
     GITLAB,
     LINEAR,
+    SUPABASE,
     PluginConnection,
     PluginStore,
     normalise_capabilities,
@@ -163,6 +164,44 @@ with tempfile.TemporaryDirectory() as d:
           not store.is_connected(LINEAR) and store.is_connected(GITHUB)
           and store.is_connected(VERCEL) and store.is_connected(JIRA)
           and store.is_connected(GITLAB))
+
+
+print("[10] the store is provider-generic (Supabase -- thin, but carries a settings dict)")
+check("SUPABASE constant", SUPABASE == "supabase")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    check("supabase not connected initially", not store.is_connected(SUPABASE))
+
+    conn = PluginConnection(SUPABASE, settings={"project_ref": "abcdefghijklmnopqrst", "read_only": "true"})
+    check("settings kept on construction", conn.settings["project_ref"] == "abcdefghijklmnopqrst")
+    store.put(conn)
+    check("connected after put", store.is_connected(SUPABASE))
+    check("settings round-trip through to_dict/from_dict",
+          store.get(SUPABASE).settings == {"project_ref": "abcdefghijklmnopqrst", "read_only": "true"})
+
+    updated = store.update(SUPABASE, settings={"project_ref": "zzzzzzzzzzzzzzzzzzzz", "read_only": "false"})
+    check("update returns the patched connection", updated.settings["project_ref"] == "zzzzzzzzzzzzzzzzzzzz")
+    check("update persisted", store.get(SUPABASE).settings["project_ref"] == "zzzzzzzzzzzzzzzzzzzz")
+
+    check("a provider with no settings serialises without a 'settings' key",
+          "settings" not in PluginConnection(GITLAB).to_dict())
+    check("an empty settings dict round-trips to {} (not stored, not required)",
+          PluginConnection.from_dict(GITLAB, PluginConnection(GITLAB).to_dict()).settings == {})
+
+    check("all six providers coexist in one file",
+          store.put(PluginConnection(GITHUB, login="atik806"))
+          and store.put(PluginConnection(VERCEL))
+          and store.put(PluginConnection(JIRA))
+          and store.put(PluginConnection(GITLAB))
+          and store.put(PluginConnection(LINEAR))
+          and store.is_connected(GITHUB) and store.is_connected(VERCEL)
+          and store.is_connected(JIRA) and store.is_connected(GITLAB)
+          and store.is_connected(LINEAR) and store.is_connected(SUPABASE))
+    store.remove(SUPABASE)
+    check("supabase removed, the other five untouched",
+          not store.is_connected(SUPABASE) and store.is_connected(GITHUB)
+          and store.is_connected(VERCEL) and store.is_connected(JIRA)
+          and store.is_connected(GITLAB) and store.is_connected(LINEAR))
 
 
 print()
