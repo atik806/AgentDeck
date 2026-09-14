@@ -1409,6 +1409,138 @@ def _():
     check("the two same-named workspaces did not cross-wire onto the same worktree",
           path_a != path_b, True)
 
+
+# -- 31g. restore reuses worktrees for the first/active workspace even before
+#    the account plan has resolved ("free" default) ------------------------
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- restore-before-plan-resolves check skipped")
+        return
+    print("== 31g. restore reuses worktrees before the account plan resolves ==")
+    from pathlib import Path
+    from account import AccountController
+    from workspaces_store import SessionSnapshot, WorkspaceSnapshot, WorkspacesStore
+
+    panel3 = state["panel3"]
+    repo = state["iso_repo"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+
+    matches = sorted(
+        (r for r in panel3._worktree_store.for_repo(repo_root)
+         if r.workspace_name == ws_iso.name and r.status == "active"),
+        key=lambda r: r.created,
+    )
+    check("an active worktree record is still available to reuse", len(matches) >= 1, True)
+    expected_path = os.path.normcase(matches[0].path) if matches else ""
+
+    snap_path = Path(repo).parent / "workspaces3.json"
+    WorkspacesStore(path=snap_path).save(
+        SessionSnapshot(
+            folder=repo, layout="grid", active=0,
+            workspaces=[WorkspaceSnapshot(name=ws_iso.name, panes=1, isolate_panes=True)],
+        )
+    )
+    os.environ["ADK_WORKSPACES_FILE"] = str(snap_path)
+
+    cfg6 = {"default_count": 1,
+            "default_shell": "cmd" if sys.platform == "win32" else "auto",
+            "font_size": 11, "layout": "grid"}
+    # A *plain* AccountController, not _pro_account() -- .plan reads the
+    # provisional "free" default, exactly like the real app at this exact
+    # point in startup, before profile_ready has had a chance to fire.
+    acc6 = AccountController(cfg6)
+    check("account plan is the unresolved default", acc6.plan, "free")
+    panel6 = TerminalPanel(cfg6, persist_settings=True, account=acc6)
+    panel6.resize(900, 600)
+    panel6.show()
+    del os.environ["ADK_WORKSPACES_FILE"]
+    state["panel6"] = panel6
+
+    check("the workspace restored even with an unresolved plan",
+          len(panel6._workspaces), 1)
+    if panel6._workspaces:
+        got = os.path.normcase(panel6._workspaces[0].panes[0].source_dir or "")
+        check("its pane reused the existing worktree, not the repo root",
+              got, expected_path)
+
+
+# -- 31h. handoff FROM an already-isolated pane keeps the new worktree
+#    discoverable under the main repo, not orphaned under the source pane's
+#    own worktree dir ---------------------------------------------------
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- handoff-from-isolated-pane check skipped")
+        return
+    print("== 31h. handoff from an isolated pane doesn't orphan the new worktree ==")
+    import agent_sessions
+
+    panel3 = state["panel3"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+    source_pane = ws_iso.panes[0]  # the workspace's original isolated pane
+    source_dir = source_pane.source_dir
+    check("the source pane's own cwd is its worktree, not the repo root",
+          os.path.normcase(source_dir or "") != os.path.normcase(repo_root), True)
+
+    before_records = len(panel3._worktree_store.for_repo(repo_root))
+    fake = agent_sessions.AgentSession(
+        agent_key="claude", session_id="iso-session-1", path=None, cwd=source_dir,
+        title="from an isolated pane",
+    )
+    agent_sessions.locate_latest = lambda *a, **k: fake
+
+    panel3._do_handoff(source_pane, {
+        # Mirrors HandoffDialog's real default -- the *pane's own* cwd, which
+        # for an isolated pane is its worktree dir, not the shared repo root.
+        "source_key": "claude", "source_dir": source_dir,
+        "target_key": "claude", "target_command": "claude",
+        "fork": True, "include_thinking": False, "any_cwd": False,
+    })
+    new_pane = ws_iso.panes[-1]
+    new_rec = panel3._worktree_store.by_pane(new_pane.pane_id)
+    check("the handoff pane (from an isolated source) got its own worktree record",
+          new_rec is not None, True)
+    check("that record is discoverable under the main repo root (not orphaned "
+          "under the source pane's own worktree dir)",
+          len(panel3._worktree_store.for_repo(repo_root)), before_records + 1)
+    if new_rec is not None:
+        check("its repo_root is the main repo, not the source pane's worktree dir",
+              os.path.normcase(new_rec.repo_root or ""), os.path.normcase(repo_root))
+
+
+# -- 31i. a workspace stays "isolated" for handoff/routines even after every
+#    one of its worktrees has been merged away --------------------------
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- isolation-survives-merge check skipped")
+        return
+    print("== 31i. workspace isolation survives all its worktrees being merged ==")
+
+    panel3 = state["panel3"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+
+    records = [r for r in panel3._worktree_store.for_repo(repo_root)
+               if r.workspace_name == ws_iso.name and r.status in ("active", "detached")]
+    check("the isolated workspace has worktree records to merge away",
+          len(records) > 0, True)
+    for r in records:
+        panel3._worktree_store.update(r.id, status="merged")
+
+    still_active = [r for r in panel3._worktree_store.for_repo(repo_root)
+                     if r.workspace_name == ws_iso.name and r.status in ("active", "detached")]
+    check("no active/detached worktree records remain for the workspace",
+          len(still_active), 0)
+    check("the workspace is still considered isolated (in-session flag survives)",
+          panel3._workspace_is_isolated(ws_iso), True)
+
     import terminal_panel as tpmod
     tpmod.WorktreeStore = state["_real_WorktreeStore"]
 

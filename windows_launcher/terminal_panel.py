@@ -1000,6 +1000,11 @@ class TerminalPanel(QMainWindow):
         # Lay the panes out before wiring `changed`, so the initial relayout does
         # not fire a sidebar refresh for a workspace not yet in the list.
         workspace.initialize(count, pane_cwds=pane_cwds)
+        # Live-session record of "this workspace was created isolated", so
+        # _workspace_is_isolated keeps saying True even after every one of its
+        # worktrees is later merged away (the store alone can't tell the two
+        # apart -- see _workspace_is_isolated's docstring).
+        workspace._isolate_panes = bool(pane_cwds)
 
         if pane_cwds and self._pending_worktree_ids:
             for pane, wid in zip(workspace.panes, self._pending_worktree_ids):
@@ -1103,7 +1108,18 @@ class TerminalPanel(QMainWindow):
     def _open_snapshot(self, snap: "WorkspaceSnapshot") -> None:
         command = (snap.agent_command or "").strip()
         restore_ids: Optional[list[str]] = None
-        if snap.isolate_panes and entitlements.worktrees_enabled(self._plan()):
+        # Not gated on entitlements.worktrees_enabled() here: reopening a
+        # workspace's own already-existing worktrees isn't granting a new Pro
+        # feature, just not throwing away state that's already on disk. That
+        # distinction matters because the *first* (active) workspace restores
+        # synchronously, before the account's real plan has resolved --
+        # account.plan starts every launch as a provisional "free" default and
+        # only becomes "pro" once profile_ready fires asynchronously, unlike
+        # the 2nd..Nth workspaces which wait in _pending_restore for exactly
+        # that. Creating brand *new* worktrees below (the no-survivors
+        # fallback, via _add_workspace's own isolate_panes branch) still goes
+        # through the real entitlement check.
+        if snap.isolate_panes:
             info = self._active_repo_info()
             if info is not None:
                 # Worktrees for a workspace were originally cut in one
@@ -1206,13 +1222,21 @@ class TerminalPanel(QMainWindow):
     def _workspace_is_isolated(self, ws) -> bool:
         """True when ``ws`` was opened with per-pane git-worktree isolation.
 
-        Derived from the store rather than a flag on ``Workspace`` itself: a
-        workspace "is isolated" iff it has an active/detached worktree record
-        pointing at it, which is exactly the condition every isolated
-        workspace already satisfies from the moment it's created.
+        Two signals, either one enough: ``ws._isolate_panes`` (set once in
+        ``_add_workspace``, true iff at least one pane actually got a
+        worktree at creation) stays true for the life of the session even
+        after every one of its worktrees is later merged/discarded away --
+        the store alone can't tell "was created isolated, now empty" apart
+        from "never isolated". The store-derived check (an active/detached
+        record whose ``workspace_name`` matches) stays as a fallback for a
+        workspace that got a worktree pane some other way (e.g. "Open in
+        pane" from the Worktrees panel, onto a workspace that wasn't
+        originally isolated).
         """
         if ws is None:
             return False
+        if getattr(ws, "_isolate_panes", False):
+            return True
         info = self._active_repo_info()
         if info is None:
             return False
@@ -1991,22 +2015,31 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(folder, base_command)
         self._wire_supabase_for(folder, base_command)
 
-        # Isolated workspace -> give the handoff pane its own worktree too,
-        # seeded from the same folder the conversation is being handed off
-        # from. Best-effort: any failure just falls back to a plain pane.
+        # Isolated workspace -> give the handoff pane its own worktree too.
+        # Best-effort: any failure just falls back to a plain pane. Deliberately
+        # NOT keyed off `folder` (the *source* pane's cwd) -- for a handoff out
+        # of an already-isolated pane, that's the source's own worktree
+        # directory, and `git rev-parse --show-toplevel` from inside a linked
+        # worktree returns that worktree's own path, not the main repo's. A
+        # worktree created against it would get a repo_root/repo_key nothing
+        # else (_workspace_is_isolated, the Worktrees panel, session restore)
+        # would ever find again -- an invisible orphan. self._active_repo_info()
+        # is the one canonical main-repo root every other worktree call site
+        # already uses.
         worktree_cwd = None
         worktree_rec_id = None
-        if self._workspace_is_isolated(ws) and git_worktree.is_git_repo(folder):
-            try:
-                info = git_worktree.detect_repo(folder)
+        if self._workspace_is_isolated(ws):
+            info = self._active_repo_info()
+            if info is not None:
                 base = info.default_base or info.current_branch
                 if base:
-                    worktree_cwd, worktree_rec_id = self._create_worktree_for_pane(
-                        ws.name, ws.pane_count, info, base,
-                        agents.agent_key_for_command(base_command) or "",
-                    )
-            except git_worktree.GitError as exc:
-                self._hlog(f"do: worktree creation for handoff pane failed: {exc!r}")
+                    try:
+                        worktree_cwd, worktree_rec_id = self._create_worktree_for_pane(
+                            ws.name, ws.pane_count, info, base,
+                            agents.agent_key_for_command(base_command) or "",
+                        )
+                    except git_worktree.GitError as exc:
+                        self._hlog(f"do: worktree creation for handoff pane failed: {exc!r}")
 
         self._hlog(f"do: add_pane_with_command({command!r}, cwd={worktree_cwd!r})")
         new_pane = ws.add_pane_with_command(command, cwd=worktree_cwd)
