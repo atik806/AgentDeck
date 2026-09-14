@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -38,6 +39,22 @@ def check(cond: bool, label: str) -> None:
     else:
         _FAIL += 1
         print(f"  FAIL {label}")
+
+
+def _wait_for(condition, timeout: float = 5.0) -> bool:
+    """Pump the event loop + thread pool until ``condition()`` is true.
+
+    Diff rendering now runs on a QThreadPool worker; its result reaches the
+    UI thread as a queued signal, so the test loop has to give Qt a chance to
+    deliver it instead of asserting immediately after construction.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if condition():
+            return True
+        QThreadPool.globalInstance().waitForDone(50)
+        QApplication.processEvents()
+    return condition()
 
 
 def _git(cwd, *a):
@@ -78,6 +95,11 @@ def main() -> int:
             st = gw.add_worktree(info, worktree_path=dest, branch="agentdeck/x/p1", base="main")
             (dest / "f.txt").write_text("one\ntwo\n", encoding="utf-8")
             _git(dest, "commit", "-am", "edit")
+            # advance the base after the worktree was cut, so the record is
+            # both ahead (its own "edit" commit) and behind (main moved on).
+            (repo / "g.txt").write_text("g\n", encoding="utf-8")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-m", "on main")
 
             rec = store.create(
                 repo_root=info.toplevel, repo_key=wsmod.repo_key_for(info.toplevel),
@@ -100,20 +122,65 @@ def main() -> int:
             check(not panel2._detail.isHidden(), "detail visible with a record")
             check("→" in panel2._head.text(), "detail header shows branch -> base")
             check(panel2._files.count() >= 2, "file list has whole-diff + changed file")
+            _wait_for(lambda: panel2._diff.toPlainText() != "Loading diff…")
             check("+two" in panel2._diff.toPlainText() or "two" in panel2._diff.toPlainText(),
                   "diff view shows the change")
             check(not panel2._pr_btn.isEnabled(), "Open PR disabled when GitHub not connected")
             check(panel2._merge_btn.isEnabled(), "Merge enabled when merge_enabled() and dir exists")
+            check(panel2._rebase_btn.isEnabled(),
+                  "Rebase enabled when merge_enabled() and behind > 0")
+
+            panel2.rebase_requested.connect(lambda i: fired.__setitem__("rebase", i))
+            panel2._rebase_btn.click()
+            check(fired.get("rebase") == rec.id, "Rebase emits rebase_requested(id)")
 
             panel2._discard_btn.click()
             check(fired.get("discard") == rec.id, "Discard emits discard_requested(id)")
             panel2._merge_btn.click()
             check(fired.get("merge") == rec.id, "Merge emits merge_requested(id)")
 
-            # merge_enabled=False disables the merge button + sets a tooltip
+            # merge_enabled=False disables the merge + rebase buttons + tooltips
             panel3 = WorktreePanel(store=store, repo_provider=lambda: info,
                                    merge_enabled=lambda: False)
             check(not panel3._merge_btn.isEnabled(), "Merge disabled when merge_enabled() False")
+            check(not panel3._rebase_btn.isEnabled(), "Rebase disabled when merge_enabled() False")
+
+            # a worktree cut *after* the base moved starts even with it (behind
+            # == 0) -> nothing to rebase onto, button stays disabled
+            store2 = wsmod.WorktreeStore(root / "wt2.json")
+            dest2 = root / "wt2"
+            st2 = gw.add_worktree(info, worktree_path=dest2, branch="agentdeck/x/p2", base="main")
+            rec2 = store2.create(
+                repo_root=info.toplevel, repo_key=wsmod.repo_key_for(info.toplevel),
+                branch=st2.branch, path=str(dest2), base_branch="main",
+                workspace_name="X", status="active",
+            )
+            panel5 = WorktreePanel(store=store2, repo_provider=lambda: info,
+                                   merge_enabled=lambda: True)
+            _wait_for(lambda: panel5._diff.toPlainText() != "Loading diff…")
+            check(not panel5._rebase_btn.isEnabled(),
+                  "Rebase disabled when behind == 0 (nothing to rebase onto)")
+
+            # selecting a row must spawn exactly one diff task, not two --
+            # setCurrentRow(0) firing _on_file_changed *and* the explicit
+            # _render_diff call both running was a real double-render bug.
+            diff_calls = []
+            real_diff_text = gw.diff_text
+            gw.diff_text = lambda *a, **k: (diff_calls.append(1), real_diff_text(*a, **k))[1]
+            panel6 = WorktreePanel(store=store, repo_provider=lambda: info,
+                                   merge_enabled=lambda: True)
+            _wait_for(lambda: panel6._diff.toPlainText() != "Loading diff…")
+            gw.diff_text = real_diff_text
+            check(len(diff_calls) == 1,
+                  "selecting a row spawns exactly one diff task, not two")
+
+            # a stale diff result (a superseded file selection / reload) must
+            # never clobber what's currently shown
+            panel2._diff.setPlainText("current diff text")
+            stale_diff_gen = panel2._diff_gen - 1
+            panel2._on_diff_ready(stale_diff_gen, "STALE")
+            check(panel2._diff.toPlainText() == "current diff text",
+                  "a superseded background diff result is dropped")
 
             # -- background refresh: off-thread probe, stale results ignored --
             panel3.refresh_status()  # must not block / raise on the UI thread

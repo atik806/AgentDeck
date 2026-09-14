@@ -266,6 +266,12 @@ class TerminalPanel(QMainWindow):
         # the restore block below has run. Empty here == nothing to resume.
         self._pending_restore: list = []
         self._restore_active_index = 0
+        # Worktree record ids already claimed by an earlier _open_snapshot()
+        # call in this restore pass -- two saved workspaces can share a name
+        # (the auto-name counter resets every launch), and without this a
+        # second same-named workspace would re-match and steal the first
+        # one's worktrees instead of getting its own / a plain folder.
+        self._restore_claimed_worktree_ids: set = set()
         # True once a real account profile has landed (profile_ready), so the
         # plan-gated 2nd..Nth workspace restore knows the plan for real rather
         # than acting on the provisional Free default.
@@ -773,6 +779,7 @@ class TerminalPanel(QMainWindow):
             merge_enabled=lambda: entitlements.worktrees_enabled(self._plan()),
         )
         self._worktree_panel.merge_requested.connect(self._merge_worktree)
+        self._worktree_panel.rebase_requested.connect(self._rebase_worktree)
         self._worktree_panel.open_pr_requested.connect(self._open_pr_for_worktree)
         self._worktree_panel.discard_requested.connect(self._discard_worktree)
         self._worktree_panel.open_in_pane_requested.connect(self._open_worktree_in_pane)
@@ -934,6 +941,7 @@ class TerminalPanel(QMainWindow):
         *,
         startup_command: Optional[str] = None,
         isolate_panes: bool = False,
+        restore_worktree_ids: Optional[list[str]] = None,
     ) -> Workspace:
         accent = _WS_ACCENTS[len(self._workspaces) % len(_WS_ACCENTS)]
         # Wire the connected plugins' MCP servers into the agents' configs *before*
@@ -956,9 +964,21 @@ class TerminalPanel(QMainWindow):
         # Isolated workspace: give each pane its own git worktree so several
         # agents can work the same repo without colliding. Falls back to a plain
         # shared-folder workspace on any failure.
+        #
+        # ``restore_worktree_ids`` is the session-restore path: reopen panes in
+        # their *existing* worktree dirs (looked up by the caller) instead of
+        # cutting fresh ones. A pane beyond the matched records' count (one was
+        # discarded since last run) falls back to the shared folder the same
+        # way ``pane_cwds`` running short always has -- see
+        # ``Workspace.initialize``.
         pane_cwds: Optional[list[str]] = None
         self._pending_worktree_ids = []
-        if isolate_panes and entitlements.worktrees_enabled(self._plan()):
+        if restore_worktree_ids:
+            recs = [self._worktree_store.get(wid) for wid in restore_worktree_ids]
+            recs = [r for r in recs if r is not None]
+            pane_cwds = [r.path for r in recs]
+            self._pending_worktree_ids = [r.id for r in recs]
+        elif isolate_panes and entitlements.worktrees_enabled(self._plan()):
             pane_cwds = self._create_worktrees_for_workspace(
                 name or auto, count, startup_command
             )
@@ -1015,6 +1035,7 @@ class TerminalPanel(QMainWindow):
                 agent_key=ws.panes[0].detect_agent_key() if ws.panes else "",
                 agent_command=(ws.panes[0].startup_command if ws.panes else "")
                 or getattr(ws, "_startup_command", "") or "",
+                isolate_panes=self._workspace_is_isolated(ws),
             )
             for ws in self._workspaces
         ]
@@ -1081,10 +1102,43 @@ class TerminalPanel(QMainWindow):
 
     def _open_snapshot(self, snap: "WorkspaceSnapshot") -> None:
         command = (snap.agent_command or "").strip()
+        restore_ids: Optional[list[str]] = None
+        if snap.isolate_panes and entitlements.worktrees_enabled(self._plan()):
+            info = self._active_repo_info()
+            if info is not None:
+                # Worktrees for a workspace were originally cut in one
+                # sequential per-pane loop, so creation order reliably
+                # reproduces the original pane order. Only "active" records --
+                # ones that still had a pane attached when the session was
+                # last saved -- are reopened; a "detached" one was explicitly
+                # kept-but-closed by the user and restore must not resurrect it.
+                matches = sorted(
+                    (
+                        r for r in self._worktree_store.for_repo(info.toplevel)
+                        if r.workspace_name == snap.name and r.status == "active"
+                        and r.id not in self._restore_claimed_worktree_ids
+                    ),
+                    key=lambda r: r.created,
+                )
+                if matches:
+                    restore_ids = [r.id for r in matches]
+                    self._restore_claimed_worktree_ids.update(restore_ids)
+                    if len(matches) < snap.panes:
+                        self.statusBar().showMessage(
+                            f"“{snap.name}”: {snap.panes - len(matches)} of its "
+                            f"worktree(s) are gone — those pane(s) opened in the "
+                            f"repo folder instead", 8000,
+                        )
+        # restore_ids reuses the workspace's existing worktrees when any
+        # survived; isolate_panes covers the rest -- no survivors (all
+        # discarded/merged since last run) still reopens isolated, just with
+        # fresh worktrees, same as a brand new isolated workspace would.
         self._add_workspace(
             name=snap.name or None,
             pane_count=snap.panes,
             startup_command=command or None,
+            isolate_panes=snap.isolate_panes,
+            restore_worktree_ids=restore_ids,
         )
 
     def _resume_pending_restore(self, *, force: bool = False) -> None:
@@ -1149,6 +1203,64 @@ class TerminalPanel(QMainWindow):
         self._repo_info_cache[root] = info
         return info
 
+    def _workspace_is_isolated(self, ws) -> bool:
+        """True when ``ws`` was opened with per-pane git-worktree isolation.
+
+        Derived from the store rather than a flag on ``Workspace`` itself: a
+        workspace "is isolated" iff it has an active/detached worktree record
+        pointing at it, which is exactly the condition every isolated
+        workspace already satisfies from the moment it's created.
+        """
+        if ws is None:
+            return False
+        info = self._active_repo_info()
+        if info is None:
+            return False
+        return any(
+            r.workspace_name == ws.name
+            for r in self._worktree_store.for_repo(info.toplevel)
+            if r.status in ("active", "detached")
+        )
+
+    def _create_worktree_for_pane(
+        self, ws_name: str, pane_index: int, info, base: str, agent_key: str = "",
+    ) -> "tuple[str, str]":
+        """Create one git worktree for a single pane. Returns ``(cwd, record_id)``.
+
+        Raises :class:`git_worktree.GitError` on failure -- batch creation
+        (below) rolls the whole workspace back on that; a single ad-hoc pane
+        (handoff / routines) just catches it and falls back to a plain cwd.
+        """
+        root = default_worktrees_root()
+        repo_key = repo_key_for(info.toplevel)
+        branch = branch_name(ws_name, pane_index)
+        dest = str(worktree_dir(root, repo_key, branch))
+        st = git_worktree.add_worktree(info, worktree_path=dest, branch=branch, base=base)
+        rec = self._worktree_store.create(
+            repo_root=info.toplevel,
+            repo_key=repo_key,
+            branch=st.branch,
+            path=st.path or dest,
+            base_branch=base,
+            base_sha_at_create=st.base_sha,
+            workspace_name=ws_name,
+            agent_key=agent_key,
+            status="active",
+        )
+        return st.path or dest, rec.id
+
+    def _bind_worktree_to_pane(self, ws, pane, record_id: str) -> None:
+        """Wire a freshly-created pane to the worktree record it was opened in,
+        the same bookkeeping ``_open_worktree_in_pane`` does for an existing one."""
+        self._worktree_store.update(record_id, pane_id=pane.pane_id)
+        ws.mark_worktree_pane(pane.pane_id)
+        try:
+            ws.pane_close_requested.disconnect(self._prompt_pane_worktree_close)
+        except (RuntimeError, TypeError):
+            pass
+        ws.pane_close_requested.connect(self._prompt_pane_worktree_close)
+        self._worktree_panel.reload()
+
     def _create_worktrees_for_workspace(
         self, ws_name: str, count: int, startup_command: Optional[str]
     ) -> Optional[list[str]]:
@@ -1186,31 +1298,14 @@ class TerminalPanel(QMainWindow):
 
         cwds: list[str] = []
         created_ids: list[str] = []
-        root = default_worktrees_root()
-        repo_key = repo_key_for(info.toplevel)
         self._building_worktrees = True
         try:
             for i in range(count):
                 progress.setValue(i)  # modal -> spins the event loop on its own
                 QApplication.processEvents()
-                branch = branch_name(ws_name, i)
-                dest = str(worktree_dir(root, repo_key, branch))
-                st = git_worktree.add_worktree(
-                    info, worktree_path=dest, branch=branch, base=base
-                )
-                rec = self._worktree_store.create(
-                    repo_root=info.toplevel,
-                    repo_key=repo_key,
-                    branch=st.branch,
-                    path=st.path or dest,
-                    base_branch=base,
-                    base_sha_at_create=st.base_sha,
-                    workspace_name=ws_name,
-                    agent_key=agent_key,
-                    status="active",
-                )
-                created_ids.append(rec.id)
-                cwds.append(st.path or dest)
+                cwd, rec_id = self._create_worktree_for_pane(ws_name, i, info, base, agent_key)
+                created_ids.append(rec_id)
+                cwds.append(cwd)
             progress.setValue(count)
         except git_worktree.GitError as exc:
             progress.close()
@@ -1418,6 +1513,55 @@ class TerminalPanel(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
             ) == QMessageBox.Yes:
                 self._remove_worktree_dir(wid)
+
+    def _rebase_worktree(self, wid: str) -> None:
+        """Rebase a worktree's branch onto its (moved) base, in place."""
+        rec = self._worktree_store.get(wid)
+        if rec is None:
+            return
+        if not entitlements.worktrees_enabled(self._plan()):
+            self._prompt_upgrade(
+                "Rebasing worktrees",
+                "Reviewing an isolated worktree's diff is free; rebasing it "
+                "onto a moved base is a Pro feature.",
+            )
+            return
+        dirty, files = git_worktree.is_dirty(rec.path)
+        if dirty:
+            if QMessageBox.question(
+                self, "Uncommitted changes",
+                f"“{rec.short_branch}” has {len(files)} uncommitted change(s). "
+                "Commit them all and rebase?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            ) != QMessageBox.Yes:
+                return
+            try:
+                git_worktree.commit_all(rec.path, f"WIP on {rec.short_branch} (AgentDeck)")
+            except git_worktree.GitError as exc:
+                QMessageBox.warning(self, "Commit failed", str(exc))
+                return
+        try:
+            git_worktree.rebase_onto_base(rec.path, rec.base_branch)
+        except git_worktree.WorktreeConflict as exc:
+            QMessageBox.warning(
+                self, "Rebase conflict",
+                "The rebase hit conflicts in:\n\n"
+                + "\n".join(f"  • {p}" for p in exc.conflicts[:12])
+                + "\n\nNothing was rebased — the branch is back where it started. "
+                "Open the worktree in a pane to resolve it by hand.",
+            )
+            self._worktree_store.update(rec.id, last_merge_status="conflict")
+            self._worktree_panel.reload()
+            return
+        except git_worktree.GitError as exc:
+            QMessageBox.warning(self, "Rebase failed", str(exc))
+            return
+
+        self._worktree_store.update(rec.id, last_merge_status="rebased")
+        self._worktree_panel.reload()
+        self.statusBar().showMessage(
+            f"Rebased {rec.short_branch} onto {rec.base_branch}", 6000
+        )
 
     def _open_pr_for_worktree(self, wid: str) -> None:
         rec = self._worktree_store.get(wid)
@@ -1847,8 +1991,25 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(folder, base_command)
         self._wire_supabase_for(folder, base_command)
 
-        self._hlog(f"do: add_pane_with_command({command!r})")
-        new_pane = ws.add_pane_with_command(command)
+        # Isolated workspace -> give the handoff pane its own worktree too,
+        # seeded from the same folder the conversation is being handed off
+        # from. Best-effort: any failure just falls back to a plain pane.
+        worktree_cwd = None
+        worktree_rec_id = None
+        if self._workspace_is_isolated(ws) and git_worktree.is_git_repo(folder):
+            try:
+                info = git_worktree.detect_repo(folder)
+                base = info.default_base or info.current_branch
+                if base:
+                    worktree_cwd, worktree_rec_id = self._create_worktree_for_pane(
+                        ws.name, ws.pane_count, info, base,
+                        agents.agent_key_for_command(base_command) or "",
+                    )
+            except git_worktree.GitError as exc:
+                self._hlog(f"do: worktree creation for handoff pane failed: {exc!r}")
+
+        self._hlog(f"do: add_pane_with_command({command!r}, cwd={worktree_cwd!r})")
+        new_pane = ws.add_pane_with_command(command, cwd=worktree_cwd)
         if new_pane is None:
             self._hlog("do: add_pane_with_command returned None (pane cap)")
             self._prompt_upgrade(
@@ -1859,6 +2020,8 @@ class TerminalPanel(QMainWindow):
                 "This workspace is at the 16-pane limit — close a pane first.", 6000
             )
             return
+        if worktree_rec_id is not None:
+            self._bind_worktree_to_pane(ws, new_pane, worktree_rec_id)
 
         # When the target can't take the instruction as a CLI arg, type it in
         # after it's up — without Enter, so the user reviews it first. Some TUIs
@@ -1958,6 +2121,30 @@ class TerminalPanel(QMainWindow):
                 launch = baked
                 prompt_baked = True
 
+        def _spawn_routine_pane(target_ws):
+            """Add the routine's pane to ``target_ws``, giving it its own
+            worktree when the workspace is isolated -- best-effort, exactly
+            like a handoff pane: any failure just falls back to a plain cwd."""
+            worktree_cwd = None
+            worktree_rec_id = None
+            folder = self._working_folder or ""
+            if self._workspace_is_isolated(target_ws) and git_worktree.is_git_repo(folder):
+                try:
+                    info = git_worktree.detect_repo(folder)
+                    base = info.default_base or info.current_branch
+                    if base:
+                        worktree_cwd, worktree_rec_id = self._create_worktree_for_pane(
+                            target_ws.name, target_ws.pane_count, info, base,
+                            agents.agent_key_for_command(launch) or "",
+                        )
+                except git_worktree.GitError:
+                    pass
+            p = (target_ws.add_pane_with_command(launch, cwd=worktree_cwd) if launch
+                 else target_ws.add_pane(cwd=worktree_cwd))
+            if p is not None and worktree_rec_id is not None:
+                self._bind_worktree_to_pane(target_ws, p, worktree_rec_id)
+            return p
+
         ws = None
         if routine.workspace_target != "new":
             ws = next((w for w in self._workspaces if w.name == routine.workspace_target), None)
@@ -1968,19 +2155,20 @@ class TerminalPanel(QMainWindow):
                 )
 
         if ws is not None:
-            new_pane = ws.add_pane_with_command(launch) if launch else ws.add_pane()
+            new_pane = _spawn_routine_pane(ws)
         elif len(self._workspaces) < entitlements.max_workspaces(self.account.plan):
             ws = self._add_workspace(
                 name=(routine.new_workspace_name or "").strip() or None,
                 pane_count=1,
                 startup_command=launch or None,
+                isolate_panes=bool(self.config.get("worktree_isolate_default", False)),
             )
             new_pane = ws.panes[-1] if ws.panes else None
         else:
             # Free plan, already at the workspace cap -- use the current one
             # rather than silently doing nothing.
             ws = self._active_ws or (self._workspaces[0] if self._workspaces else None)
-            new_pane = (ws.add_pane_with_command(launch) if launch else ws.add_pane()) if ws else None
+            new_pane = _spawn_routine_pane(ws) if ws else None
 
         if ws is None or new_pane is None:
             self._routines_store.mark_run(routine.id, "skipped: no pane available")

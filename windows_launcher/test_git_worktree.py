@@ -180,6 +180,69 @@ def main() -> int:
         check(_git(repo, "log", "--oneline", "main").count("conflict from worktree") == 0,
               "nothing merged on conflict")
 
+        # -- rebase_onto_base --
+        rdest = wt_root / "pr"
+        gw.add_worktree(info, worktree_path=rdest, branch="agentdeck/test/pr", base="main")
+        (rdest / "r.txt").write_text("rebase me\n", encoding="utf-8")
+        gw.commit_all(rdest, "wt work to rebase")
+        (repo / "d.txt").write_text("main moved on\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "main moved on")
+        result = gw.rebase_onto_base(rdest, "main")
+        check(result.ok, "rebase_onto_base ok")
+        check(_git(rdest, "log", "--oneline").count("main moved on") == 1,
+              "rebased branch now contains the moved base commit")
+        check(int(_git(rdest, "rev-list", "--count", "HEAD").strip()) ==
+              int(_git(repo, "rev-list", "--count", "main").strip()) + 1,
+              "rebased branch's history length is base + its own commit")
+
+        # -- rebase_onto_base conflict --
+        rcdest = wt_root / "prc"
+        gw.add_worktree(info, worktree_path=rcdest, branch="agentdeck/test/prc", base="main")
+        (rcdest / "a.txt").write_text("conflict-side-2\n", encoding="utf-8")
+        gw.commit_all(rcdest, "conflicting worktree edit")
+        before_rebase = _git(rcdest, "rev-parse", "HEAD")
+        (repo / "a.txt").write_text("conflict-main-2\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "conflicting main edit")
+        try:
+            gw.rebase_onto_base(rcdest, "main")
+            check(False, "rebase_onto_base raises WorktreeConflict on conflict")
+        except gw.WorktreeConflict as exc:
+            check("a.txt" in exc.conflicts, "rebase conflict lists a.txt")
+        check(_git(rcdest, "rev-parse", "HEAD") == before_rebase,
+              "branch back where it started after a failed rebase (aborted)")
+        check(_git(rcdest, "status", "--porcelain") == "",
+              "worktree clean after a failed rebase (aborted)")
+
+        # -- rebase_onto_base still aborts on a timeout, not just a conflict --
+        # ``_run`` raises GitError straight out of subprocess.TimeoutExpired,
+        # bypassing the returncode-based abort entirely unless rebase_onto_base
+        # catches it separately.
+        rtdest = wt_root / "prt"
+        gw.add_worktree(info, worktree_path=rtdest, branch="agentdeck/test/prt", base="main")
+        (rtdest / "t.txt").write_text("timeout test\n", encoding="utf-8")
+        gw.commit_all(rtdest, "wt work for timeout test")
+        real_run = gw._run
+        abort_calls = []
+
+        def _fake_run(args, cwd, **kw):
+            if args[:1] == ["rebase"] and args[1:2] != ["--abort"]:
+                raise gw.GitError("git rebase timed out after 120s")
+            if args[:2] == ["rebase", "--abort"]:
+                abort_calls.append(True)
+            return real_run(args, cwd, **kw)
+
+        gw._run = _fake_run
+        try:
+            gw.rebase_onto_base(rtdest, "main")
+            check(False, "a timed-out rebase re-raises GitError")
+        except gw.GitError as exc:
+            check("timed out" in str(exc), "a timed-out rebase re-raises GitError")
+        finally:
+            gw._run = real_run
+        check(bool(abort_calls), "a timed-out rebase still runs `git rebase --abort`")
+
         # -- remove_worktree + delete_branch + prune --
         gw.remove_worktree(info, dest, force=True)
         check(not dest.is_dir(), "remove_worktree deleted the dir")

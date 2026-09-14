@@ -1117,6 +1117,302 @@ def _():
     agents.resolve_agent = state["_real_resolve2"]
 
 
+# -- 31d. handoff + routines give the new pane its own worktree, in an
+#    isolated workspace ------------------------------------------------------
+
+@step
+def _():
+    print("== 31d. handoff + routines create/reuse a worktree when the "
+          "target workspace is isolated ==")
+    import subprocess
+    import tempfile as _tempfile
+    from pathlib import Path
+    import git_worktree as gw
+
+    if not gw.git_available():
+        check(True, "git unavailable -- isolated-workspace coverage skipped")
+        state["iso_skip"] = True
+        return
+    state["iso_skip"] = False
+
+    iso_root = Path(_tempfile.mkdtemp(prefix="adk-iso-test-"))
+    os.environ["ADK_WORKTREES_ROOT"] = str(iso_root / "worktrees")
+    repo = iso_root / "repo"
+    repo.mkdir()
+
+    def _git(cwd, *a):
+        subprocess.run(["git", *a], cwd=str(cwd), capture_output=True, text=True,
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "user.name", "T")
+    (repo / "f.txt").write_text("one\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "init")
+
+    # worktree_store.py has no ADK_* path override (unlike ADK_WORKTREES_ROOT
+    # for the scratch trees themselves) -- patch TerminalPanel's WorktreeStore
+    # reference so panel3/panel4 below never touch the real
+    # %APPDATA%\multi-terminal\worktrees.json. Restored at the end of 31e.
+    import terminal_panel as tpmod
+    from worktree_store import WorktreeStore as _RealWorktreeStore
+    state["_real_WorktreeStore"] = tpmod.WorktreeStore
+    wt_store_path = iso_root / "worktrees.json"
+    tpmod.WorktreeStore = lambda path=None: _RealWorktreeStore(path=path or wt_store_path)
+
+    cfg3 = {"default_count": 1,
+            "default_shell": "cmd" if sys.platform == "win32" else "auto",
+            "font_size": 11, "layout": "grid"}
+    panel3 = TerminalPanel(
+        cfg3, persist_settings=False,
+        startup={"folder": str(repo), "count": 1},
+        account=_pro_account(cfg3),
+    )
+    panel3.resize(900, 600)
+    panel3.show()
+    state["panel3"] = panel3
+    state["iso_repo"] = str(repo)
+
+    ws_iso = panel3._add_workspace(name="iso", pane_count=1, isolate_panes=True)
+    check("isolated workspace has one pane", ws_iso.pane_count, 1)
+    rec0 = panel3._worktree_store.by_pane(ws_iso.panes[0].pane_id)
+    check("its pane got a worktree record", rec0 is not None, True)
+    check("panel considers the workspace isolated",
+          panel3._workspace_is_isolated(ws_iso), True)
+    # for_repo() keys off git's own resolved toplevel, which can differ in
+    # exact form (short vs. long path) from the raw temp-dir string above.
+    info = panel3._active_repo_info()
+    state["iso_repo_root"] = info.toplevel if info is not None else str(repo)
+
+
+@step
+def _():
+    pass  # let the isolated workspace's pane spawn its shell
+
+
+@step
+def _():
+    pass
+
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- handoff worktree check skipped")
+        return
+    import agent_sessions
+
+    panel3 = state["panel3"]
+    repo = state["iso_repo"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+    before_panes = ws_iso.pane_count
+    before_records = len(panel3._worktree_store.for_repo(repo_root))
+
+    fake = agent_sessions.AgentSession(
+        agent_key="claude", session_id="iso-session-0", path=None, cwd=repo,
+        title="prior work",
+    )
+    agent_sessions.locate_latest = lambda *a, **k: fake
+
+    panel3._do_handoff(ws_iso.panes[0], {
+        "source_key": "claude", "source_dir": repo,
+        "target_key": "claude", "target_command": "claude",
+        "fork": True, "include_thinking": False, "any_cwd": False,
+    })
+    check("handoff added a pane in the isolated workspace",
+          ws_iso.pane_count, before_panes + 1)
+    new_pane = ws_iso.panes[-1]
+    new_rec = panel3._worktree_store.by_pane(new_pane.pane_id)
+    check("handoff pane got its own worktree record", new_rec is not None, True)
+    if new_rec is not None:
+        check("handoff worktree cwd is not the repo root",
+              os.path.normcase(new_rec.path) != os.path.normcase(repo), True)
+    check("a new worktree record was created for the handoff pane",
+          len(panel3._worktree_store.for_repo(repo_root)), before_records + 1)
+
+
+@step
+def _():
+    pass  # let the handoff pane's shell spawn
+
+
+@step
+def _():
+    pass
+
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- routine worktree check skipped")
+        return
+    import agents
+
+    panel3 = state["panel3"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+    before_panes = ws_iso.pane_count
+    before_records = len(panel3._worktree_store.for_repo(repo_root))
+
+    state["_real_resolve3"] = agents.resolve_agent
+    agents.resolve_agent = lambda key, custom="": "claude" if key == "claude" else ""
+
+    r = panel3._routines_store.create(
+        name="iso routine", prompt="do work", agent_key="claude",
+        agent_custom="", workspace_target=ws_iso.name, days=[], time="08:00",
+        enabled=True,
+    )
+    panel3._run_routine(r)
+    check("routine added a pane to the existing isolated workspace",
+          ws_iso.pane_count, before_panes + 1)
+    new_pane = ws_iso.panes[-1]
+    new_rec = panel3._worktree_store.by_pane(new_pane.pane_id)
+    check("routine pane got its own worktree record", new_rec is not None, True)
+    check("a new worktree record was created for the routine pane",
+          len(panel3._worktree_store.for_repo(repo_root)), before_records + 1)
+
+    agents.resolve_agent = state["_real_resolve3"]
+
+
+# -- 31e. session restore reopens isolated panes in their worktree, not the
+#    plain repo root ---------------------------------------------------------
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- restore worktree check skipped")
+        return
+    print("== 31e. session restore reopens isolated panes in their worktree ==")
+    from pathlib import Path
+    from workspaces_store import SessionSnapshot, WorkspaceSnapshot, WorkspacesStore
+
+    panel3 = state["panel3"]
+    repo = state["iso_repo"]
+    repo_root = state["iso_repo_root"]
+    ws_iso = panel3._active_ws
+
+    matches = sorted(
+        (r for r in panel3._worktree_store.for_repo(repo_root)
+         if r.workspace_name == ws_iso.name and r.status == "active"),
+        key=lambda r: r.created,
+    )
+    state["iso_expected_paths"] = [os.path.normcase(r.path) for r in matches]
+    check("isolated workspace has 3 active worktree records by now",
+          len(matches), 3)
+
+    snap_path = Path(repo).parent / "workspaces.json"
+    WorkspacesStore(path=snap_path).save(
+        SessionSnapshot(
+            folder=repo, layout="grid", active=0,
+            workspaces=[WorkspaceSnapshot(
+                name=ws_iso.name, panes=ws_iso.pane_count,
+                agent_key="", agent_command="", isolate_panes=True,
+            )],
+        )
+    )
+    os.environ["ADK_WORKSPACES_FILE"] = str(snap_path)
+
+    cfg4 = {"default_count": 1,
+            "default_shell": "cmd" if sys.platform == "win32" else "auto",
+            "font_size": 11, "layout": "grid"}
+    panel4 = TerminalPanel(cfg4, persist_settings=True, account=_pro_account(cfg4))
+    panel4.resize(900, 600)
+    panel4.show()
+    state["panel4"] = panel4
+
+
+@step
+def _():
+    pass  # let the restored workspace's panes spawn their shells
+
+
+@step
+def _():
+    pass
+
+
+@step
+def _():
+    pass
+
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- restore worktree check skipped")
+        return
+    del os.environ["ADK_WORKSPACES_FILE"]
+
+    panel4 = state["panel4"]
+    expected = state["iso_expected_paths"]
+    check("restored session has one workspace", len(panel4._workspaces), 1)
+    ws4 = panel4._workspaces[0]
+    check("restored workspace has the same pane count", ws4.pane_count, len(expected))
+    got = [os.path.normcase(p.source_dir or "") for p in ws4.panes]
+    check("restored panes reopened in their original worktree dirs, not the repo root",
+          got, expected)
+    for p in ws4.panes:
+        check(f"pane rebound to its worktree record after restore",
+              panel4._worktree_store.by_pane(p.pane_id) is not None, True)
+
+
+# -- 31f. two saved workspaces sharing a name don't cross-wire worktrees on
+#    restore --------------------------------------------------------------
+
+@step
+def _():
+    if state.get("iso_skip"):
+        check(True, "git unavailable -- restore name-collision check skipped")
+        return
+    print("== 31f. same-named workspaces don't cross-wire worktrees on restore ==")
+    from pathlib import Path
+    from workspaces_store import SessionSnapshot, WorkspaceSnapshot, WorkspacesStore
+
+    panel3 = state["panel3"]
+    repo = state["iso_repo"]
+    ws_iso = panel3._active_ws  # "iso", still has 3 active worktree records
+
+    snap_path = Path(repo).parent / "workspaces2.json"
+    WorkspacesStore(path=snap_path).save(
+        SessionSnapshot(
+            folder=repo, layout="grid", active=0,
+            workspaces=[
+                WorkspaceSnapshot(name=ws_iso.name, panes=1, isolate_panes=True),
+                WorkspaceSnapshot(name=ws_iso.name, panes=1, isolate_panes=True),
+            ],
+        )
+    )
+    os.environ["ADK_WORKSPACES_FILE"] = str(snap_path)
+
+    cfg5 = {"default_count": 1,
+            "default_shell": "cmd" if sys.platform == "win32" else "auto",
+            "font_size": 11, "layout": "grid"}
+    panel5 = TerminalPanel(cfg5, persist_settings=True, account=_pro_account(cfg5))
+    panel5.resize(900, 600)
+    panel5.show()
+    # the 2nd workspace normally waits for _plan_resolved (async, via a real
+    # account sign-in); force it open now rather than racing a 15s timer.
+    panel5._resume_pending_restore(force=True)
+    del os.environ["ADK_WORKSPACES_FILE"]
+
+    check("both same-named workspaces restored", len(panel5._workspaces), 2)
+    ws_a, ws_b = panel5._workspaces[0], panel5._workspaces[1]
+    path_a = os.path.normcase(ws_a.panes[0].source_dir or "")
+    path_b = os.path.normcase(ws_b.panes[0].source_dir or "")
+    repo_norm = os.path.normcase(repo)
+    check("first same-named workspace's pane opened in a worktree, not the repo root",
+          path_a not in ("", repo_norm), True)
+    check("second same-named workspace's pane opened in a worktree, not the repo root",
+          path_b not in ("", repo_norm), True)
+    check("the two same-named workspaces did not cross-wire onto the same worktree",
+          path_a != path_b, True)
+
+    import terminal_panel as tpmod
+    tpmod.WorktreeStore = state["_real_WorktreeStore"]
+
+
 @step
 def _():
     print("== 32. skills: Pro gate, materialize, improve-with-agent re-import ==")

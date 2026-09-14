@@ -41,7 +41,7 @@ store.save(
         layout="columns",
         active=1,
         workspaces=[
-            WorkspaceSnapshot("API", 4, "claude", "claude"),
+            WorkspaceSnapshot("API", 4, "claude", "claude", True),
             WorkspaceSnapshot("UI", 6, "codex", "codex"),
         ],
     )
@@ -54,6 +54,8 @@ check("active kept", s.active == 1)
 check("names kept", [w.name for w in s.workspaces] == ["API", "UI"])
 check("pane counts kept", [w.panes for w in s.workspaces] == [4, 6])
 check("agent command kept", s.workspaces[1].agent_command == "codex")
+check("isolate_panes kept True", s.workspaces[0].isolate_panes is True)
+check("isolate_panes kept False", s.workspaces[1].isolate_panes is False)
 check("is_usable", s.is_usable() is True)
 
 print("[3] clamping + junk tolerance")
@@ -78,6 +80,8 @@ check("two valid workspaces (string dropped)", len(s.workspaces) == 2)
 check("panes clamped high", s.workspaces[0].panes == 16)
 check("bad panes -> default", s.workspaces[1].panes == 4)
 check("active clamped into range", s.active == 1)
+check("old-format JSON without isolate_panes defaults False",
+      s.workspaces[0].isolate_panes is False)
 
 print("[4] corrupt file never raises")
 (tmp / "workspaces.json").write_text("{ not json", encoding="utf-8")

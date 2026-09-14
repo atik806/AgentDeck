@@ -211,6 +211,36 @@ class _ProbeTask(QRunnable):
             pass  # the panel was torn down while we were probing
 
 
+class _DiffSignals(QObject):
+    done = Signal(int, str)  # generation, diff text (or an error message)
+
+
+class _DiffTask(QRunnable):
+    """Render one file's (or the whole worktree's) diff off the UI thread.
+
+    ``diff_text`` can take real time on a large change -- up to its own 60s
+    timeout -- and previously ran synchronously on every file-list click.
+    """
+
+    def __init__(self, generation: int, worktree_path: str, base: str, file_path: Optional[str]):
+        super().__init__()
+        self._gen = generation
+        self._worktree_path = worktree_path
+        self._base = base
+        self._file_path = file_path
+        self.signals = _DiffSignals()
+
+    def run(self) -> None:  # noqa: D102 - QRunnable entry point
+        try:
+            text = gw.diff_text(self._worktree_path, self._base, path=self._file_path)
+        except gw.GitError as exc:
+            text = f"(could not read diff: {exc})"
+        try:
+            self.signals.done.emit(self._gen, text or "(no changes against base)")
+        except RuntimeError:
+            pass  # the panel was torn down while we were diffing
+
+
 class _WorktreeRow(QFrame):
     """One worktree in the list: workspace · branch · +/- · ahead/behind."""
 
@@ -265,6 +295,7 @@ class WorktreePanel(QWidget):
 
     count_changed = Signal(int)
     merge_requested = Signal(str)          # record id
+    rebase_requested = Signal(str)         # record id
     open_pr_requested = Signal(str)
     discard_requested = Signal(str)
     open_in_pane_requested = Signal(str)
@@ -293,6 +324,8 @@ class WorktreePanel(QWidget):
         self._probe_gen = 0
         self._probe_task = None
         self._probe_inflight = False
+        self._diff_gen = 0
+        self._diff_task = None
 
         self.setObjectName("worktreePanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -379,6 +412,11 @@ class WorktreePanel(QWidget):
         self._merge_btn.setCursor(Qt.PointingHandCursor)
         self._merge_btn.clicked.connect(lambda: self._emit(self.merge_requested))
         actions.addWidget(self._merge_btn)
+
+        self._rebase_btn = QPushButton("Rebase onto base")
+        self._rebase_btn.setCursor(Qt.PointingHandCursor)
+        self._rebase_btn.clicked.connect(lambda: self._emit(self.rebase_requested))
+        actions.addWidget(self._rebase_btn)
 
         self._pr_btn = QPushButton("Open PR")
         self._pr_btn.setCursor(Qt.PointingHandCursor)
@@ -513,7 +551,7 @@ class WorktreePanel(QWidget):
             self._status_line.setText("")
             self._files.clear()
             self._diff.setPlainText("")
-            for b in (self._merge_btn, self._pr_btn, self._open_btn, self._discard_btn):
+            for b in (self._merge_btn, self._rebase_btn, self._pr_btn, self._open_btn, self._discard_btn):
                 b.setEnabled(False)
             return
 
@@ -530,8 +568,11 @@ class WorktreePanel(QWidget):
             it = QListWidgetItem(f"{d.status}  {d.display_path}   +{d.added} −{d.removed}")
             it.setData(Qt.UserRole, d.path)
             self._files.addItem(it)
-        self._files.blockSignals(False)
+        # Block through setCurrentRow so _on_file_changed doesn't fire and
+        # kick off a redundant diff task -- the explicit _render_diff below
+        # is the single source of truth for the initial selection.
         self._files.setCurrentRow(0)
+        self._files.blockSignals(False)
 
         self._status_line.setText(self._status_text(rec, st, deltas))
         self._render_diff(rec, None)
@@ -546,6 +587,15 @@ class WorktreePanel(QWidget):
             self._merge_btn.setToolTip("Merging is a Pro feature")
         else:
             self._merge_btn.setToolTip("")
+
+        rebase_ok = merge_ok and st is not None and st.behind > 0
+        self._rebase_btn.setEnabled(bool(rebase_ok))
+        if not self._merge_enabled():
+            self._rebase_btn.setToolTip("Rebasing is a Pro feature")
+        elif not (st is not None and st.behind > 0):
+            self._rebase_btn.setToolTip("Base hasn't moved — nothing to rebase onto")
+        else:
+            self._rebase_btn.setToolTip("")
 
         repo = self._repo_provider()
         slug = getattr(repo, "remote_slug", "") if repo is not None else ""
@@ -590,13 +640,21 @@ class WorktreePanel(QWidget):
 
     def _render_diff(self, rec: WorktreeRecord, path: Optional[str]) -> None:
         if not rec.dir_exists or not gw.git_available():
+            self._diff_gen += 1  # drop any in-flight diff for a row we just left
             self._diff.setPlainText("(worktree folder is not available)")
             return
-        try:
-            text = gw.diff_text(rec.path, rec.base_branch, path=path)
-        except gw.GitError as exc:
-            text = f"(could not read diff: {exc})"
-        self._diff.setPlainText(text or "(no changes against base)")
+        self._diff_gen += 1
+        self._diff.setPlainText("Loading diff…")
+        task = _DiffTask(self._diff_gen, rec.path, rec.base_branch, path)
+        task.signals.done.connect(self._on_diff_ready)
+        # Hold a reference so the signal-carrier QObject outlives the run.
+        self._diff_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_diff_ready(self, generation: int, text: str) -> None:
+        if generation != self._diff_gen:
+            return  # a newer file selection / reload superseded this diff
+        self._diff.setPlainText(text)
 
     # -- visibility ------------------------------------------------
 

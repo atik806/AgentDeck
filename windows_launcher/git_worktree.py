@@ -730,7 +730,15 @@ def rebase_onto_base(worktree_path: "str | os.PathLike", base: str) -> MergeResu
     if not base_ref:
         raise GitError(f"cannot resolve base branch {base!r}")
     before = _rev(wt, "HEAD")
-    proc = _run(["rebase", base_ref], wt, check=False, timeout=120.0)
+    try:
+        proc = _run(["rebase", base_ref], wt, check=False, timeout=120.0)
+    except GitError:
+        # _run raises on a timeout without ever returning a CompletedProcess,
+        # so the returncode-based abort below never runs -- do it here too,
+        # or a timed-out rebase leaves .git/rebase-merge behind, breaking
+        # every later git command in the worktree.
+        _run(["rebase", "--abort"], wt, check=False)
+        raise
     if proc.returncode != 0:
         conflicts = _out(
             ["diff", "--name-only", "--diff-filter=U"], wt, check=False

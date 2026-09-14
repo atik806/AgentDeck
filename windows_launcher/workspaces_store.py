@@ -72,6 +72,7 @@ class WorkspaceSnapshot:
     panes: int = 4
     agent_key: str = ""
     agent_command: str = ""
+    isolate_panes: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkspaceSnapshot":
@@ -84,6 +85,7 @@ class WorkspaceSnapshot:
             panes=max(1, min(16, panes)),
             agent_key=str(data.get("agent_key") or ""),
             agent_command=str(data.get("agent_command") or ""),
+            isolate_panes=bool(data.get("isolate_panes", False)),
         )
 
 
