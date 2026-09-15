@@ -25,8 +25,25 @@ from collections import deque
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QPainter
 from PySide6.QtWidgets import QWidget
+
+#: terminal_view imports this module, so it can't be imported back here for
+#: its preferred_font() without a cycle -- a small local monospace lookup
+#: instead, same fallback chain.
+_MONOSPACE_PREFERENCE = ("Cascadia Mono", "Cascadia Code", "Consolas", "Lucida Console", "Courier New")
+
+
+def _hud_font(point_size: int) -> QFont:
+    families = set(QFontDatabase.families())
+    for name in _MONOSPACE_PREFERENCE:
+        if name in families:
+            font = QFont(name, point_size)
+            font.setStyleHint(QFont.Monospace)
+            return font
+    font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    font.setPointSize(point_size)
+    return font
 
 __all__ = [
     "enabled",
@@ -188,8 +205,7 @@ class PerfHUD(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.NoFocus)
-        self._font = QFont("Cascadia Mono, Consolas", 8)
-        self._font.setStyleHint(QFont.Monospace)
+        self._font = _hud_font(8)
         self._metrics = QFontMetrics(self._font)
         self._timer = QTimer(self)
         self._timer.setInterval(500)

@@ -78,12 +78,14 @@ QWidget#workspaceSidebar {{ background: {t('sidebar_bg')}; }}
 QWidget#wsNav {{ background: {t('sidebar_bg')}; }}
 QToolButton#navBtn {{
     color: {t('sidebar_text')}; background: transparent; border: none; text-align: left;
-    padding: 8px 10px; min-height: 18px; font-size: 12px; border-radius: 6px;
+    border-left: 2px solid transparent;
+    padding: 8px 10px 8px 8px; min-height: 18px; font-size: 12px; border-radius: 6px;
 }}
 QToolButton#navBtn::menu-indicator {{ image: none; }}
 QToolButton#navBtn:hover {{ background: {t('sidebar_hover')}; color: {t('text')}; }}
 QToolButton#navBtn:checked {{
     background: {t('accent_soft_bg')}; color: {t('accent_text')}; font-weight: 600;
+    border-left: 2px solid {t('accent')};
 }}
 QToolButton#navBtn:checked:hover {{ background: {t('accent_soft_bg')}; }}
 QToolButton#navBtn:focus {{ outline: none; }}

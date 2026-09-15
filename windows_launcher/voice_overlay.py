@@ -41,7 +41,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
-    QFont,
     QIcon,
     QPainter,
     QPainterPath,
@@ -329,7 +328,7 @@ class _Waveform(QWidget):
             c = QColor(self._cap_color)
             c.setAlphaF(self._cap_alpha)
             p.setPen(c)
-            f = QFont("Segoe UI", 8)
+            f = theme.chrome_font(8)
             f.setItalic(self._cap_italic)
             p.setFont(f)
             text = p.fontMetrics().elidedText(self._caption, self._cap_elide, w)

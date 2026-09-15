@@ -20,14 +20,24 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 
 __all__ = ["init", "mode", "set_mode", "toggle", "color", "qcolor", "ansi",
            "apply_palette", "manager", "MODES",
            "scheme", "set_scheme", "scheme_labels", "scheme_is_dark_only",
-           "DEFAULT_SCHEME"]
+           "DEFAULT_SCHEME", "chrome_font",
+           "FONT_SIZE_SM", "FONT_SIZE_BASE", "FONT_SIZE_MD", "FONT_SIZE_LG"]
 
 MODES = ("light", "dark")
+
+#: A minimal type scale (px) for QSS this module's callers touch going
+#: forward. Chosen to match the sizes already most common app-wide, not a
+#: redesign -- the ~175 existing literal font-size values elsewhere are left
+#: alone.
+FONT_SIZE_SM = 10
+FONT_SIZE_BASE = 11
+FONT_SIZE_MD = 12
+FONT_SIZE_LG = 14
 
 #: The colour scheme shipped as the default -- the one the toolbar / splash /
 #: logo already speak. ``config["color_scheme"]`` selects among :data:`_SCHEMES`.
@@ -459,6 +469,115 @@ _ONE_DARK = {
     },
 }
 
+# -- Solarized ----------------------------------------------------------------
+# Ethan Schoonover's precision-balanced palette -- a low-saturation cyan-blue
+# accent over the classic base03/base3 backgrounds, dark and light both
+# first-class rather than one derived from the other.
+_SOLARIZED_DARK = {
+    "crust": "#00212b", "mantle": "#002b36", "base": "#002b36", "layer1": "#073642",
+    "surface": "#0b3a46", "surface_hi": "#0f4753", "overlay": "#2b4b54", "overlay_hi": "#3c5f68",
+    "fg": "#839496", "fg_dim": "#586e75", "fg_faint": "#465a61",
+    "accent": "#268bd2", "accent_hi": "#4fa8e0", "accent_soft": "#0d3a52", "accent2": "#2aa198",
+    "on_accent": "#fdf6e3", "danger": "#dc322f", "warn": "#b58900", "ok": "#859900",
+    "cursor": "#93a1a1", "selection": "#073642",
+    "ansi": {
+        "black": "#073642", "red": "#dc322f", "green": "#859900", "yellow": "#b58900",
+        "blue": "#268bd2", "magenta": "#d33682", "cyan": "#2aa198", "white": "#eee8d5",
+        "brightblack": "#002b36", "brightred": "#cb4b16", "brightgreen": "#586e75",
+        "brightyellow": "#657b83", "brightblue": "#839496", "brightmagenta": "#6c71c4",
+        "brightcyan": "#93a1a1", "brightwhite": "#fdf6e3",
+    },
+}
+
+_SOLARIZED_LIGHT = {
+    "crust": "#e4dcc5", "mantle": "#eee8d5", "base": "#fdf6e3", "layer1": "#eee8d5",
+    "surface": "#fffdf5", "surface_hi": "#eee8d5", "overlay": "#d3cbb7", "overlay_hi": "#bdb49c",
+    "fg": "#657b83", "fg_dim": "#586e75", "fg_faint": "#93a1a1",
+    "accent": "#268bd2", "accent_hi": "#1a6ea8", "accent_soft": "#dbeaf7", "accent2": "#2aa198",
+    "on_accent": "#fdf6e3", "danger": "#dc322f", "warn": "#cb4b16", "ok": "#859900",
+    "cursor": "#586e75", "selection": "#eee8d5",
+    "ansi": {
+        "black": "#586e75", "red": "#dc322f", "green": "#859900", "yellow": "#b58900",
+        "blue": "#268bd2", "magenta": "#d33682", "cyan": "#2aa198", "white": "#eee8d5",
+        "brightblack": "#657b83", "brightred": "#cb4b16", "brightgreen": "#586e75",
+        "brightyellow": "#657b83", "brightblue": "#839496", "brightmagenta": "#6c71c4",
+        "brightcyan": "#93a1a1", "brightwhite": "#fdf6e3",
+    },
+}
+
+# -- Monokai Pro --------------------------------------------------------------
+# Warm charcoal with the signature punchy Monokai spread -- pink, orange,
+# yellow, green, cyan -- balanced rather than neon.
+_MONOKAI = {
+    "crust": "#221f22", "mantle": "#2d2a2e", "base": "#2d2a2e", "layer1": "#363537",
+    "surface": "#363537", "surface_hi": "#403e41", "overlay": "#403e41", "overlay_hi": "#5b5a5c",
+    "fg": "#fcfcfa", "fg_dim": "#c1c0c0", "fg_faint": "#727072",
+    "accent": "#78dce8", "accent_hi": "#a3e8f0", "accent_soft": "#2e3f42", "accent2": "#ab9df2",
+    "on_accent": "#2d2a2e", "danger": "#ff6188", "warn": "#fc9867", "ok": "#a9dc76",
+    "cursor": "#fcfcfa", "selection": "#403e41",
+    "ansi": {
+        "black": "#2d2a2e", "red": "#ff6188", "green": "#a9dc76", "yellow": "#ffd866",
+        "blue": "#78dce8", "magenta": "#ab9df2", "cyan": "#78dce8", "white": "#fcfcfa",
+        "brightblack": "#727072", "brightred": "#ff6188", "brightgreen": "#a9dc76",
+        "brightyellow": "#ffd866", "brightblue": "#78dce8", "brightmagenta": "#ab9df2",
+        "brightcyan": "#78dce8", "brightwhite": "#ffffff",
+    },
+}
+
+# -- Everforest -----------------------------------------------------------------
+# Warm, low-contrast and green-forward -- the one earthy/forest palette in the
+# set, distinct from Gruvbox's yellow-orange warmth.
+_EVERFOREST_DARK = {
+    "crust": "#232a2e", "mantle": "#2d353b", "base": "#2d353b", "layer1": "#343f44",
+    "surface": "#3d484d", "surface_hi": "#475258", "overlay": "#475258", "overlay_hi": "#4f585e",
+    "fg": "#d3c6aa", "fg_dim": "#9da9a0", "fg_faint": "#7a8478",
+    "accent": "#a7c080", "accent_hi": "#bcd39c", "accent_soft": "#3a4a3d", "accent2": "#83c092",
+    "on_accent": "#2d353b", "danger": "#e67e80", "warn": "#dbbc7f", "ok": "#a7c080",
+    "cursor": "#d3c6aa", "selection": "#475258",
+    "ansi": {
+        "black": "#414b50", "red": "#e67e80", "green": "#a7c080", "yellow": "#dbbc7f",
+        "blue": "#7fbbb3", "magenta": "#d699b6", "cyan": "#83c092", "white": "#d3c6aa",
+        "brightblack": "#7a8478", "brightred": "#e67e80", "brightgreen": "#a7c080",
+        "brightyellow": "#dbbc7f", "brightblue": "#7fbbb3", "brightmagenta": "#d699b6",
+        "brightcyan": "#83c092", "brightwhite": "#e8e5d8",
+    },
+}
+
+_EVERFOREST_LIGHT = {
+    "crust": "#efebd4", "mantle": "#f4f0d9", "base": "#fdf6e3", "layer1": "#f4f0d9",
+    "surface": "#fdf6e3", "surface_hi": "#efebd4", "overlay": "#e6e2cc", "overlay_hi": "#e0dcc7",
+    "fg": "#5c6a72", "fg_dim": "#829181", "fg_faint": "#a6b0a0",
+    "accent": "#8da101", "accent_hi": "#6d7d00", "accent_soft": "#e6ecd3", "accent2": "#35a77c",
+    "on_accent": "#fdf6e3", "danger": "#f85552", "warn": "#dfa000", "ok": "#8da101",
+    "cursor": "#5c6a72", "selection": "#e6e2cc",
+    "ansi": {
+        "black": "#829181", "red": "#f85552", "green": "#8da101", "yellow": "#dfa000",
+        "blue": "#3a94c5", "magenta": "#df69ba", "cyan": "#35a77c", "white": "#5c6a72",
+        "brightblack": "#a6b0a0", "brightred": "#f85552", "brightgreen": "#8da101",
+        "brightyellow": "#dfa000", "brightblue": "#3a94c5", "brightmagenta": "#df69ba",
+        "brightcyan": "#35a77c", "brightwhite": "#f4f0d9",
+    },
+}
+
+# -- Ayu (Mirage) ---------------------------------------------------------------
+# Cool slate blue-grey with a warm orange accent -- sits between Tokyo
+# Night's blue and Gruvbox's yellow with its own distinct identity.
+_AYU = {
+    "crust": "#171b24", "mantle": "#1f2430", "base": "#1f2430", "layer1": "#191e2a",
+    "surface": "#232834", "surface_hi": "#2b3244", "overlay": "#33415e", "overlay_hi": "#3d537a",
+    "fg": "#cbccc6", "fg_dim": "#8a919c", "fg_faint": "#5c6773",
+    "accent": "#ffb454", "accent_hi": "#ffcb87", "accent_soft": "#3d3220", "accent2": "#5ccfe6",
+    "on_accent": "#1f2430", "danger": "#ff3333", "warn": "#ffcc66", "ok": "#bae67e",
+    "cursor": "#ffcc66", "selection": "#33415e",
+    "ansi": {
+        "black": "#1f2430", "red": "#ff3333", "green": "#bae67e", "yellow": "#ffb454",
+        "blue": "#73d0ff", "magenta": "#dfbfff", "cyan": "#5ccfe6", "white": "#cbccc6",
+        "brightblack": "#5c6773", "brightred": "#ff6666", "brightgreen": "#d5ff80",
+        "brightyellow": "#ffd173", "brightblue": "#73d0ff", "brightmagenta": "#dfbfff",
+        "brightcyan": "#95e6cb", "brightwhite": "#ffffff",
+    },
+}
+
 _SCHEMES: "dict[str, dict]" = {
     "catppuccin": {
         "label": "Catppuccin",
@@ -498,6 +617,24 @@ _SCHEMES: "dict[str, dict]" = {
     "synthwave": {
         "label": "Synthwave",
         "dark": _expand(_SYNTHWAVE), "ansi_dark": _SYNTHWAVE["ansi"],
+    },
+    "solarized": {
+        "label": "Solarized",
+        "dark": _expand(_SOLARIZED_DARK), "light": _expand(_SOLARIZED_LIGHT),
+        "ansi_dark": _SOLARIZED_DARK["ansi"], "ansi_light": _SOLARIZED_LIGHT["ansi"],
+    },
+    "monokai": {
+        "label": "Monokai Pro",
+        "dark": _expand(_MONOKAI), "ansi_dark": _MONOKAI["ansi"],
+    },
+    "everforest": {
+        "label": "Everforest",
+        "dark": _expand(_EVERFOREST_DARK), "light": _expand(_EVERFOREST_LIGHT),
+        "ansi_dark": _EVERFOREST_DARK["ansi"], "ansi_light": _EVERFOREST_LIGHT["ansi"],
+    },
+    "ayu": {
+        "label": "Ayu",
+        "dark": _expand(_AYU), "ansi_dark": _AYU["ansi"],
     },
 }
 
@@ -664,3 +801,34 @@ def apply_palette(app) -> None:
         pal.setColor(grp, QPalette.Text, disabled)
         pal.setColor(grp, QPalette.ButtonText, disabled)
     app.setPalette(pal)
+
+
+# ---------------------------------------------------------------------------
+# Chrome (UI) font
+# ---------------------------------------------------------------------------
+#
+# The terminal has its own, separately-configurable monospace font system
+# (see terminal_view.preferred_font / _MONOSPACE_PREFERENCE) -- this one is
+# only for toolbar/sidebar/dialog chrome text, which wants a proportional
+# system UI face, not the terminal's fixed-pitch one.
+
+_CHROME_FONT_PREFERENCE = ("Segoe UI Variable", "Segoe UI", "Arial")
+
+
+def chrome_font(point_size: int = FONT_SIZE_BASE) -> QFont:
+    """A UI-chrome ``QFont`` at ``point_size``.
+
+    ``QFont(family, size)`` only accepts a single family name -- passing a
+    comma-joined fallback string (as the app used to) doesn't behave like a
+    CSS fallback list and silently resolves to whatever Qt/OS default is left
+    when the literal name isn't installed. This walks the installed families
+    itself, same approach as ``terminal_view.preferred_font`` for the
+    terminal's monospace font.
+    """
+    families = set(QFontDatabase.families())
+    for name in _CHROME_FONT_PREFERENCE:
+        if name in families:
+            return QFont(name, point_size)
+    font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+    font.setPointSize(point_size)
+    return font

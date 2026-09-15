@@ -19,7 +19,6 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QDesktopServices,
-    QFont,
     QPainter,
     QPainterPath,
     QPixmap,
@@ -70,7 +69,7 @@ def _fallback_avatar(text: str, size: int, accent: str) -> QPixmap:
     p.setBrush(QColor(accent))
     p.drawEllipse(0, 0, size, size)
     p.setPen(QColor("#ffffff"))
-    f = QFont("Segoe UI")
+    f = theme.chrome_font()
     f.setPixelSize(int(size * 0.44))
     f.setBold(True)
     p.setFont(f)

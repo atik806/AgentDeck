@@ -211,9 +211,10 @@ w = SetupWizard({"working_folder": HERE, "recent_folders": [HERE, str(Path.home(
 acc = []
 w.accepted.connect(lambda: acc.append(1))
 w._quick_launch(str(Path.home()))
-check("quick launch accepted", acc == [1])
-check("quick launch used that folder",
-      w.choices()["folder"] == str(Path.home()))
+check("recent folder does not launch immediately", acc == [])
+check("recent folder pre-fills the folder field",
+      w._folder_edit.text() == str(Path.home()))
+check("recent folder lands on the Layout step", w._stack.currentIndex() == 1)
 
 
 print()

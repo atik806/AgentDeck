@@ -187,7 +187,7 @@ run_velopack_bootstrap()
 # half-installed PySide6 is exactly the failure the handler exists to explain,
 # and it cannot explain an ImportError raised before it is in place.
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtGui import QFont, QIcon  # noqa: E402
+from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from agentdeck_splash import show_splash  # noqa: E402
@@ -279,8 +279,6 @@ def main() -> int:
     # ("AgentDeck — <folder> - AgentDeck").
     app.setOrganizationName("multi-terminal")
     app.setWindowIcon(_load_icon())
-    # A hint so any stray default-font widget matches the terminal, not the OS UI.
-    app.setFont(QFont("Cascadia Mono, Consolas", 10))
 
     # Resolve the light/dark theme and paint the app palette before any window
     # (splash, login, wizard) is built.
@@ -288,6 +286,13 @@ def main() -> int:
 
     theme.init(config)
     theme.apply_palette(app)
+    # The chrome (UI) font -- not the terminal's, which is separately
+    # configurable (see terminal_view.preferred_font).
+    app.setFont(theme.chrome_font())
+
+    import button_fx
+
+    button_fx.install(app)
 
     # The launch animation. Plays before the wizard; --no-splash / show_splash
     # config turn it off, and it can never block startup for more than a moment.

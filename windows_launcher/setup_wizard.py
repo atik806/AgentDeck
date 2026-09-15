@@ -2,15 +2,16 @@
 
 Three steps, matching the product mockup:
 
-    1. Start   -- welcome + a quick-launch list of recent folders
+    1. Start   -- welcome + a list of recent folders (picking one pre-fills
+                  Layout and continues there, it does not launch by itself)
     2. Layout  -- pick the working folder, choose how many terminals
     3. Agents  -- pick the coding agent (claude / codex / opencode / …) that
                   auto-runs in every terminal
 
 ``main.py`` shows it modally before building the panel; :meth:`choices` returns
 the picked ``{folder, count, agent_key, agent_command}``. ``exec()`` is
-``Accepted`` only when the user launches (or skips, or clicks a recent folder);
-closing the dialog is ``Rejected`` and the app just exits.
+``Accepted`` only when the user launches from Agents (or clicks Skip); closing
+the dialog is ``Rejected`` and the app just exits.
 
 The wizard has its own amber accent -- deliberately distinct from the panel's
 blue -- so it reads as a separate "front door".
@@ -80,7 +81,7 @@ class _StepIndicator(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._current = 0
-        self.setFixedHeight(48)
+        self.setFixedHeight(60)
 
     def set_current(self, index: int) -> None:
         self._current = index
@@ -121,7 +122,7 @@ class _StepIndicator(QWidget):
             p.drawText(int(cx - r), cy - r, r * 2, r * 2, Qt.AlignCenter, mark)
 
             p.setPen(QColor(_TEXT) if (done or current) else QColor(_MUTED))
-            p.drawText(int(cx - slot / 2), cy + r + 2, int(slot), 18,
+            p.drawText(int(cx - slot / 2), cy + r + 4, int(slot), 24,
                        Qt.AlignHCenter | Qt.AlignVCenter, label)
 
 
@@ -764,11 +765,14 @@ class SetupWizard(QDialog):
         )
 
     def _quick_launch(self, folder: str) -> None:
+        # A recent-folder click used to launch instantly with whatever count/
+        # agent was last used -- skipping Layout and Agents entirely. Now it
+        # just pre-fills the folder and walks the same two steps as a fresh
+        # setup, so the terminal count and agent are always a deliberate
+        # choice (and can be re-checked/changed) before anything launches.
         self._folder = folder
-        self._finish(
-            self._config.get("agent", PLAIN_KEY) or PLAIN_KEY,
-            str(self._config.get("agent_command", "") or ""),
-        )
+        self._folder_edit.setText(folder)
+        self._goto(1)
 
     def _launch(self) -> None:
         self._folder = os.path.expanduser(self._folder_edit.text().strip())

@@ -371,7 +371,8 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     "theme": ("system", "light", "dark"),
     # Keep in sync with theme._SCHEMES.
     "color_scheme": ("catppuccin", "dracula", "nord", "tokyonight", "gruvbox",
-                     "rosepine", "kanagawa", "onedark", "synthwave"),
+                     "rosepine", "kanagawa", "onedark", "synthwave",
+                     "solarized", "monokai", "everforest", "ayu"),
     "voice_language": ("auto", "en"),
     "voice_global_target": ("agentdeck", "foreground"),
 }

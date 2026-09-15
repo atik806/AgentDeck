@@ -29,6 +29,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath
 from PySide6.QtWidgets import QApplication, QWidget
 
+import theme
+
 __all__ = ["AgentDeckSplash", "show_splash"]
 
 # Catppuccin Mocha -- the palette the app marks already use.
@@ -151,7 +153,7 @@ class AgentDeckSplash(QWidget):
         a = self._ramp(0.20, 0.62)
         if a > 0:
             p.setOpacity(a)
-            f = QFont("Segoe UI", 30)
+            f = theme.chrome_font(30)
             f.setWeight(QFont.Bold)
             f.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
             p.setFont(f)
@@ -177,7 +179,7 @@ class AgentDeckSplash(QWidget):
         a = self._ramp(0.52, 0.92)
         if a > 0:
             p.setOpacity(a)
-            f = QFont("Segoe UI", 10)
+            f = theme.chrome_font(10)
             p.setFont(f)
             p.setPen(_MUTED)
             p.drawText(0, 214, self.width(), 22, Qt.AlignHCenter, _TAGLINE)

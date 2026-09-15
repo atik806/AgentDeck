@@ -3377,6 +3377,11 @@ class TerminalPanel(QMainWindow):
         self._update_glow.setBlurRadius(0)
         self._update_glow.setEnabled(False)
         self._settings_btn.setGraphicsEffect(self._update_glow)
+        # QGraphicsEffect doesn't nest -- keep button_fx's hover/press glow off
+        # this button so it never fights the effect just installed above.
+        import button_fx
+
+        button_fx.exempt(self._settings_btn)
 
         self._update_pulse = QPropertyAnimation(self._update_glow, b"blurRadius", self)
         self._update_pulse.setDuration(1500)
