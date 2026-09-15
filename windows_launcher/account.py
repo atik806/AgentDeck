@@ -22,7 +22,7 @@ import platform
 import threading
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Signal
 
 import entitlements
 import supabase_auth
@@ -107,6 +107,17 @@ class _Worker(QThread):
             self.failed.emit(str(exc) or exc.__class__.__name__)
             return
         self.done.emit(result)
+
+
+class _ThreadDone(QObject):
+    """A GUI-thread QObject a background thread can safely signal.
+
+    Emitting ``done`` from a worker thread queues the connected slot onto
+    this object's own thread (the GUI thread here) instead of running it
+    where it was emitted -- the standard Qt cross-thread signal behavior.
+    """
+
+    done = Signal()
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +359,23 @@ class AccountController(QObject):
 
         ``AccountController.__init__`` only kicks an async ``fetch_profile()``,
         so on a restored session ``main.py`` has no plan / trial state to gate
-        on yet. This blocks briefly for it, absorbs the row, and emits
+        on yet. This waits briefly for it, absorbs the row, and emits
         ``profile_ready`` on the GUI thread. Never raises.
+
+        The wait is bounded exactly like a ``thread.join(timeout)`` would be
+        (same timeout, same "give up and fall back to cached state" outcome),
+        but runs a local :class:`QEventLoop` instead of blocking the GUI
+        thread outright -- a plain ``join()`` here froze the whole window
+        (no repaint, no input) for up to ``timeout`` seconds on a slow
+        network; pumping the event loop keeps it responsive during the wait.
         """
         if self._session is None:
             return
         uid = self._session.user_id
         box: dict = {}
+        done = _ThreadDone(self)
+        loop = QEventLoop()
+        done.done.connect(loop.quit)
 
         def _work():
             try:
@@ -369,10 +390,13 @@ class AccountController(QObject):
                     self._absorb_profile(rows[0])
             except Exception:  # noqa: BLE001 - a failed fetch just leaves state unknown
                 pass
+            finally:
+                done.done.emit()
 
         thread = threading.Thread(target=_work, name="account-profile", daemon=True)
         thread.start()
-        thread.join(max(0.5, timeout))
+        QTimer.singleShot(int(max(0.5, timeout) * 1000), loop.quit)
+        loop.exec()
 
         profile = box.get("profile")
         if isinstance(profile, dict) and profile:

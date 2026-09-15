@@ -16,6 +16,7 @@ keeps the UI responsive no matter how loud the shell gets.
 from __future__ import annotations
 
 import time
+from collections import deque
 from typing import Optional
 
 from PySide6.QtCore import QDir, QEvent, QPoint, QRect, Qt, QTimer, Signal
@@ -1166,7 +1167,7 @@ class TerminalView(QWidget):
         self._font_size = font_size
         self._screen = TerminalScreen(80, 24, scrollback=scrollback)
         self._stream = TerminalStream(self._screen)
-        self._pending: list[str] = []
+        self._pending: deque[str] = deque()
         self._last_title = ""
         # A command to run once, as soon as the shell is up (the setup wizard's
         # chosen agent). Fired on the first real output -- that is the shell
@@ -1259,7 +1260,7 @@ class TerminalView(QWidget):
             dropped = 0
             while self._pending_chars > target and len(self._pending) > 1:
                 dropped += len(self._pending[0])
-                self._pending_chars -= len(self._pending.pop(0))
+                self._pending_chars -= len(self._pending.popleft())
             if dropped:
                 # The gap almost certainly cut an escape sequence, and whatever
                 # is now at the front of the queue may itself start mid-CSI. A
