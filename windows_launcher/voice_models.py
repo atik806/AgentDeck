@@ -100,12 +100,17 @@ def recommend_model() -> str:
 def recommend_threads() -> int:
     """A sensible whisper.cpp ``n_threads`` when the user hasn't pinned one.
 
-    whisper.cpp gains almost nothing past ~8 threads, and oversubscribing the
-    CPU hurts when AgentDeck and the coding agent are also busy -- so leave a
-    couple of cores free and cap at 8.
+    Only one whisper.cpp decode ever runs at a time (``AudioCapture``'s
+    transcribe loop is strictly serial, see ``voice_capture/audio/capture.py``),
+    and it runs while the user is actively speaking -- i.e. while the coding
+    agent's own panes are typically idle. There's no real contention to protect
+    against, so the sole decode should get most of the machine: leave one core
+    free for the OS/UI and cap at 12 (higher than the old cap of 8, since a
+    slow decode is exactly what causes dictation to fall behind during
+    multi-sentence speech -- see the "catching up" backlog indicator).
     """
     cores = os.cpu_count() or 4
-    return max(2, min(8, cores - 2))
+    return max(2, min(12, cores - 1))
 
 
 def _registry() -> Dict[str, dict]:

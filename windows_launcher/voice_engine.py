@@ -66,6 +66,7 @@ class _Bridge(QObject):
     partial = Signal(str)
     error = Signal(str)
     model_progress = Signal(int)
+    queue_depth = Signal(int)
 
 
 class VoiceEngine(QObject):
@@ -79,6 +80,9 @@ class VoiceEngine(QObject):
     error = Signal(str)
     #: 0..100 while a first-run model download is in progress.
     model_progress = Signal(int)
+    #: segments still waiting behind the one just dequeued for decode -- lets
+    #: a UI show "catching up" during a multi-sentence backlog.
+    queue_depth = Signal(int)
 
     #: WebRTC VAD wants one of these; the pipeline is built around 16 kHz.
     SAMPLE_RATE = 16000
@@ -95,6 +99,7 @@ class VoiceEngine(QObject):
         self._bridge.partial.connect(self.partial)
         self._bridge.error.connect(self.error)
         self._bridge.model_progress.connect(self.model_progress)
+        self._bridge.queue_depth.connect(self.queue_depth)
 
         self.available = bool(_IMPORT_OK)
         self.import_error = _IMPORT_ERR
@@ -335,6 +340,12 @@ class VoiceEngine(QObject):
         if text and self._config.get("voice_show_partial", True):
             self._bridge.partial.emit(text)
 
+    def _emit_queue_depth(self, depth: int) -> None:
+        # Mirrors _emit_partial's gating: a backlog count arriving after the
+        # user has already stopped listening is stale and should be dropped.
+        if self._listening:
+            self._bridge.queue_depth.emit(int(depth))
+
     _PERMISSION_HINTS = (
         "-9999", "unanticipated host error", "device unavailable",
         "access is denied", "not permitted", "-9996", "invalid device",
@@ -435,6 +446,7 @@ class VoiceEngine(QObject):
             on_error=self._bridge.error.emit,
             on_lost=self._on_capture_lost,
             on_partial=self._emit_partial,
+            on_queue_depth=self._emit_queue_depth,
             on_level=self._bridge.level.emit,
             silence_blocks=self._ms_to_blocks("voice_silence_ms", 300, 120, 2000),
             min_speech_blocks=self._ms_to_blocks("voice_min_speech_ms", 120, 0, 1000),

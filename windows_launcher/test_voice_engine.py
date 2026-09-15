@@ -77,6 +77,8 @@ class StubCapture:
         self.kw["on_level"](0.25)
         if self.kw.get("on_partial"):
             self.kw["on_partial"]("hello")
+        if self.kw.get("on_queue_depth"):
+            self.kw["on_queue_depth"](2)
         self.kw["on_transcription"]("hello world")
 
     def stop(self, discard_pending=False):
@@ -147,6 +149,30 @@ check("no partials when voice_show_partial is off",
       pump(lambda: eng_off.current_state == "listening") and offp == [])
 eng_off.stop(); pump(lambda: eng_off.current_state == "idle")
 check("capture actually started", StubCapture.instances[-1].started is True)
+
+
+# ---------------------------------------------------------------------------
+print("[1b] queue_depth (backlog) delivered on the GUI thread, gated on listening")
+install_stubs()
+StubCapture.instances.clear()
+eng_qd = VoiceEngine({})
+depths = []
+eng_qd.queue_depth.connect(depths.append)
+eng_qd.start()
+check("backlog depth delivered", pump(lambda: depths == [2]))
+check("on_queue_depth reached the AudioCapture constructor",
+      "on_queue_depth" in StubCapture.instances[-1].kw)
+
+depths.clear()
+eng_qd._listening = False          # a stop just landed; teardown still running
+eng_qd._emit_queue_depth(3)        # what the capture worker would call
+app.processEvents()
+check("a stale backlog count after stop does not reach the UI", depths == [])
+eng_qd._listening = True
+eng_qd._emit_queue_depth(1)
+app.processEvents()
+check("a live backlog count still gets through", depths == [1])
+eng_qd.stop(); pump(lambda: eng_qd.current_state == "idle")
 
 
 # ---------------------------------------------------------------------------

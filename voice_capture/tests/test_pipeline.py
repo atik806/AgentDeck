@@ -242,6 +242,35 @@ check("default stop still delivers the last utterance", done == ["hello world"])
 
 
 # ---------------------------------------------------------------------------
+print("[5d] on_queue_depth reports the backlog draining to zero")
+tr5d = RecordingTranscriber()
+depths = []
+cap5d = AudioCapture(vad=ScriptedVAD([]), transcriber=tr5d, sample_rate=SR,
+                     blocksize=BLOCK, silence_blocks=10, min_speech_blocks=3,
+                     on_queue_depth=depths.append)
+cap5d.on_transcription = lambda _t: None
+seg = np.zeros(SR, dtype=np.float32)
+# All three segments queued up-front (simulating 3 sentences spoken faster
+# than the single decoder can keep up) -- no other producer, so the depth
+# reported at each dequeue is deterministic.
+cap5d._segment_queue.put(seg)
+cap5d._segment_queue.put(seg)
+cap5d._segment_queue.put(seg)
+cap5d._transcribe_thread = threading.Thread(
+    target=cap5d._transcribe_loop, daemon=True)
+cap5d._transcribe_thread.start()
+for _ in range(50):
+    if len(depths) >= 3:
+        break
+    time.sleep(0.02)
+check("queue depth reported once per dequeued segment, draining to zero",
+      depths == [2, 1, 0])
+check("all three segments were transcribed", len(tr5d.calls) == 3)
+cap5d._segment_queue.put(None)   # only now -- avoids racing the real work above
+cap5d._transcribe_thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
 print("[6] non-speech token filter")
 for tok in ["[BLANK_AUDIO]", "(music)", "  [ Silence ]  ", "[typing]"]:
     check(f"{tok!r} filtered", bool(_NON_SPEECH_RE.match(tok)))

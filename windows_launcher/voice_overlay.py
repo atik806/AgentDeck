@@ -392,6 +392,13 @@ class VoiceOverlay(QWidget):
         self._bounds: Optional[QRect] = None
         self._hover_close = False
         self._edge_phase = 0.0
+        #: Segments still queued behind the one currently decoding, and
+        #: whether a partial (interim) transcript is showing right now -- a
+        #: partial takes visual priority since it's more informative than a
+        #: bare count. See set_backlog()/set_partial().
+        self._backlog = 0
+        self._backlog_shown = False
+        self._partial_active = False
 
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 5, 24, 5)
@@ -444,6 +451,9 @@ class VoiceOverlay(QWidget):
             self._edge_timer.stop()
             self._edge_phase = 0.0
         self._revert_token += 1
+        self._backlog = 0
+        self._backlog_shown = False
+        self._partial_active = False
         self._apply_caption(_CAPTIONS.get(state, ""), _cap_color(state))
         self.update()
 
@@ -464,15 +474,42 @@ class VoiceOverlay(QWidget):
             self._eq.capAlpha = 1.0
         self._eq.update()
 
+    def set_backlog(self, depth: int) -> None:
+        """Hint that older speech is still being transcribed.
+
+        Fires once per utterance dequeued for decode, carrying how many more
+        are still waiting behind it -- during fast multi-sentence dictation
+        the single decoder can fall behind, and without this the overlay just
+        silently lags. Only meaningful while listening; yields to an active
+        partial transcript (more informative than a bare count), and is
+        cleared by the next :meth:`set_state`.
+        """
+        self._backlog = max(0, int(depth))
+        if self._state != "listening" or self._partial_active:
+            return
+        if self._backlog <= 0:
+            if self._backlog_shown:
+                self._apply_caption("", _c("text_muted"))
+                self._backlog_shown = False
+            return
+        label = "catching up…" if self._backlog == 1 else f"catching up… ({self._backlog})"
+        self._eq.set_caption(label, _c("text_muted"), italic=True)
+        self._backlog_shown = True
+        if self._eq.capAlpha < 1.0:
+            self._cap_anim.stop()
+            self._eq.capAlpha = 1.0
+        self._eq.update()
+
     def set_partial(self, text: str) -> None:
         """Dim, italic interim transcript shown over the wave while listening.
 
         No auto-revert -- cleared by the next :meth:`set_state` or the final
         :meth:`flash_text`. A blank string drops back to the wave.
         """
+        text = (text or "").strip()
+        self._partial_active = bool(text)
         if self._state != "listening":
             return
-        text = (text or "").strip()
         if not text:
             self._apply_caption("", _c("voice_partial_text"))
             return
@@ -491,6 +528,12 @@ class VoiceOverlay(QWidget):
             return
         self._revert_token += 1
         token = self._revert_token
+        # This overwrites whatever the "catching up" backlog hint left behind;
+        # without dropping the flag, the *next* segment's set_backlog(0) (very
+        # likely to follow immediately in a backlog) would see a stale "we own
+        # the caption" flag and blank this flash out well before its own timer
+        # would have reverted it.
+        self._backlog_shown = False
         self._apply_caption(text, _c("voice_text"))
         QTimer.singleShot(2800, lambda: self._revert(token))
 

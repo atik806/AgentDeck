@@ -17,6 +17,7 @@ for marshalling ``on_transcription`` / ``on_error`` onto the GUI thread
 """
 
 import collections
+import os
 import queue
 import threading
 import time
@@ -24,6 +25,12 @@ from typing import Any, Callable, Deque, List, Optional
 
 import numpy as np
 import sounddevice as sd
+
+# Set ADK_VOICE_DEBUG=1 to print per-segment decode duration + resulting
+# queue depth to stdout -- useful for tuning n_threads / model choice against
+# a backlog on a real machine. Off by default (this fires once per utterance,
+# far too often for an always-on log).
+_VOICE_DEBUG = bool(os.environ.get("ADK_VOICE_DEBUG"))
 
 
 class AudioCapture:
@@ -49,6 +56,7 @@ class AudioCapture:
         on_level: Optional[Callable[[float], None]] = None,
         on_lost: Optional[Callable[[str], None]] = None,
         on_partial: Optional[Callable[[str], None]] = None,
+        on_queue_depth: Optional[Callable[[int], None]] = None,
         silence_blocks: int = 10,
         min_speech_blocks: int = 3,
         preroll_blocks: int = 5,
@@ -68,6 +76,10 @@ class AudioCapture:
         self.on_lost = on_lost
         self.on_level = on_level
         self.on_partial = on_partial
+        # Reports how many segments are still waiting behind the one about to
+        # be decoded, each time the transcribe loop dequeues one -- lets a UI
+        # show "catching up" during a backlog instead of silently lagging.
+        self.on_queue_depth = on_queue_depth
         self._starve_timeout = max(1.0, float(starve_timeout))
         self._lost_fired = False
 
@@ -340,6 +352,13 @@ class AudioCapture:
                 continue
             if self.transcriber is None:
                 continue
+            if self.on_queue_depth is not None:
+                try:
+                    self.on_queue_depth(seg_q.qsize())
+                except Exception:
+                    pass
+            if _VOICE_DEBUG:
+                t0 = time.monotonic()
             try:
                 text = self.transcriber.transcribe(audio, on_partial=self.on_partial) \
                     if self.on_partial is not None else self.transcriber.transcribe(audio)
@@ -348,6 +367,9 @@ class AudioCapture:
             except Exception as e:
                 self._emit_error(f"transcription failed: {e}")
                 continue
+            if _VOICE_DEBUG:
+                print(f"[voice-debug] decode {time.monotonic() - t0:.2f}s, "
+                      f"queue depth after={seg_q.qsize()}")
             # A stop that landed while we were decoding: the result is stale.
             if generation != self._generation or self._discard:
                 continue

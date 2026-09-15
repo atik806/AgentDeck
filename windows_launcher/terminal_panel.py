@@ -2732,6 +2732,7 @@ class TerminalPanel(QMainWindow):
         self._voice_engine.level.connect(self._voice_overlay.set_level)
         self._voice_engine.transcription.connect(self._on_voice_text)
         self._voice_engine.partial.connect(self._voice_overlay.set_partial)
+        self._voice_engine.queue_depth.connect(self._voice_overlay.set_backlog)
         self._voice_engine.error.connect(self._on_voice_error)
         self._voice_engine.model_progress.connect(self._on_voice_progress)
 

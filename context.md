@@ -1250,6 +1250,53 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       Full offline suite green; `test_panel.py` + `test_panel_account.py` keep
       their two pre-existing `main` failures.
 
+40. **Voice: fix growing delay during multi-sentence dictation (2026-09-15)** —
+    users doing continuous dictation saw each sentence take longer to appear
+    the more they kept talking. Root cause: `AudioCapture` (`voice_capture/
+    voice_capture/audio/capture.py`) runs exactly one serial `_transcribe_loop`
+    thread draining a FIFO `_segment_queue`; a new sentence spoken before the
+    previous one's whisper.cpp decode finishes just queues up behind it — per
+    segment decode time doesn't grow, but delivery lag compounds, and the
+    overlay gave zero indication a backlog even existed. Not a redecode-the-
+    whole-buffer or growing-context bug (`no_context=True` was already set,
+    the speech buffer already resets per utterance).
+    - `voice_models.recommend_threads()`: raised the cap from 8 to 12 and the
+      reserved-core margin from 2 to 1 (`max(2, min(12, cores - 1))`) — only
+      one decode ever runs at a time, and it runs while the user is actively
+      speaking (i.e. the coding-agent panes are typically idle), so the sole
+      decode should get most of the machine instead of leaving headroom for
+      contention that doesn't exist.
+    - `AudioCapture` gained an `on_queue_depth` callback, fired once per
+      dequeue in `_transcribe_loop` with `seg_q.qsize()` (segments still
+      waiting behind the one about to decode) — piped through `VoiceEngine`'s
+      new `queue_depth` signal (`_Bridge` + `_emit_queue_depth`, gated on
+      `_listening` like `_emit_partial`) to `VoiceOverlay.set_backlog()`,
+      wired in `terminal_panel._build_voice` next to the existing `partial`
+      connection. The overlay shows a muted "catching up… (N)" caption in the
+      same slot `set_partial`/`set_progress` already use, only while listening
+      and only when no partial transcript is currently showing (partial takes
+      priority); cleared by `set_state`. Follow-up self-review caught a real
+      bug here before it shipped: `flash_text()` (the 2.8s "here's your final
+      transcript" pop-up) didn't clear the backlog code's "I own the caption"
+      flag, so the very next segment's `set_backlog(0)` -- which fires right
+      after, exactly when a backlog is draining -- would blank the just-shown
+      transcript almost instantly instead of letting it hold its full 2.8s.
+      Fixed by having `flash_text()` drop that flag itself; regression test
+      added in `test_voice_overlay.py` `[3d]`.
+    - `ADK_VOICE_DEBUG=1` (matching the existing `ADK_*` env-flag convention,
+      no `logging` module used anywhere in this codebase) prints
+      `[voice-debug] decode Xs, queue depth after=N` per segment from
+      `_transcribe_loop`, for tuning thread counts / model choice against a
+      real backlog on a real machine.
+    - Deliberately rejected a second parallel transcription worker: doubles
+      RAM (a second loaded whisper model), doesn't clearly help (splitting
+      threads across two concurrent CPU-bound decodes on the same cores is
+      close to a wash vs. one decode with full threads), and concurrent
+      `.transcribe()` safety across two `Model` instances couldn't be
+      confirmed from the installed `pywhispercpp` source — this codebase
+      already has a history (item 25) of whisper.cpp/ggml segfaulting on a
+      similar-shaped concurrency mistake (concurrent model *construction*).
+
 ## Running / testing
 
 ```cmd

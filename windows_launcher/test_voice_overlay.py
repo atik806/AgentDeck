@@ -117,6 +117,53 @@ check("a final transcript overrides the partial",
 
 
 # ---------------------------------------------------------------------------
+print("[3d] backlog indicator shows a 'catching up' hint, yields to a partial")
+overlay.set_state("listening")
+overlay.set_backlog(2)
+check("backlog count shown", "catching up" in overlay.caption_text()
+      and "2" in overlay.caption_text())
+overlay.set_backlog(1)
+check("singular phrasing for one queued segment",
+      overlay.caption_text() == "catching up…")
+overlay.set_backlog(0)
+check("backlog clears back to the bars", overlay.caption_text() == "")
+
+overlay.set_backlog(3)
+check("backlog shown again", "catching up" in overlay.caption_text())
+overlay.set_partial("half a sentence")
+check("an active partial wins over a nonzero backlog",
+      "half a sentence" in overlay.caption_text())
+overlay.set_backlog(4)
+check("backlog update while a partial is showing does not steal the caption",
+      "half a sentence" in overlay.caption_text())
+overlay.set_partial("")
+check("clearing the partial does not resurrect a stale backlog caption on its own",
+      overlay.caption_text() == "")
+
+overlay.set_backlog(2)
+overlay.set_state("idle")
+check("changing state clears any leftover backlog text",
+      "catching up" not in overlay.caption_text())
+overlay.set_state("listening")
+check("no stray backlog caption after a fresh listening state",
+      overlay.caption_text() == "")
+
+# Regression: a real backlog session interleaves set_backlog with flash_text
+# (one flash per finished segment). The next segment's set_backlog(0) must
+# not blank out a flash that hasn't reverted yet.
+overlay.set_state("listening")
+overlay.set_backlog(1)                      # one more sentence still queued
+overlay.flash_text("first sentence done")   # this segment's decode just finished
+check("flash text shows right after a backlog hint",
+      overlay.caption_text() == "first sentence done")
+overlay.set_backlog(0)                      # the queued sentence was just dequeued
+check("a draining backlog does not blank out a still-pending flash",
+      overlay.caption_text() == "first sentence done")
+overlay._revert(overlay._revert_token)
+check("the flash still reverts normally afterwards", overlay.caption_text() == "")
+
+
+# ---------------------------------------------------------------------------
 print("[3c] voice tokens exist for both themes")
 import theme as _t
 for mode in ("dark", "light"):

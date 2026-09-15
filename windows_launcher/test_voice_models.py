@@ -54,10 +54,13 @@ try:
           voice_models.recommend_model() in _REGISTRY)
 
     voice_models.os.cpu_count = lambda: 16
-    check("recommend_threads leaves headroom + caps at 8",
-          voice_models.recommend_threads() == 8)
+    check("recommend_threads leaves 1 core free + caps at 12",
+          voice_models.recommend_threads() == 12)
     voice_models.os.cpu_count = lambda: 4
-    check("recommend_threads on a small box", voice_models.recommend_threads() == 2)
+    check("recommend_threads on a small box", voice_models.recommend_threads() == 3)
+    voice_models.os.cpu_count = lambda: 2
+    check("recommend_threads floors at 2 on a tiny box",
+          voice_models.recommend_threads() == 2)
 finally:
     voice_models._total_ram_gb = orig_ram
     voice_models.os.cpu_count = orig_cpu
