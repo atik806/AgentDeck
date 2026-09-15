@@ -84,6 +84,39 @@ too.
 PowerShell 7 / Windows PowerShell / Command Prompt / Git Bash. A signed-in
 Google account is required on first launch.
 
+### Linux (AppImage)
+
+Grab `AgentDeck-Linux-Install.sh` from the
+[latest release](https://github.com/atik806/AgentDeck/releases/latest) — one
+file, the app bundled inside — and run it:
+
+```bash
+bash AgentDeck-Linux-Install.sh
+```
+
+No `chmod +x` needed for that (you're running it through `bash`, not
+executing it directly — though `chmod +x AgentDeck-Linux-Install.sh &&
+./AgentDeck-Linux-Install.sh` works too, if you prefer). It's the per-user
+equivalent of the Windows installer — no root, nothing touched outside
+`$HOME`. It unpacks the app to `~/Applications/AgentDeck.AppImage`, pulls its
+icon, and adds an **AgentDeck** entry to your app launcher (GNOME Activities,
+KDE's menu, etc.), so it behaves like a normally-installed app from then on.
+Re-run it after downloading a newer release to update in place.
+
+Prefer a plain portable executable with no desktop integration? The bare
+`AgentDeck.AppImage` is also attached to each release —
+`chmod +x AgentDeck.AppImage && ./AgentDeck.AppImage` runs it directly. (A
+downloaded AppImage has no executable bit by default; that `chmod +x`, or
+its file-manager equivalent — right-click → Properties → Permissions →
+**Allow executing file as program** — is required either way. Skip it and
+double-clicking silently does nothing, with no error shown, which is what
+the combined installer above sidesteps entirely by running through `bash`.)
+If you already have a bare AppImage and just want the launcher-integration
+step, [`install.sh`](linux-v4/packaging/install.sh) (also attached to each
+release) does that on its own: `./install.sh AgentDeck.AppImage`.
+
+Voice dictation is not yet available on the Linux build; everything else is.
+
 ## Run from source
 
 ```cmd

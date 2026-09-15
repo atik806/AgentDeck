@@ -20,9 +20,15 @@ for the overall flow; differences here are Linux-specific:
      *-full.nupkg + delta + releases.linux.json) -- UNVERIFIED until the
      Phase 0 Velopack-Linux spike (see linux-v4/context.md) confirms vpk's
      actual Linux CLI surface; this call may need adjusting once that's run
-  8. write linux-v4/packaging/Releases/SHA256SUMS.txt (reuses
-     packaging/checksums.py unchanged -- it's OS-agnostic)
-  9. print the `vpk upload github` command (never uploads)
+  8. build the single-file installer: installer_header.sh + the just-packed
+     AppImage, concatenated -> Releases/AgentDeck-Linux-Install.sh (see that
+     header's own docstring for why -- one download, no separate install.sh,
+     no chmod dance). This is the file the website / release page should
+     point Linux users at, not the bare AppImage.
+  9. write linux-v4/packaging/Releases/SHA256SUMS.txt (reuses
+     packaging/checksums.py unchanged -- it's OS-agnostic; covers the
+     installer script too since it already exists in Releases/ by then)
+ 10. print the `vpk upload github` command (never uploads)
 
 Prerequisites: windows_launcher/requirements.txt + requirements-build.txt,
 installed into a venv on the Linux build machine (a fresh ubuntu-latest CI
@@ -48,6 +54,9 @@ INTERNAL = DIST_APP / "_internal"
 RELEASES = REPO / "linux-v4" / "packaging" / "Releases"
 SPEC = REPO / "linux-v4" / "packaging" / "AgentDeck-linux.spec"
 ICON_PNG = LAUNCHER / "assets" / "icon-256.png"
+INSTALLER_HEADER = REPO / "linux-v4" / "packaging" / "installer_header.sh"
+APPIMAGE = RELEASES / "AgentDeck.AppImage"
+INSTALLER = RELEASES / "AgentDeck-Linux-Install.sh"
 
 
 def fail(msg: str) -> "NoReturn":  # type: ignore[valid-type]
@@ -153,6 +162,28 @@ def vpk_pack(version: str) -> None:
     )
 
 
+def build_installer() -> None:
+    """Concatenate installer_header.sh + the just-packed AppImage into one
+    self-extracting Releases/AgentDeck-Linux-Install.sh -- see that header's
+    docstring for why. Byte concatenation, not shutil.copy-then-append, so
+    this can't silently truncate the multi-hundred-MB AppImage on a
+    read/write hiccup without erroring."""
+    if not APPIMAGE.is_file():
+        fail(f"vpk pack didn't produce {APPIMAGE.name} -- can't build the installer")
+    header = INSTALLER_HEADER.read_bytes()
+    if not header.rstrip().endswith(b"__PAYLOAD_BELOW__"):
+        fail(f"{INSTALLER_HEADER.name} doesn't end with the __PAYLOAD_BELOW__ marker")
+    with INSTALLER.open("wb") as out:
+        out.write(header)
+        if not header.endswith(b"\n"):
+            out.write(b"\n")
+        with APPIMAGE.open("rb") as appimage:
+            shutil.copyfileobj(appimage, out)
+    os.chmod(INSTALLER, 0o755)
+    print(f"[build-linux] wrote {INSTALLER.relative_to(REPO)} "
+          f"({INSTALLER.stat().st_size / 1_000_000:.1f} MB)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-pack", action="store_true", help="stop after the bundle checks")
@@ -174,6 +205,7 @@ def main() -> int:
         return 0
 
     vpk_pack(version)
+    build_installer()
     subprocess.run([sys.executable, str(REPO / "packaging" / "checksums.py"),
                     str(RELEASES)], check=True)
     print(f"\n[build-linux] done. Releases in {RELEASES}\n")

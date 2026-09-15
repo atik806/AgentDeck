@@ -25,8 +25,24 @@ for the full history.
   Linux port's first milestone, and the app already degrades gracefully
   without those deps installed.
 - `build_linux.py` -- sibling to `../../packaging/build.py`. Freezes the app,
-  sanity-checks the bundle, smoke-launches it (under `xvfb-run` if there's no
-  real `$DISPLAY`), then `vpk pack --channel linux` into `Releases/`.
+  sanity-checks the bundle, `vpk pack --channel linux`s it into `Releases/`,
+  then builds the single-file installer (below) from the result.
+- `installer_header.sh` -- the installer's shell-script half. Not shipped on
+  its own: `build_linux.py`'s `build_installer()` step appends the just-built
+  `Releases/AgentDeck.AppImage` after this file's `__PAYLOAD_BELOW__` marker
+  to produce `Releases/AgentDeck-Linux-Install.sh` -- a single downloadable
+  file with the whole app embedded in it. **This is the file the release
+  page / vibeflow.tech/agentdeck should link Linux users to**, not the bare
+  AppImage -- `bash AgentDeck-Linux-Install.sh` (no `chmod +x` needed, since
+  it runs through an interpreter rather than being executed directly) is
+  the closest Linux equivalent to double-clicking `AgentDeck-win-Setup.exe`.
+  See the header's own docstring for the extraction mechanics and what it
+  installs.
+- `install.sh` -- the same desktop-integration logic as
+  `installer_header.sh`, packaged standalone for anyone who already has a
+  bare `AgentDeck.AppImage` (from an older release, or unpacked from the
+  combined installer) and just wants it added to their app launcher, without
+  a second full download. Attached to each release alongside the AppImage.
 - `Releases/` -- build output, git-ignored the same way `../../packaging/
   Releases/` is (not yet -- add to `.gitignore` once this directory actually
   starts collecting build artifacts locally).
@@ -63,11 +79,18 @@ for the full history.
 .venv-build-linux/bin/python linux-v4/packaging/build_linux.py
 #   -> dist/AgentDeck/                        (the frozen app)
 #   -> linux-v4/packaging/Releases/           (AgentDeck.AppImage,
+#                                               AgentDeck-Linux-Install.sh,  <- ship this one
 #                                               AgentDeck-<ver>-linux-full.nupkg,
 #                                               releases.linux.json,
 #                                               assets.linux.json,
 #                                               SHA256SUMS.txt)
 ```
+
+`vpk pack` produces everything except `AgentDeck-Linux-Install.sh`;
+`build_linux.py`'s last step builds that itself by concatenating
+`installer_header.sh` onto the freshly-packed `AgentDeck.AppImage` (see
+"What's here" above), so it's covered by the `SHA256SUMS.txt` this run
+writes too.
 
 ## Publish
 
@@ -76,7 +99,13 @@ vpk upload github --repoUrl https://github.com/atik806/AgentDeck \
     --outputDir linux-v4/packaging/Releases --publish true \
     --releaseName "AgentDeck 0.x.y" --tag v0.x.y
 
+# vpk only uploads what's in its own release manifest (the AppImage +
+# nupkg/json feed files) -- these three aren't, so they need attaching
+# by hand. install.sh doesn't change between releases but re-upload it
+# anyway so it's always attached to the latest tag too.
 gh release upload v0.x.y linux-v4/packaging/Releases/SHA256SUMS.txt --clobber
+gh release upload v0.x.y linux-v4/packaging/Releases/AgentDeck-Linux-Install.sh --clobber
+gh release upload v0.x.y linux-v4/packaging/install.sh --clobber
 ```
 
 Note: unlike the build step, `vpk upload` does **not** take `--channel` --

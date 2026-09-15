@@ -296,3 +296,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" linux-v4/packaging/Releases/SHA256SUMS-linux.txt --clobber
+
+      # build_linux.py's build_installer() step already wrote this into
+      # Releases/ (installer_header.sh + the AppImage, concatenated -- see
+      # that header's docstring). `vpk upload` doesn't know about it (it's
+      # not part of Velopack's own release manifest), same as
+      # SHA256SUMS-linux.txt above, hence the separate explicit upload.
+      # THIS is the file the root README and vibeflow.tech/agentdeck should
+      # link Linux users to -- one download, `bash AgentDeck-Linux-Install.sh`,
+      # installed, no separate install.sh and no chmod dance.
+      - name: Attach AgentDeck-Linux-Install.sh to the release
+        if: steps.check.outputs.already != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" linux-v4/packaging/Releases/AgentDeck-Linux-Install.sh --clobber
+
+      # Kept as a separate small asset too, for anyone who already has a
+      # bare AgentDeck.AppImage (e.g. unpacked from the combined installer,
+      # or from an older release) and just wants the desktop-integration
+      # step without re-downloading the full app.
+      - name: Attach install.sh to the release
+        if: steps.check.outputs.already != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" linux-v4/packaging/install.sh --clobber
