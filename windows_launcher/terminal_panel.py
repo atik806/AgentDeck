@@ -187,9 +187,14 @@ class TerminalPanel(QMainWindow):
         self._default_count = max(1, min(MAX_PANES, int(
             startup.get("count", self.config.get("default_count", 4))
         )))
-        self._working_folder = str(
+        # A folder saved by a different OS (e.g. a "working_folder" synced
+        # over from a Windows install) is unusable here -- worse, handing it
+        # straight to a pane's cwd is what deadlocks pane creation entirely
+        # (see the cwd validation in _pty_backend_posix.py's _spawn()).
+        _folder = str(
             startup.get("folder", self.config.get("working_folder", "")) or ""
         )
+        self._working_folder = _folder if _folder and Path(_folder).is_dir() else ""
         if "agent_command" in startup:
             self._startup_command = str(startup.get("agent_command") or "")
         else:

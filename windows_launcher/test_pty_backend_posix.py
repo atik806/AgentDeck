@@ -122,6 +122,78 @@ check("close() is idempotent", session.close() is None)
 
 
 # ---------------------------------------------------------------------------
+print("[3.5] LD_LIBRARY_PATH_ORIG (PyInstaller's Linux bootloader) is restored, "
+      "not inherited, in spawned shells")
+
+with patch.object(pb.os, "environ", {
+    **os.environ,
+    "LD_LIBRARY_PATH": "/tmp/.mount_AgentDeckXXXXXX/usr/bin/_internal",
+    "LD_LIBRARY_PATH_ORIG": "/usr/lib/custom-real-path",
+}):
+    restored = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
+    out = []
+    restored.output.connect(out.append)
+    restored.write("echo LLP=$LD_LIBRARY_PATH=END\n")
+    deadline = time.time() + 5
+    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out):
+        app.processEvents()
+        time.sleep(0.05)
+    joined = "".join(out)
+    check("bundled LD_LIBRARY_PATH is not inherited",
+          "_internal" not in joined)
+    check("original LD_LIBRARY_PATH (from _ORIG) is restored",
+          "LLP=/usr/lib/custom-real-path=END" in joined)
+    restored.close()
+
+env_no_orig = {**os.environ, "LD_LIBRARY_PATH": "/tmp/.mount_AgentDeckXXXXXX/usr/bin/_internal"}
+env_no_orig.pop("LD_LIBRARY_PATH_ORIG", None)
+with patch.object(pb.os, "environ", env_no_orig):
+    dropped = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
+    out2 = []
+    dropped.output.connect(out2.append)
+    dropped.write("echo LLP=$LD_LIBRARY_PATH=END\n")
+    deadline = time.time() + 5
+    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out2):
+        app.processEvents()
+        time.sleep(0.05)
+    joined2 = "".join(out2)
+    check("no _ORIG to restore -> LD_LIBRARY_PATH is dropped entirely, not left poisoned",
+          "LLP==END" in joined2)
+    dropped.close()
+
+# When AgentDeck itself runs from inside a *mounted AppImage*, the AppImage's
+# own AppRun has already exported LD_LIBRARY_PATH (pointing at the squashfs
+# mount, APPDIR, and this bundle's _internal dir) before ever exec'ing this
+# binary -- so LD_LIBRARY_PATH_ORIG, which PyInstaller's bootloader captures
+# as "the value before I touched it", is *already* that polluted value, not
+# a real pre-AppImage one. Restoring it verbatim would still hand spawned
+# commands the bundle's own libssl/libcrypto (the exact flatpak/systemd-cat
+# version-mismatch failures this exists to prevent).
+appdir = "/tmp/.mount_AgentDeckXXXXXX"
+env_nested = {
+    **os.environ,
+    "APPDIR": appdir,
+    "LD_LIBRARY_PATH": f"{appdir}/usr/bin/_internal",
+    "LD_LIBRARY_PATH_ORIG": f"{appdir}/usr/lib:/usr/lib/custom-real-path",
+}
+with patch.object(pb.os, "environ", env_nested):
+    nested = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
+    out3 = []
+    nested.output.connect(out3.append)
+    nested.write("echo LLP=$LD_LIBRARY_PATH=END\n")
+    deadline = time.time() + 5
+    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out3):
+        app.processEvents()
+        time.sleep(0.05)
+    joined3 = "".join(out3)
+    check("AppImage-mount entries in _ORIG itself are also stripped",
+          "_internal" not in joined3 and appdir not in joined3)
+    check("a genuine non-bundle entry alongside them is still kept",
+          "LLP=/usr/lib/custom-real-path=END" in joined3)
+    nested.close()
+
+
+# ---------------------------------------------------------------------------
 print("[4] a spawn failure surfaces on .error instead of raising")
 
 with patch.object(pb, "resolve_shell",

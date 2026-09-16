@@ -217,7 +217,67 @@ class PtySession(QObject):
             self._proc = None
             return
 
+        # ptyprocess's forked child calls os.chdir(cwd) *before* the
+        # try/except that guards exec (see its spawn()): a cwd that doesn't
+        # exist -- e.g. a Windows-style "working_folder" left over in a
+        # config synced from a Windows install -- raises there without ever
+        # reaching that guard's os._exit(). The exception then unwinds back
+        # up through this process's own broad except-Exception below, which
+        # is now running *inside the forked child* (exec was never reached),
+        # so it returns normally instead of dying -- leaving a duplicate of
+        # this entire process alive and, since it never closed ptyprocess's
+        # handshake pipe, the real parent's read on that pipe blocks forever.
+        # Whatever creates panes in a loop then keeps going *inside that
+        # escaped child*, repeating this once per remaining pane and nesting
+        # another generation each time. Validating cwd here, before it ever
+        # reaches ptyprocess, is what prevents that.
+        resolved_cwd = cwd or str(Path.home())
+        if not Path(resolved_cwd).is_dir():
+            resolved_cwd = str(Path.home())
+
         env = dict(os.environ)
+        # PyInstaller's Linux bootloader rewrites LD_LIBRARY_PATH to point at
+        # the frozen app's own bundled libs (its private libssl/libcrypto
+        # among them) for as long as this process is alive, and saves the
+        # pre-existing value in LD_LIBRARY_PATH_ORIG precisely so subprocesses
+        # can restore it -- see PyInstaller's "Bundling to One Folder" /
+        # LD_LIBRARY_PATH docs. Without this, every real command typed into a
+        # pane (flatpak, systemd-cat, anything that dynamically loads
+        # libssl/libcrypto) resolves against the bundle's possibly-older
+        # OpenSSL instead of the system one and fails with a version
+        # mismatch, even though the shell itself launches fine.
+        # When this build is itself running from inside a mounted AppImage,
+        # LD_LIBRARY_PATH_ORIG is *already* the AppImage runtime's own value --
+        # its AppRun exports LD_LIBRARY_PATH (pointing at the squashfs mount's
+        # usr/lib and this bundle's _internal dir) before ever exec'ing this
+        # binary, so PyInstaller's bootloader captures that already-polluted
+        # value as "original", not the real pre-AppImage one. Blindly restoring
+        # it still hands spawned commands the bundle's own libssl/libcrypto,
+        # which is the version mismatch (flatpak, systemd-cat, ...) this is
+        # meant to prevent. Drop any entry that points inside the AppImage
+        # mount or this bundle's _internal dir; keep the rest.
+        orig_ld_library_path = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        appdir = os.environ.get("APPDIR", "")
+
+        def _is_bundle_path(entry: str) -> bool:
+            if not entry:
+                return False
+            if appdir and (entry == appdir or entry.startswith(appdir + os.sep)):
+                return True
+            return "_internal" in Path(entry).parts
+
+        if orig_ld_library_path is not None:
+            kept = [
+                p for p in orig_ld_library_path.split(os.pathsep)
+                if p and not _is_bundle_path(p)
+            ]
+            if kept:
+                env["LD_LIBRARY_PATH"] = os.pathsep.join(kept)
+            else:
+                env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+
         # Programs that check TERM (vim, less, git, anything ncurses-ish) need
         # to be told the pty speaks 256 colours; the raw pty itself does not
         # set this.
@@ -227,7 +287,7 @@ class PtySession(QObject):
         try:
             self._proc = PtyProcess.spawn(
                 self._argv,
-                cwd=cwd or str(Path.home()),
+                cwd=resolved_cwd,
                 env=env,
                 dimensions=(self.rows, self.cols),
             )
