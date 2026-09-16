@@ -410,7 +410,7 @@ class SettingsPanel(QWidget):
         self._pretrust.toggled.connect(lambda v: self._set("pretrust_agent_folder", bool(v)))
         hint = QLabel(
             "Skips the prompt for the folder you pick. A folder that ships its "
-            "own .claude/ config is never auto-trusted."
+            "own settings.json or .mcp.json is never auto-trusted."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)

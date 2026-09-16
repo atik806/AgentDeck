@@ -121,7 +121,7 @@ class InstallHint(QWidget):
         QTimer.singleShot(1300, lambda: self._copy.setText("Copy"))
 
     def _do_recheck(self) -> None:
-        refresh_path()
+        refresh_path(force=True)
         ok = is_installed(self._key)
         self._status.setText(
             "found — you're set" if ok

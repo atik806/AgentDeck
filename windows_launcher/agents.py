@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -148,44 +149,104 @@ def is_installed(key: str) -> bool:
     return False
 
 
-def refresh_path() -> None:
-    """Re-read the user + machine PATH from the registry into ``os.environ``.
+#: POSIX only: whether the login-shell PATH probe below has already run once
+#: this process. Set by :func:`refresh_path`.
+_posix_path_refreshed = False
 
-    ``os.environ['PATH']`` is snapshotted when the process starts, so an agent
-    installed *while AgentDeck is open* -- especially one whose installer adds a
-    new PATH entry (cursor-agent, antigravity) -- is invisible to
-    :func:`shutil.which` until a restart. Calling this first lets the picker's
-    "Re-check" button find it. Windows only; best-effort, never raises.
+
+def refresh_path(*, force: bool = False) -> None:
+    """Recover PATH entries this process was never given, into ``os.environ``.
+
+    On Windows, ``os.environ['PATH']`` is snapshotted when the process starts,
+    so an agent installed *while AgentDeck is open* -- especially one whose
+    installer adds a new PATH entry (cursor-agent, antigravity) -- is invisible
+    to :func:`shutil.which` until a restart. Re-reading the registry fixes that.
+
+    On Linux the problem is worse and not just about staleness: AgentDeck is
+    normally launched from a ``.desktop`` file (the app grid, a file manager
+    double-click), which starts it as a child of the session/display manager,
+    never of an interactive shell. It therefore never sources ``~/.bashrc`` /
+    ``~/.profile`` at all -- so PATH entries most agent-CLI installers add
+    there (``~/.npm-global/bin``, ``~/.local/bin``, nvm's shims, ...) are
+    invisible from the very first launch, not just until a restart. The fix
+    used here is the same one most cross-platform GUI apps use for this: spawn
+    the user's own login shell once, non-interactively, and ask *it* what PATH
+    it resolves to (sourcing the same rc files a terminal would), then merge
+    anything new into this process's PATH. ``-i`` (interactive) is needed
+    alongside ``-l`` (login) because most installers append to ``.bashrc``,
+    which unlike ``.profile``/``.bash_profile`` is conventionally guarded to
+    only run for interactive shells.
+
+    Spawning a shell is real work (an elaborate zsh/bash prompt setup can take
+    real time to start), so on Linux this only actually runs once per process
+    unless ``force=True`` -- the picker's "Re-check" button passes that; the
+    automatic call before the "+" menu opens does not, and reuses the first
+    result. Best-effort on both platforms; never raises.
     """
-    if os.name != "nt":
-        return
-    try:
-        import winreg  # noqa: PLC0415 - platform-specific
-    except Exception:  # noqa: BLE001
-        return
-
-    parts: List[str] = []
-    for root, sub in (
-        (winreg.HKEY_LOCAL_MACHINE,
-         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
-        (winreg.HKEY_CURRENT_USER, "Environment"),
-    ):
+    if os.name == "nt":
         try:
-            with winreg.OpenKey(root, sub) as key:
-                value, _kind = winreg.QueryValueEx(key, "Path")
-            expanded = os.path.expandvars(value)
-            parts += [p for p in expanded.split(os.pathsep) if p]
-        except OSError:
-            continue
+            import winreg  # noqa: PLC0415 - platform-specific
+        except Exception:  # noqa: BLE001
+            return
 
-    # Keep anything the current process already had that the registry doesn't
-    # know about (venv Scripts dir, etc.), appended after the registry entries.
-    for p in os.environ.get("PATH", "").split(os.pathsep):
-        if p and p not in parts:
+        parts: List[str] = []
+        for root, sub in (
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            (winreg.HKEY_CURRENT_USER, "Environment"),
+        ):
+            try:
+                with winreg.OpenKey(root, sub) as key:
+                    value, _kind = winreg.QueryValueEx(key, "Path")
+                expanded = os.path.expandvars(value)
+                parts += [p for p in expanded.split(os.pathsep) if p]
+            except OSError:
+                continue
+
+        # Keep anything the current process already had that the registry
+        # doesn't know about (venv Scripts dir, etc.), appended after the
+        # registry entries.
+        for p in os.environ.get("PATH", "").split(os.pathsep):
+            if p and p not in parts:
+                parts.append(p)
+
+        if parts:
+            os.environ["PATH"] = os.pathsep.join(parts)
+        return
+
+    # POSIX.
+    global _posix_path_refreshed
+    if _posix_path_refreshed and not force:
+        return
+    _posix_path_refreshed = True
+
+    shell = os.environ.get("SHELL") or "/bin/sh"
+    marker = "__AGENTDECK_PATH__"
+    try:
+        result = subprocess.run(
+            [shell, "-ilc", f"echo {marker}$PATH"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - a stuck/broken shell must not hang the app
+        return
+
+    shell_path = ""
+    for line in reversed(result.stdout.splitlines()):
+        # Read from the end and take the first match: an rc file that prints
+        # its own banner/motd text lands before this marker, never after.
+        if line.startswith(marker):
+            shell_path = line[len(marker):].strip()
+            break
+    if not shell_path:
+        return
+
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    seen = set(parts)
+    for p in shell_path.split(os.pathsep):
+        if p and p not in seen:
             parts.append(p)
-
-    if parts:
-        os.environ["PATH"] = os.pathsep.join(parts)
+            seen.add(p)
+    os.environ["PATH"] = os.pathsep.join(parts)
 
 
 def install_hint(key: str) -> Optional[Dict[str, str]]:
@@ -248,6 +309,10 @@ def installed_agent_keys() -> List[str]:
 
 _CLAUDE_CONFIG = Path.home() / ".claude.json"
 
+#: Module-level so tests can point it at a temporary directory, the same way
+#: they already redirect :data:`_CLAUDE_CONFIG`.
+_HOME_DIR = Path.home()
+
 
 def is_claude_command(command: str) -> bool:
     """True if ``command`` runs the Claude Code CLI (``claude`` / ``claude …``)."""
@@ -286,16 +351,28 @@ def pretrust_folder(command: str, folder: str) -> bool:
         return False
 
     # Never pre-trust a folder that ships its own Claude Code / MCP config: those
-    # files can carry hooks and pre-approved tools, so the trust prompt is
-    # exactly the check the user should get to make by hand.
+    # files can be committed to the repo and carry hooks or pre-approved tools
+    # from someone other than the person who cloned it, so the trust prompt is
+    # exactly the check they should get to make by hand.
+    #
+    # settings.local.json is deliberately NOT in this list: Claude Code writes
+    # it itself, into the current user's own local, gitignored state, as
+    # permissions get approved during ordinary use -- it can never arrive via
+    # `git clone`. Treating it as risky meant any project the user had already
+    # used Claude Code in (i.e. almost every real project) could never be
+    # pre-trusted, even with this setting turned on.
     try:
         root = Path(folder)
-        risky = (
-            root / ".claude" / "settings.json",
-            root / ".claude" / "settings.local.json",
-            root / ".mcp.json",
-            root / ".claude.json",
-        )
+        risky = [root / ".mcp.json"]
+        # In the home directory itself, ~/.claude.json and ~/.claude/settings.json
+        # are Claude Code's *own* global config -- it writes them for every user
+        # of it, and they can never arrive via `git clone` -- so, exactly like
+        # settings.local.json above, their presence says nothing about whether
+        # this folder is safe. Counting them meant $HOME, which is both the
+        # default working folder and where the prompt is most in the way, could
+        # never be pre-trusted even with this setting turned on.
+        if root.resolve() != _HOME_DIR.resolve():
+            risky += [root / ".claude" / "settings.json", root / ".claude.json"]
         if any(p.exists() for p in risky):
             return False
     except OSError:

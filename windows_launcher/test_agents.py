@@ -186,6 +186,50 @@ try:
     tmp.write_text("{ not json")
     check("corrupt config is survived quietly",
           pretrust_folder("claude", "C:/x") is False)
+
+    # settings.local.json is Claude Code's own per-user, gitignored state --
+    # written as permissions get approved during ordinary use, never shipped
+    # via `git clone` -- so its presence alone must not block pretrust.
+    tmp.write_text(json.dumps({"projects": {}}))
+    local_only = Path(tempfile.mkdtemp())
+    (local_only / ".claude").mkdir()
+    (local_only / ".claude" / "settings.local.json").write_text("{}")
+    check("settings.local.json alone does not block pretrust",
+          pretrust_folder("claude", str(local_only)) is True)
+    shutil.rmtree(local_only, ignore_errors=True)
+
+    # settings.json, unlike settings.local.json, can ship via `git clone` and
+    # carry hooks the cloner didn't write -- still refused.
+    shareable = Path(tempfile.mkdtemp())
+    (shareable / ".claude").mkdir()
+    (shareable / ".claude" / "settings.json").write_text("{}")
+    check("settings.json still blocks pretrust",
+          pretrust_folder("claude", str(shareable)) is False)
+    shutil.rmtree(shareable, ignore_errors=True)
+
+    # $HOME is the default working folder, and ~/.claude.json +
+    # ~/.claude/settings.json are Claude Code's own global config -- present for
+    # anyone who has ever run it. Counting those as "this folder ships a config"
+    # made the home folder permanently un-pretrustable.
+    _real_home = agents._HOME_DIR
+    fake_home = Path(tempfile.mkdtemp())
+    try:
+        agents._HOME_DIR = fake_home
+        (fake_home / ".claude").mkdir()
+        (fake_home / ".claude" / "settings.json").write_text("{}")
+        (fake_home / ".claude.json").write_text("{}")
+        tmp.write_text(json.dumps({"projects": {}}))
+        check("home folder's own global claude config does not block pretrust",
+              pretrust_folder("claude", str(fake_home)) is True)
+
+        # ...but a real .mcp.json sitting in it still does.
+        tmp.write_text(json.dumps({"projects": {}}))
+        (fake_home / ".mcp.json").write_text("{}")
+        check("home folder with .mcp.json is still refused",
+              pretrust_folder("claude", str(fake_home)) is False)
+    finally:
+        agents._HOME_DIR = _real_home
+        shutil.rmtree(fake_home, ignore_errors=True)
 finally:
     agents._CLAUDE_CONFIG = _real_cfg
 
