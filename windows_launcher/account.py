@@ -79,6 +79,14 @@ def _filter_cloud(data: dict) -> dict:
     return {k: data[k] for k in CLOUD_KEYS if k in data}
 
 
+class _RefreshDeferred:
+    """A token refresh that couldn't be completed, but not because the token
+    was refused -- see :class:`supabase_auth.TransientAuthError`."""
+
+    def __init__(self, message: str):
+        self.message = message
+
+
 def _looks_like_auth_error(exc: BaseException) -> bool:
     if isinstance(exc, AuthError):
         return True
@@ -544,17 +552,35 @@ class AccountController(QObject):
             return
 
         def _do():
-            return supabase_auth.refresh(session)
+            # A failure that never got a verdict out of the server says nothing
+            # about whether the token is still good, so it must not travel the
+            # on_fail path below. Hand it back as a value instead: the worker
+            # only carries a string across to the GUI thread, which would lose
+            # the distinction.
+            try:
+                return supabase_auth.refresh(session)
+            except supabase_auth.TransientAuthError as exc:
+                return _RefreshDeferred(str(exc))
 
-        def _done(new_session):
-            self._session = new_session
-            self._save_session(new_session)
-            self._sync_email(new_session.email)
+        def _done(result):
+            if isinstance(result, _RefreshDeferred):
+                # Keep the session exactly as it is and try again later -- the
+                # access token may already be stale, in which case the next
+                # REST call's own 401 handling refreshes it again.
+                self.error.emit(
+                    "Couldn't reach the account server -- still signed in, "
+                    "will retry."
+                )
+                return
+            self._session = result
+            self._save_session(result)
+            self._sync_email(result.email)
             # Now there is a valid token, catch up the profile / plan.
             self.fetch_profile()
 
         def _fail(_msg):
-            # The refresh token is dead -- there is no session any more.
+            # The server actively rejected the refresh token -- it is dead, so
+            # there is no session any more.
             self._finish_sign_out()
             self.error.emit("Your session expired -- please sign in again.")
 
@@ -616,6 +642,11 @@ class AccountController(QObject):
 
         try:
             new_session = supabase_auth.refresh(session)
+        except supabase_auth.TransientAuthError:
+            # Never got a verdict out of the server, so "expired" isn't a
+            # conclusion we're entitled to draw -- _on_rest_failed() signs the
+            # user out on that word, and a dropped wifi connection must not.
+            raise
         except Exception:  # noqa: BLE001
             raise AuthError("session expired")
 

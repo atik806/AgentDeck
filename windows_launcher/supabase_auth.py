@@ -69,6 +69,18 @@ class AuthError(Exception):
     already phrased for a status line."""
 
 
+class TransientAuthError(AuthError):
+    """A call that failed for a reason saying nothing about the credentials.
+
+    No network, a timeout, a 5xx or a rate-limit -- the refresh token may well
+    still be perfectly good. Callers must not treat this as "signed out":
+    doing so signs a user out (and clears their stored session) every time
+    their wifi drops or Supabase has a bad minute. A subclass of
+    :class:`AuthError` so existing ``except AuthError`` handlers still catch
+    it.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
@@ -468,7 +480,13 @@ class GoogleSignIn:
 # ---------------------------------------------------------------------------
 
 def refresh(session: Session, *, url: str = SUPABASE_URL, key: str = SUPABASE_KEY) -> Session:
-    """Trade the refresh token for a fresh session. Raises :class:`AuthError`."""
+    """Trade the refresh token for a fresh session.
+
+    Raises :class:`TransientAuthError` when the attempt never got a verdict out
+    of the server (unreachable, timed out, 5xx, rate-limited) and plain
+    :class:`AuthError` when the server actually rejected the token -- the
+    caller has to tell those apart before deciding to sign anyone out.
+    """
     try:
         resp = requests.post(
             f"{url.rstrip('/')}/auth/v1/token?grant_type=refresh_token",
@@ -477,13 +495,23 @@ def refresh(session: Session, *, url: str = SUPABASE_URL, key: str = SUPABASE_KE
             timeout=_HTTP_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise AuthError(f"Couldn't reach Supabase to refresh the session: {exc}") from exc
+        raise TransientAuthError(
+            f"Couldn't reach Supabase to refresh the session: {exc}"
+        ) from exc
+
+    status = getattr(resp, "status_code", 0)
+    if not getattr(resp, "ok", False) and (status == 429 or status >= 500):
+        raise TransientAuthError(
+            f"Supabase couldn't refresh the session right now ({status})."
+        )
 
     _check(resp, "Session refresh")
     try:
         data = resp.json()
     except ValueError as exc:
-        raise AuthError("Supabase returned an unreadable refresh response.") from exc
+        raise TransientAuthError(
+            "Supabase returned an unreadable refresh response."
+        ) from exc
 
     new = Session.from_token_response(data)
     if not new.user and session.user:

@@ -48,6 +48,20 @@ _FADE_MS = 420
 _SAFETY_MS = 4000
 
 
+def _supports_window_opacity() -> bool:
+    """Whether this platform can actually apply ``windowOpacity``.
+
+    The Wayland plugin cannot -- a client has no say over its own surface's
+    opacity there -- and says so once per frame of any animation that tries.
+    """
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        return "wayland" not in QGuiApplication.platformName().lower()
+    except Exception:  # noqa: BLE001 - never let a probe break the splash
+        return True
+
+
 class AgentDeckSplash(QWidget):
     """The splash widget. Emits :attr:`finished` once it has faded out."""
 
@@ -92,6 +106,13 @@ class AgentDeckSplash(QWidget):
         if self._closing:
             return
         self._closing = True
+        if not _supports_window_opacity():
+            # Wayland has no per-window opacity, so the animation would run
+            # for its full duration, warn once per frame ("This plugin does
+            # not support setting window opacity"), and end with the splash
+            # snapping away at full opacity anyway. Skip straight to the end.
+            QTimer.singleShot(0, self.finished)
+            return
         fade = QPropertyAnimation(self, b"windowOpacity", self)
         fade.setDuration(_FADE_MS)
         fade.setStartValue(1.0)

@@ -26,6 +26,10 @@ class AuthError(Exception):
     pass
 
 
+class TransientAuthError(AuthError):
+    """Stand-in for the real one: a failure that never reached a verdict."""
+
+
 class Session:
     def __init__(self, access_token="at", refresh_token="rt", expires_at=None, user=None):
         self.access_token = access_token
@@ -114,6 +118,8 @@ class GoogleSignIn:
 def refresh(session, **kw):
     if getattr(refresh, "fail", False):
         raise AuthError("refresh failed")
+    if getattr(refresh, "transient", False):
+        raise TransientAuthError("Couldn't reach Supabase to refresh the session")
     return Session(access_token="at2", refresh_token="rt2", user=session.user)
 
 
@@ -157,7 +163,7 @@ def build_pkce():
 
 
 for _name in (
-    "AuthError", "Session", "SessionStore", "GoogleSignIn",
+    "AuthError", "TransientAuthError", "Session", "SessionStore", "GoogleSignIn",
     "refresh", "sign_out", "fetch_user", "rest_select", "rest_upsert",
     "rest_insert", "build_pkce",
 ):
@@ -415,6 +421,27 @@ pump(lambda: outs)
 refresh.fail = False
 check("signed_out after a failed refresh", len(outs) == 1)
 check("not signed in", c11.is_signed_in is False)
+
+print("[11b] an unreachable server does NOT sign the user out")
+# The refresh token is only dead if the server says so. Treating "couldn't
+# ask" as "expired" signed people out (and cleared their stored session)
+# whenever their network dropped on launch.
+_STORE.clear()
+_STORE["session"] = Session(expires_at=int(time.time()) - 10).to_dict()
+refresh.transient = True
+c11b = AccountController({"account_email": "sam@example.com"})
+outs_b, errs_b = [], []
+c11b.signed_out.connect(lambda: outs_b.append(1))
+c11b.error.connect(lambda m: errs_b.append(m))
+pump(lambda: errs_b)
+refresh.transient = False
+check("never signed out", outs_b == [])
+check("still signed in", c11b.is_signed_in is True)
+check("stored session was kept", _STORE.get("session") is not None)
+check("account_email was not cleared",
+      c11b._config.get("account_email") == "sam@example.com")
+check("told the user it will retry",
+      bool(errs_b) and "retry" in errs_b[-1].lower())
 
 print("[12] cloud settings are filtered to the sync whitelist")
 check("_filter_cloud drops unknown keys",

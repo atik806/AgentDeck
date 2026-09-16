@@ -48,6 +48,21 @@ with patch.object(pb.os, "environ", {**pb.os.environ, "SHELL": "/bin/bash"}), \
     check("other found shells follow, not duplicated",
           [k for k, _, _ in shells] == ["bash", "zsh"])
 
+# Every current distro is usr-merged: /bin is a symlink to /usr/bin, so $SHELL's
+# /bin/bash and `which bash`'s /usr/bin/bash are one binary spelled two ways.
+# Comparing the raw strings listed Bash twice in the shell picker.
+with patch.object(pb.os, "environ", {**pb.os.environ, "SHELL": "/bin/bash"}), \
+     patch.object(pb.Path, "is_file", lambda self: str(self) == "/bin/bash"), \
+     patch.object(pb.os.path, "realpath",
+                  lambda p: p.replace("/bin/", "/usr/bin/") if p.startswith("/bin/") else p), \
+     patch.object(pb.shutil, "which",
+                  lambda name: f"/usr/bin/{name}" if name == "bash" else None):
+    shells = pb.available_shells()
+    check("the same binary under /bin and /usr/bin is listed once",
+          [k for k, _, _ in shells] == ["bash"])
+    check("...and it is the $SHELL entry that survives",
+          shells[0][1].endswith("(login shell)"))
+
 with patch.object(pb.os, "environ", {}), \
      patch.object(pb.shutil, "which", lambda name: None):
     check("nothing found -> empty list", pb.available_shells() == [])

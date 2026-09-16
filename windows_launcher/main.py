@@ -126,27 +126,50 @@ def _report_fatal(exc_type, exc, tb) -> None:
         report, "".join(traceback.format_exception_only(exc_type, exc)).strip()
     )
 
+    summary = "".join(traceback.format_exception_only(exc_type, exc)).strip()
+    title = (
+        "AgentDeck stopped unexpectedly"
+        if _started
+        else "AgentDeck could not start"
+    )
+    body = f"{summary}{where}\n\n{report}"[:2000]
+
     # MessageBoxW rather than QMessageBox: Qt is one of the things that can be
     # missing or broken at this point, and user32 never is.
     try:
         import ctypes
 
         mb_iconerror, mb_setforeground, mb_topmost = 0x10, 0x10000, 0x40000
-        summary = "".join(traceback.format_exception_only(exc_type, exc)).strip()
-        title = (
-            "AgentDeck stopped unexpectedly"
-            if _started
-            else "AgentDeck could not start"
-        )
         ctypes.windll.user32.MessageBoxW(
-            None,
-            f"{summary}{where}\n\n{report}"[:2000],
-            title,
-            mb_iconerror | mb_setforeground | mb_topmost,
+            None, body, title, mb_iconerror | mb_setforeground | mb_topmost,
         )
+        return
     except Exception:
         # A crash handler that crashes is worse than no crash handler.
         pass
+
+    # Off Windows there is no user32, and the print() above goes nowhere when
+    # the app was launched from its .desktop entry rather than a terminal --
+    # which is the normal way, so a crash simply made the window vanish with
+    # nothing shown and nothing to report. Ask whichever of the standard
+    # desktop dialog tools is installed; each is its own process, so none of
+    # them depends on this one's Qt still working.
+    for argv in (
+        ["zenity", "--error", "--width=600", f"--title={title}", f"--text={body}"],
+        ["kdialog", "--error", body, "--title", title],
+        ["xmessage", "-center", f"{title}\n\n{body}"],
+        ["notify-send", "--urgency=critical", title, summary],
+    ):
+        try:
+            import shutil as _shutil
+            import subprocess
+
+            if _shutil.which(argv[0]) is None:
+                continue
+            subprocess.run(argv, timeout=120, check=False)
+            return
+        except Exception:  # noqa: BLE001 - keep trying the next one
+            continue
 
 
 _ensure_streams()
@@ -270,6 +293,19 @@ def main() -> int:
     config = load_config()
 
     _set_app_user_model_id()
+
+    # Wayland has no WM_CLASS, so a compositor matches a window to its launcher
+    # entry by app_id, which Qt takes from this. Without it Qt falls back to
+    # the application name ("AgentDeck"), which doesn't match the
+    # agentdeck.desktop the Linux installer writes -- so GNOME showed a running
+    # AgentDeck under a generic icon rather than grouping it with its own
+    # launcher. Must stay in step with the DESKTOP_DEST basename in
+    # linux-v4/packaging/install.sh and installer_header.sh. Ignored on Windows.
+    #
+    # Set before QApplication exists: Qt registers this id with the desktop
+    # portal as the object is constructed, and setting it afterwards makes that
+    # registration fail ("Connection already associated with an application ID").
+    QApplication.setDesktopFileName("agentdeck")
 
     app = QApplication(sys.argv)
     app.setApplicationName("AgentDeck")

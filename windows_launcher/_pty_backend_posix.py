@@ -83,20 +83,30 @@ def available_shells() -> list[tuple[str, str, list[str]]]:
     shells: list[tuple[str, str, list[str]]] = []
     seen_paths: set[str] = set()
 
+    def _canonical(path: str) -> str:
+        """Resolve symlinks before comparing paths. Every current distro is
+        usr-merged, so /bin is a symlink to /usr/bin and $SHELL's /bin/bash is
+        the same binary as shutil.which()'s /usr/bin/bash -- comparing the raw
+        strings missed that and offered "Bash" twice in the shell picker."""
+        try:
+            return os.path.realpath(path)
+        except OSError:
+            return path
+
     env_shell = os.environ.get("SHELL", "")
     if env_shell and Path(env_shell).is_file():
         key = Path(env_shell).name
         label, flags = _SHELL_FLAGS.get(key, (key.capitalize() or "Shell", ["-i"]))
         shells.append((key, f"{label} (login shell)", [env_shell, *flags]))
-        seen_paths.add(env_shell)
+        seen_paths.add(_canonical(env_shell))
 
     for key in _PROBE_ORDER:
         path = shutil.which(key)
-        if not path or path in seen_paths:
+        if not path or _canonical(path) in seen_paths:
             continue
         label, flags = _SHELL_FLAGS[key]
         shells.append((key, label, [path, *flags]))
-        seen_paths.add(path)
+        seen_paths.add(_canonical(path))
 
     return shells
 
