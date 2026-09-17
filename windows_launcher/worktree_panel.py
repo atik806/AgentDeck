@@ -18,9 +18,10 @@ Keep :func:`worktree_icon` -- the sidebar's "Worktrees" nav button reuses it.
 from __future__ import annotations
 
 import os
+import time
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -181,6 +182,14 @@ QPushButton#danger:hover {{ border-color: {t('danger')}; }}
 
 _WHOLE_DIFF = "\x00whole"
 
+#: How long a probe may stay in flight before :meth:`WorktreePanel._kick_probe`
+#: stops treating it as a reason to skip the next one. One batch is ~13 ``git``
+#: processes per worktree, each with its own 30s timeout, so a slow-but-healthy
+#: probe can legitimately run for a while; past this it is stuck (a git that
+#: never returned, a thread pool with nothing free), and without the escape
+#: hatch the panel would never refresh again for the rest of the session.
+_PROBE_STUCK_AFTER = 120.0
+
 
 class _ProbeSignals(QObject):
     done = Signal(int, dict)  # generation, {rec_id: (WorktreeStatus|None, [FileDelta])}
@@ -238,7 +247,13 @@ class _DiffTask(QRunnable):
     def run(self) -> None:  # noqa: D102 - QRunnable entry point
         try:
             text = gw.diff_text(self._worktree_path, self._base, path=self._file_path)
-        except gw.GitError as exc:
+        except Exception as exc:  # noqa: BLE001 - a diff must never crash the pool
+            # Not just GitError: the worktree folder can be discarded (or merged
+            # away) between diff_text's isdir() check and git actually starting
+            # in it, which surfaces as a raw OSError -- WinError 267,
+            # NotADirectoryError -- from the spawn. An exception escaping a
+            # QRunnable takes the whole app down, and the result is discarded by
+            # the generation check anyway.
             text = f"(could not read diff: {exc})"
         try:
             self.signals.done.emit(self._gen, text or "(no changes against base)")
@@ -250,7 +265,8 @@ class _WorktreeRow(QFrame):
     """One worktree in the list: workspace · branch · +/- · ahead/behind."""
 
     def __init__(self, rec: WorktreeRecord, st: Optional[gw.WorktreeStatus],
-                 deltas: "list[gw.FileDelta]", parent: QWidget | None = None):
+                 deltas: "list[gw.FileDelta]", parent: QWidget | None = None,
+                 *, pending: bool = False):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QVBoxLayout(self)
@@ -272,6 +288,8 @@ class _WorktreeRow(QFrame):
         added = sum(d.added for d in deltas)
         removed = sum(d.removed for d in deltas)
         bits = [rec.short_branch or "—"]
+        if pending:
+            bits.append("checking…")
         if deltas:
             bits.append(f"{len(deltas)} file{'s' if len(deltas) != 1 else ''}  +{added} −{removed}")
         if st is not None:
@@ -322,15 +340,25 @@ class WorktreePanel(QWidget):
         self._github_connected = github_connected or (lambda: False)
         self._merge_enabled = merge_enabled or (lambda: False)
         self._current_id: Optional[str] = None
-        # {rec_id: (WorktreeStatus|None, [FileDelta])} -- populated synchronously
-        # by reload() (an explicit open / post-mutation redraw) and refreshed
-        # off-thread by refresh_status() (the panel host's throttled poll).
+        # {rec_id: (WorktreeStatus|None, [FileDelta])} -- every entry is written
+        # by a background probe; a missing key means "not probed yet", which the
+        # rows render as "checking…" rather than blocking on git. Nothing in
+        # this panel shells out to git on the UI thread (see reload()).
         self._probe_cache: dict = {}
         self._probe_gen = 0
-        self._probe_task = None
-        self._probe_inflight = False
+        # {generation: task} for every probe still running. A single "latest
+        # task" attribute let an older task's signal carrier be collected on the
+        # UI thread while its worker was still inside run() emitting from it.
+        self._probe_tasks: dict = {}
+        self._probe_inflight_gen: Optional[int] = None
+        self._probe_started = 0.0
         self._diff_gen = 0
-        self._diff_task = None
+        self._diff_tasks: dict = {}   # same, for in-flight diffs
+        # The file list the detail pane was last built from, so a poll tick can
+        # tell "nothing changed" (leave the user's selection and scroll alone)
+        # from "the agent wrote something" (rebuild and re-diff).
+        self._file_sig: "list | None" = None
+        self._detail_pending = False
 
         self.setObjectName("worktreePanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -450,26 +478,36 @@ class WorktreePanel(QWidget):
     # -- data ----------------------------------------------------------
 
     def reload(self) -> None:
-        """Re-read the store and rebuild the list, probing git synchronously.
+        """Rebuild the list from the store and re-probe git in the background.
 
-        Called on an explicit open of the panel and after a mutation, where a
-        one-off probe is fine and the data must be fresh. The recurring poll
-        goes through :meth:`refresh_status` (off-thread) instead.
+        Nothing on this path touches git on the UI thread. Probing one worktree
+        costs ~13 ``git`` processes -- about 0.6 s each on Windows, and up to a
+        30 s timeout when one of them hangs on a worktree an agent is busy in --
+        so the old synchronous probe froze the whole window for seconds every
+        time this panel was opened and after every merge / discard / rebase.
+        Rows paint immediately from the last probe (or as "checking…") and fill
+        in when the background probe lands.
         """
-        self._probe_cache = {}
-        self._probe_gen += 1  # invalidate any in-flight background probe
         self._populate()
+        self._kick_probe(force=True)
 
-    def _populate(self) -> None:
+    def _populate(self, *, keep_view: bool = False) -> None:
+        """Rebuild the rows. ``keep_view`` = a refresh, not a (re)open: leave
+        the user's file selection and diff scroll position alone."""
         records = self._store.active()
         keep = self._current_id
+        live = {r.id for r in records}
+        # Drop probes for records that are gone, so the cache can't grow without
+        # bound across a long session of create / merge / discard.
+        self._probe_cache = {k: v for k, v in self._probe_cache.items() if k in live}
         self._list.blockSignals(True)
         self._list.clear()
         for rec in records:
-            st, deltas = self._probe(rec)
+            probed = self._probe(rec)
+            st, deltas = probed if probed is not None else (None, [])
             item = QListWidgetItem(self._list)
             item.setData(Qt.UserRole, rec.id)
-            row = _WorktreeRow(rec, st, deltas)
+            row = _WorktreeRow(rec, st, deltas, pending=probed is None)
             hint = row.sizeHint()
             # +2 for the item's 1px top/bottom margin, which the view takes out
             # of the widget's rect rather than adding around it.
@@ -482,7 +520,7 @@ class WorktreePanel(QWidget):
         self._sync_visibility(records)
         if records:
             target = keep if any(r.id == keep for r in records) else records[0].id
-            self._select_id(target)
+            self._select_id(target, keep_view=keep_view and target == keep)
         else:
             self._current_id = None
 
@@ -490,29 +528,48 @@ class WorktreePanel(QWidget):
         """Re-probe git for the visible rows off the UI thread, then re-render.
 
         The panel host calls this on a throttled timer while the view is on
-        screen; a synchronous probe spawns ~6 ``git`` processes per row.
+        screen, and the Refresh button calls it directly. Returns at once --
+        the probe itself runs on the thread pool.
         """
-        if self._probe_inflight:
-            return  # a probe from the last tick is still running -- don't pile on
-        records = self._store.active()
-        specs = [(r.id, r.path, r.base_branch) for r in records if r.dir_exists]
+        shown = [self._list.item(i).data(Qt.UserRole) for i in range(self._list.count())]
+        if shown != [r.id for r in self._store.active()]:
+            self._populate(keep_view=True)  # rows created / removed elsewhere
+        self._kick_probe()
+
+    def _kick_probe(self, *, force: bool = False) -> None:
+        """Start a background probe of every live worktree.
+
+        Skipped while one is still in flight -- the host polls every few seconds
+        and a batch can outlast a tick -- unless ``force`` (an explicit reload,
+        whose caller has just changed something the running probe can't know
+        about). A probe that never reports back stops blocking new ones after
+        ``_PROBE_STUCK_AFTER``.
+        """
+        if self._probe_inflight_gen is not None and not force:
+            if time.monotonic() - self._probe_started < _PROBE_STUCK_AFTER:
+                return
+        specs = [(r.id, r.path, r.base_branch)
+                 for r in self._store.active() if r.dir_exists]
         if not specs or not gw.git_available():
-            self._populate()
+            self._probe_inflight_gen = None
             return
         self._probe_gen += 1
-        self._probe_inflight = True
+        self._probe_inflight_gen = self._probe_gen
+        self._probe_started = time.monotonic()
         task = _ProbeTask(self._probe_gen, specs)
         task.signals.done.connect(self._on_probe_refreshed)
         # Hold a reference so the signal-carrier QObject outlives the run.
-        self._probe_task = task
+        self._probe_tasks[self._probe_gen] = task
         QThreadPool.globalInstance().start(task)
 
     def _on_probe_refreshed(self, generation: int, results: dict) -> None:
-        self._probe_inflight = False
+        self._probe_tasks.pop(generation, None)
+        if generation == self._probe_inflight_gen:
+            self._probe_inflight_gen = None
         if generation != self._probe_gen:
             return  # a newer reload / refresh superseded this one
         self._probe_cache = dict(results)
-        self._populate()
+        self._populate(keep_view=True)
 
     def flush(self) -> None:
         """No editable state -- present for symmetry with the other panels."""
@@ -520,22 +577,21 @@ class WorktreePanel(QWidget):
     # -- probing ------------------------------------------------------
 
     def _probe(self, rec: WorktreeRecord):
-        hit = self._probe_cache.get(rec.id)
-        if hit is not None:
-            return hit
+        """The last probe of ``rec`` -- ``(status, deltas)`` -- or ``None`` when
+        the background probe hasn't reported on it yet.
+
+        Deliberately a plain cache read: probing shells out to git a dozen
+        times, which belongs on the thread pool and never on the UI thread
+        (see :meth:`reload`). A worktree that was probed but is unreadable is
+        cached as ``(None, [])``, so ``None`` unambiguously means "pending".
+        """
         if not rec.dir_exists or not gw.git_available():
-            return None, []
-        try:
-            result = (gw.status(rec.path, rec.base_branch),
-                      gw.diff_stat(rec.path, rec.base_branch))
-        except gw.GitError:
-            return None, []
-        self._probe_cache[rec.id] = result
-        return result
+            return None, []  # nothing to wait for -- don't leave it "checking…"
+        return self._probe_cache.get(rec.id)
 
     # -- selection --------------------------------------------------
 
-    def _select_id(self, wid: Optional[str]) -> None:
+    def _select_id(self, wid: Optional[str], *, keep_view: bool = False) -> None:
         for i in range(self._list.count()):
             if self._list.item(i).data(Qt.UserRole) == wid:
                 # Block the row-changed signal so _load_detail runs once, not
@@ -543,7 +599,7 @@ class WorktreePanel(QWidget):
                 self._list.blockSignals(True)
                 self._list.setCurrentRow(i)
                 self._list.blockSignals(False)
-                self._load_detail(wid)
+                self._load_detail(wid, keep_view=keep_view)
                 return
         self._current_id = None
         self._load_detail(None)
@@ -551,7 +607,15 @@ class WorktreePanel(QWidget):
     def _on_row_changed(self, current: QListWidgetItem, _prev) -> None:
         self._load_detail(current.data(Qt.UserRole) if current is not None else None)
 
-    def _load_detail(self, wid: Optional[str]) -> None:
+    def _load_detail(self, wid: Optional[str], *, keep_view: bool = False) -> None:
+        """Show ``wid`` in the detail pane.
+
+        ``keep_view`` marks a background refresh of the row that is already
+        open, as opposed to the user picking a row. Such a refresh must not
+        yank the view out from under them: when the worktree's files haven't
+        moved it only re-reads the status line and buttons, and when they have
+        it rebuilds the file list around whatever file the user had selected.
+        """
         self._current_id = wid
         rec = self._store.get(wid) if wid else None
         if rec is None:
@@ -559,31 +623,52 @@ class WorktreePanel(QWidget):
             self._status_line.setText("")
             self._files.clear()
             self._diff.setPlainText("")
+            self._file_sig = None
+            self._detail_pending = False
             for b in (self._merge_btn, self._rebase_btn, self._pr_btn, self._open_btn, self._discard_btn):
                 b.setEnabled(False)
             return
 
         base = rec.base_branch or "base"
         self._head.setText(f"{rec.short_branch}   →   {base}")
-        st, deltas = self._probe(rec)
+        probed = self._probe(rec)
+        pending = probed is None
+        st, deltas = probed if probed is not None else (None, [])
 
-        self._files.blockSignals(True)
-        self._files.clear()
-        whole = QListWidgetItem("Whole diff")
-        whole.setData(Qt.UserRole, _WHOLE_DIFF)
-        self._files.addItem(whole)
-        for d in deltas:
-            it = QListWidgetItem(f"{d.status}  {d.display_path}   +{d.added} −{d.removed}")
-            it.setData(Qt.UserRole, d.path)
-            self._files.addItem(it)
-        # Block through setCurrentRow so _on_file_changed doesn't fire and
-        # kick off a redundant diff task -- the explicit _render_diff below
-        # is the single source of truth for the initial selection.
-        self._files.setCurrentRow(0)
-        self._files.blockSignals(False)
+        sig = [(d.status, d.path, d.added, d.removed) for d in deltas]
+        if keep_view and sig == self._file_sig:
+            pass  # a poll tick with nothing new -- don't touch the file list
+        else:
+            was_pending = self._detail_pending
+            selected = self._selected_file()
+            self._file_sig = sig
+            self._files.blockSignals(True)
+            self._files.clear()
+            whole = QListWidgetItem("Whole diff")
+            whole.setData(Qt.UserRole, _WHOLE_DIFF)
+            self._files.addItem(whole)
+            for d in deltas:
+                it = QListWidgetItem(f"{d.status}  {d.display_path}   +{d.added} −{d.removed}")
+                it.setData(Qt.UserRole, d.path)
+                self._files.addItem(it)
+            row = 0
+            if keep_view and selected not in (None, _WHOLE_DIFF):
+                row = next((i for i in range(self._files.count())
+                            if self._files.item(i).data(Qt.UserRole) == selected), 0)
+            # Block through setCurrentRow so _on_file_changed doesn't fire and
+            # kick off a redundant diff task -- the explicit _render_diff below
+            # is the single source of truth for the initial selection.
+            self._files.setCurrentRow(row)
+            self._files.blockSignals(False)
+            # The first probe landing only *names* the files that the diff we
+            # kicked off on open already covers, so rebuild the list around it
+            # but leave the diff -- and the request in flight for it -- alone.
+            if not (keep_view and was_pending and not pending):
+                path = self._files.item(row).data(Qt.UserRole) if self._files.count() else _WHOLE_DIFF
+                self._render_diff(rec, None if path == _WHOLE_DIFF else path)
 
-        self._status_line.setText(self._status_text(rec, st, deltas))
-        self._render_diff(rec, None)
+        self._detail_pending = pending
+        self._status_line.setText(self._status_text(rec, st, deltas, pending=pending))
 
         merge_ok = (
             self._merge_enabled()
@@ -619,12 +704,17 @@ class WorktreePanel(QWidget):
         else:
             self._pr_btn.setText("Open PR")
 
+    def _selected_file(self) -> Optional[str]:
+        """The path the file list is on, ``_WHOLE_DIFF``, or ``None``."""
+        item = self._files.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
+
     @staticmethod
-    def _status_text(rec, st, deltas) -> str:
+    def _status_text(rec, st, deltas, *, pending: bool = False) -> str:
         if rec.status == "orphaned":
             return "This worktree's folder is gone. Discard the record to tidy up."
         if st is None:
-            return "Worktree not readable."
+            return "Checking this worktree…" if pending else "Worktree not readable."
         added = sum(d.added for d in deltas)
         removed = sum(d.removed for d in deltas)
         parts = [f"{len(deltas)} file(s), +{added} −{removed}"]
@@ -656,10 +746,11 @@ class WorktreePanel(QWidget):
         task = _DiffTask(self._diff_gen, rec.path, rec.base_branch, path)
         task.signals.done.connect(self._on_diff_ready)
         # Hold a reference so the signal-carrier QObject outlives the run.
-        self._diff_task = task
+        self._diff_tasks[self._diff_gen] = task
         QThreadPool.globalInstance().start(task)
 
     def _on_diff_ready(self, generation: int, text: str) -> None:
+        self._diff_tasks.pop(generation, None)
         if generation != self._diff_gen:
             return  # a newer file selection / reload superseded this diff
         self._diff.setPlainText(text)

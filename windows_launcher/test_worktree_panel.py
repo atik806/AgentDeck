@@ -121,6 +121,10 @@ def main() -> int:
             check(panel2._list.count() == 1, "one row for one active record")
             check(not panel2._detail.isHidden(), "detail visible with a record")
             check("→" in panel2._head.text(), "detail header shows branch -> base")
+            # Rows paint before git is asked anything (that probe is what used
+            # to freeze the window), so anything probe-derived is asserted only
+            # once the background probe has landed.
+            _wait_for(lambda: not panel2._detail_pending)
             check(panel2._files.count() >= 2, "file list has whole-diff + changed file")
             _wait_for(lambda: panel2._diff.toPlainText() != "Loading diff…")
             check("+two" in panel2._diff.toPlainText() or "two" in panel2._diff.toPlainText(),
@@ -158,6 +162,7 @@ def main() -> int:
             panel5 = WorktreePanel(store=store2, repo_provider=lambda: info,
                                    merge_enabled=lambda: True)
             _wait_for(lambda: panel5._diff.toPlainText() != "Loading diff…")
+            _wait_for(lambda: not panel5._detail_pending)
             check(not panel5._rebase_btn.isEnabled(),
                   "Rebase disabled when behind == 0 (nothing to rebase onto)")
 
@@ -170,6 +175,9 @@ def main() -> int:
             panel6 = WorktreePanel(store=store, repo_provider=lambda: info,
                                    merge_enabled=lambda: True)
             _wait_for(lambda: panel6._diff.toPlainText() != "Loading diff…")
+            _wait_for(lambda: not panel6._detail_pending)
+            QThreadPool.globalInstance().waitForDone(5000)
+            QApplication.processEvents()
             gw.diff_text = real_diff_text
             check(len(diff_calls) == 1,
                   "selecting a row spawns exactly one diff task, not two")
@@ -181,6 +189,99 @@ def main() -> int:
             panel2._on_diff_ready(stale_diff_gen, "STALE")
             check(panel2._diff.toPlainText() == "current diff text",
                   "a superseded background diff result is dropped")
+
+            # -- a worktree discarded while its diff is in flight --
+            # The folder disappearing mid-diff raises NotADirectoryError
+            # (WinError 267) out of the spawn; an exception escaping the
+            # QRunnable killed the whole app ("AgentDeck stopped unexpectedly").
+            from worktree_panel import _DiffTask, _ProbeTask  # noqa: PLC0415
+
+            def _boom(*_a, **_k):
+                raise NotADirectoryError(267, "The directory name is invalid")
+
+            real_diff_text2 = gw.diff_text
+            real_status = gw.status
+            gw.diff_text = _boom
+            gw.status = _boom
+            got: list = []
+            try:
+                task = _DiffTask(1, str(dest), "main", None)
+                task.signals.done.connect(lambda _g, t: got.append(t))
+                task.run()  # inline: an escaping exception would fail the test run
+                check(bool(got) and got[0].startswith("(could not read diff"),
+                      "a worktree deleted mid-diff reports instead of crashing")
+                probe = _ProbeTask(1, [(rec.id, str(dest), "main")])
+                probed: list = []
+                probe.signals.done.connect(lambda _g, r: probed.append(r))
+                probe.run()
+                check(bool(probed) and probed[0][rec.id] == (None, []),
+                      "a worktree deleted mid-probe reports empty instead of crashing")
+            finally:
+                gw.diff_text = real_diff_text2
+                gw.status = real_status
+
+            # the same folder gone for real: the panel says so, no task spawned
+            gw.remove_worktree(info, dest, force=True)
+            panel7 = WorktreePanel(store=store, repo_provider=lambda: info,
+                                   merge_enabled=lambda: True)
+            check("not available" in panel7._diff.toPlainText(),
+                  "a discarded worktree's detail shows a plain message")
+            # ...and doesn't sit at "checking…" forever: nothing will ever probe
+            # a folder that is gone, so it must not read as pending.
+            check("Checking" not in panel7._status_line.text(),
+                  "a gone worktree isn't left waiting on a probe that never runs")
+            check(not panel7._merge_btn.isEnabled(),
+                  "Merge disabled once the worktree folder is gone")
+
+            # -- the freeze: reload() must never probe git on the UI thread --
+            # Probing one worktree costs ~13 git processes (~0.6 s), so the old
+            # synchronous reload() locked the window for seconds every time the
+            # Worktrees view was opened or a merge / discard redrew it.
+            import threading  # noqa: PLC0415
+
+            probe_threads: list = []
+            real_status2 = gw.status
+            real_stat = gw.diff_stat
+
+            def _slow_status(*a, **k):
+                probe_threads.append(threading.current_thread().name)
+                time.sleep(0.4)
+                return real_status2(*a, **k)
+
+            gw.status = _slow_status
+            gw.diff_stat = lambda *a, **k: (probe_threads.append(
+                threading.current_thread().name), real_stat(*a, **k))[1]
+            try:
+                panel8 = WorktreePanel(store=store2, repo_provider=lambda: info,
+                                       merge_enabled=lambda: True)
+                t0 = time.time()
+                panel8.reload()
+                elapsed = time.time() - t0
+                check(elapsed < 0.2,
+                      f"reload() returns without blocking on git ({elapsed*1000:.0f} ms)")
+                _wait_for(lambda: bool(probe_threads))
+                main_name = threading.main_thread().name
+                check(bool(probe_threads) and main_name not in probe_threads,
+                      "no git probe runs on the UI thread")
+                _wait_for(lambda: not panel8._detail_pending)
+            finally:
+                gw.status = real_status2
+                gw.diff_stat = real_stat
+                QThreadPool.globalInstance().waitForDone(5000)
+
+            # -- a poll tick must not yank the view out from under the user --
+            panel9 = WorktreePanel(store=store2, repo_provider=lambda: info,
+                                   merge_enabled=lambda: True)
+            _wait_for(lambda: not panel9._detail_pending)
+            _wait_for(lambda: panel9._diff.toPlainText() != "Loading diff…")
+            panel9._diff.setPlainText("what the user is reading")
+            picked = panel9._files.currentRow()
+            panel9.refresh_status()
+            _wait_for(lambda: panel9._probe_inflight_gen is None)
+            check(panel9._diff.toPlainText() == "what the user is reading",
+                  "an unchanged poll tick leaves the open diff alone")
+            check(panel9._files.currentRow() == picked,
+                  "an unchanged poll tick keeps the file selection")
 
             # -- background refresh: off-thread probe, stale results ignored --
             panel3.refresh_status()  # must not block / raise on the UI thread
