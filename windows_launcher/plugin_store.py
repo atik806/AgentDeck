@@ -251,7 +251,9 @@ class PluginStore:
     def _write(self, data: dict) -> bool:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
+            # PID-scoped (matches ``mcp_io.dump`` / ``McpLedger._write``) so two
+            # AgentDeck instances flushing at once can't clobber each other's temp.
+            tmp = self.path.with_name(f"{self.path.name}.adk{os.getpid()}.tmp")
             tmp.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )
