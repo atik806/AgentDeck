@@ -19,6 +19,22 @@ The atomic-write convention matches the rest of the codebase: write
 ``<name>.adk<pid>.tmp`` in the target dir, then ``os.replace``. A malformed source
 file is treated as "exists but empty" so a modify-write never destroys bytes we
 couldn't parse.
+
+That temp file gets the same care as the destination, because for an agent config
+it *is* the destination's contents: ``~/.claude.json`` holds the GitHub plugin's
+bearer token, so a stray copy of it is a leaked credential. Hence
+
+* it is created ``0600`` (owner-only) rather than at the process umask, and the
+  ``os.replace`` therefore leaves the real file ``0600`` too instead of silently
+  widening a config that was already private;
+* a failed write deletes it instead of leaving a plaintext copy behind; and
+* :func:`dump` sweeps *stale* siblings on its way past -- a temp file orphaned by
+  a kill or a power cut can't be cleaned up by the process that made it, and one
+  was found sitting in a user's home directory (a git repo, with the canonical
+  ``.claude.json`` excluded but ``.claude.json.adk<pid>.tmp`` not) weeks later.
+
+Only siblings older than :data:`_STALE_TMP_SECONDS` are swept, so a concurrent
+writer's in-flight temp is never touched -- these writes take milliseconds.
 """
 
 from __future__ import annotations
@@ -166,6 +182,62 @@ def load(path: Path, fmt: Fmt) -> Tuple[Any, bool]:
     return data, True
 
 
+#: A ``.adk<pid>.tmp`` sibling older than this was orphaned by a crash, not left
+#: by a writer that is still going. One minute is ~4 orders of magnitude more
+#: than a config write takes.
+_STALE_TMP_SECONDS = 60.0
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Create ``path`` owner-readable-only and write ``text`` to it.
+
+    ``os.open`` with an explicit mode rather than ``Path.write_text``: the latter
+    creates at ``0666 & ~umask`` (0644 on a stock Linux), which for a file that
+    carries a bearer token means every local account can read it. The mode is a
+    no-op on Windows beyond the read-only bit -- DPAPI and NTFS ACLs cover that
+    platform -- but it costs nothing and the Linux port needs it.
+    """
+    # The mode argument only applies when open() *creates* the file, so clear any
+    # same-named leftover first (pid reuse after a crash) rather than inheriting
+    # whatever permissions it had.
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        # Only close here: once fdopen succeeds the file object owns the fd, and
+        # closing it twice can shut an unrelated fd another thread just opened.
+        os.close(fd)
+        raise
+    with fh:
+        fh.write(text)
+
+
+def _sweep_stale_tmp(path: Path) -> None:
+    """Delete ``<name>.adk*.tmp`` siblings left behind by a killed writer.
+
+    Best-effort and deliberately narrow: only this file's own temp pattern, only
+    once they are clearly stale (see :data:`_STALE_TMP_SECONDS`), and every error
+    is swallowed -- a sweep that fails must never stop the write it precedes.
+    """
+    import time
+
+    cutoff = time.time() - _STALE_TMP_SECONDS
+    try:
+        siblings = list(path.parent.glob(f"{path.name}.adk*.tmp"))
+    except OSError:
+        return
+    for stale in siblings:
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            continue
+
+
 def dump(path: Path, data: Any, fmt: Fmt) -> bool:
     """Atomically write ``data`` to ``path`` in ``fmt``. Never raises.
 
@@ -195,11 +267,22 @@ def dump(path: Path, data: Any, fmt: Fmt) -> bool:
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.adk{os.getpid()}.tmp")
-        tmp.write_text(text, encoding="utf-8")
+    except OSError:
+        return False
+
+    _sweep_stale_tmp(path)
+
+    tmp = path.with_name(f"{path.name}.adk{os.getpid()}.tmp")
+    try:
+        _write_private(tmp, text)
         os.replace(tmp, path)
         return True
     except OSError:
+        # Never leave a plaintext copy of a token-bearing config lying around.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         return False
 
 
