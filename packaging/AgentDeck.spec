@@ -61,7 +61,7 @@ hiddenimports += [
     "linear_mcp", "linear_controller",
     "supabase_mcp", "supabase_controller",
     "gdrive_mcp", "gdrive_controller", "gdrive_secret",
-    "mcp_io", "mcp_targets",
+    "mcp_io", "mcp_targets", "git_exclude",
 ]
 
 # Writing non-JSON agent config (Codex's TOML, Goose's YAML). Pure-Python but

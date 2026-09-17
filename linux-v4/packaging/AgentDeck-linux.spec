@@ -80,7 +80,7 @@ hiddenimports += [
     "jira_mcp", "jira_controller",
     "gitlab_mcp", "gitlab_controller",
     "linear_mcp", "linear_controller",
-    "mcp_io", "mcp_targets",
+    "mcp_io", "mcp_targets", "git_exclude",
 ]
 
 # Writing non-JSON agent config (Codex's TOML, Goose's YAML). Pure-Python but
