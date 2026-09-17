@@ -184,6 +184,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Named colour scheme -- see theme._SCHEMES. "catppuccin" is the default
     # (matches the splash / logo). "theme" above stays the light/dark axis.
     "color_scheme": "catppuccin",
+    # How solid the window is -- see theme.GLASS_STYLES. "acrylic" / "mica" ask
+    # Windows 11 for a real DWM backdrop so the desktop shows through; off
+    # Windows 11 the app falls back to fading the whole window instead.
+    "window_style": "solid",
+    # Percent, 60..100. Only meaningful when window_style isn't "solid".
+    "window_opacity": 85,
+    # Let terminal panes dissolve too. Off by default: it costs a full-widget
+    # clear per frame, which the dirty-row repaint otherwise avoids.
+    "terminal_translucent": False,
     "window_width": 1400,
     "window_height": 880,
 
@@ -307,6 +316,9 @@ CONFIG_SCHEMA: Dict[str, type] = {
     "notify_sound": bool,
     "theme": str,
     "color_scheme": str,
+    "window_style": str,
+    "window_opacity": int,
+    "terminal_translucent": bool,
     "window_width": int,
     "window_height": int,
     "start_maximized": bool,
@@ -362,6 +374,7 @@ CONFIG_RANGES: Dict[str, tuple] = {
     "voice_silence_ms": (120, 2000),
     "voice_min_speech_ms": (0, 1000),
     "voice_preroll_ms": (0, 1000),
+    "window_opacity": (60, 100),
 }
 
 CONFIG_CHOICES: Dict[str, tuple] = {
@@ -372,7 +385,11 @@ CONFIG_CHOICES: Dict[str, tuple] = {
     # Keep in sync with theme._SCHEMES.
     "color_scheme": ("catppuccin", "dracula", "nord", "tokyonight", "gruvbox",
                      "rosepine", "kanagawa", "onedark", "synthwave",
-                     "solarized", "monokai", "everforest", "ayu"),
+                     "solarized", "monokai", "everforest", "ayu",
+                     "github", "materialocean", "carbonfox", "vitesse",
+                     "midnight"),
+    # Keep in sync with theme.GLASS_STYLES.
+    "window_style": ("solid", "acrylic", "mica"),
     "voice_language": ("auto", "en"),
     "voice_global_target": ("agentdeck", "foreground"),
 }
