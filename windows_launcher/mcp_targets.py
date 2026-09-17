@@ -542,13 +542,37 @@ class McpLedger:
             data = self._read()
             if provider not in data:
                 return
+            prov = data[provider] if isinstance(data[provider], dict) else {}
+            dropped = dict(prov) if agent_key is None else {agent_key: prov.get(agent_key)}
             if agent_key is None:
                 del data[provider]
             else:
                 data[provider].pop(agent_key, None)
                 if not data[provider]:
                     del data[provider]
+            self._hand_on_root_extra(data, provider, dropped)
             self._write(data)
+
+    @staticmethod
+    def _hand_on_root_extra(data: dict, provider: str, dropped: Dict[str, object]) -> None:
+        """Pass "we added this file's ``root_extra``" on to whoever is still wired.
+
+        ``wrote_root_extra`` is a fact about the *config file*, not about one
+        provider: ``remove_server`` refuses to strip the key while any other
+        managed server is still in that file. So the flag has to travel to the
+        last provider out. Without this, the first provider to disconnect takes
+        the only record with it and Codex's global
+        ``experimental_use_rmcp_client`` is stranded for good.
+        """
+        for agent, entry in dropped.items():
+            if not (isinstance(entry, dict) and entry.get("wrote_root_extra")):
+                continue
+            for other, agents in data.items():
+                if other == provider or not isinstance(agents, dict):
+                    continue
+                theirs = agents.get(agent)
+                if isinstance(theirs, dict):
+                    theirs["wrote_root_extra"] = True
 
     def agents_for(self, provider: str) -> Dict[str, dict]:
         prov = self._read().get(provider)
