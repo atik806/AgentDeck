@@ -80,7 +80,12 @@ def supports_agent(agent: Optional[str]) -> bool:
 def _truthy(value: object, default: bool) -> bool:
     if value is None:
         return default
-    return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+    text = str(value).strip().lower()
+    if not text:
+        # Blank is "not set", not "off" -- read_only defaults *on*, and an empty
+        # string silently turning it off is the wrong way to fail.
+        return default
+    return text not in ("false", "0", "no", "off")
 
 
 def canonical_server(settings: Optional[Dict[str, str]] = None) -> dict:
