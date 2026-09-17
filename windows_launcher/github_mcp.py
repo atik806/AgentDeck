@@ -388,6 +388,22 @@ def _git_exclude(folder: Path, pattern: str) -> None:
     git_exclude.add(folder, pattern)
 
 
+#: Characters allowed in the ``owner/name`` we paste into a shell command.
+_REPO_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/")
+
+
+def _safe_repo(repo: str) -> str:
+    """``repo`` with anything a shell could act on removed.
+
+    The repo reaches us from a combo box the user can type into and from a
+    pasted PR URL, and :func:`review_startup_command` interpolates it into a
+    double-quoted argument. ``github_api.parse_pr_url`` already rejects the
+    stray quote on the URL path; this is the belt to that braces, covering the
+    free-text path too.
+    """
+    return "".join(ch for ch in (repo or "") if ch in _REPO_OK)
+
+
 def review_startup_command(
     agent_command: str, repo: str, pr_number: int, brief_path: str | Path
 ) -> str:
@@ -403,7 +419,7 @@ def review_startup_command(
         rel = f"{AGENTDECK_DIR}/{brief.name}"
     rel = rel.replace("\\", "/")
     task = (
-        f"Review pull request #{pr_number} in {repo}. "
+        f"Review pull request #{int(pr_number)} in {_safe_repo(repo)}. "
         f"Follow the brief in {rel} exactly."
     )
     base = (agent_command or "claude").strip() or "claude"
