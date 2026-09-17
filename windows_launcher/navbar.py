@@ -136,8 +136,10 @@ def _icon_color(color: Optional[str]) -> QColor:
     return QColor(color) if color else QColor(theme.color("text_muted"))
 
 
-#: The "an update is waiting" notification dot -- matches the settings-button halo.
-_BADGE_COLOR = "#ff3b30"
+#: The "an update is waiting" notification dot -- matches the settings-button
+#: halo. A function, not a constant, so it follows the active colour scheme.
+def _BADGE_COLOR() -> str:
+    return theme.color("danger")
 
 
 def gear_icon(
@@ -185,7 +187,7 @@ def gear_icon(
         p.setBrush(QColor(Qt.black))
         p.drawEllipse(QPointF(bx, by), r + px * 0.08, r + px * 0.08)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-        p.setBrush(QColor(_BADGE_COLOR))
+        p.setBrush(QColor(_BADGE_COLOR()))
         p.drawEllipse(QPointF(bx, by), r, r)
     p.end()
     return QIcon(pm)
