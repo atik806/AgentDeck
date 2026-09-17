@@ -59,6 +59,7 @@ import git_worktree
 import pane_state
 import perf
 import theme
+import window_glass
 from notifications import AttentionNotifier
 from account import AccountController
 from github_controller import GitHubController
@@ -255,6 +256,9 @@ class TerminalPanel(QMainWindow):
         # Resolve light/dark + colour scheme once, then follow further changes.
         theme.init(self.config)
         theme.manager().changed.connect(self._on_theme_changed)
+        # Before the first show(): flipping this attribute on a live window
+        # costs a native-window recreation (see _apply_glass).
+        self.setAttribute(Qt.WA_TranslucentBackground, theme.glass_active())
         # App-wide terminal font family, before the first pane is built.
         import terminal_view
         terminal_view.set_font_family(self.config.get("font_family", ""))
@@ -346,6 +350,9 @@ class TerminalPanel(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        # The backdrop needs a realised native window, so the first real
+        # application happens here rather than in __init__.
+        self._apply_glass()
         QTimer.singleShot(0, self._focus_active_ws)
         QTimer.singleShot(0, self._position_overlay)
 
@@ -381,9 +388,12 @@ class TerminalPanel(QMainWindow):
 
     def _toolbar_qss(self) -> str:
         t = theme.color
+        # Backgrounds go through theme.surface so a glass window style can
+        # dissolve them; borders and text stay opaque via theme.color.
+        s = theme.surface
         return f"""
         QToolBar {{
-            background: {t('toolbar_bg')}; border: none;
+            background: {s('toolbar_bg')}; border: none;
             border-bottom: 1px solid {t('toolbar_border')};
             padding: 6px 10px; spacing: 6px;
         }}
@@ -395,7 +405,7 @@ class TerminalPanel(QMainWindow):
             padding: 0 3px 0 5px;
         }}
         QToolBar QPushButton, QToolBar QToolButton {{
-            color: {t('text')}; background: {t('surface')}; border: 1px solid {t('border')};
+            color: {t('text')}; background: {s('surface')}; border: 1px solid {t('border')};
             border-radius: 6px; padding: 5px 12px; font-size: 11px;
             min-height: 15px;
         }}
@@ -576,13 +586,52 @@ class TerminalPanel(QMainWindow):
     def _style_status_bar(self) -> None:
         self.statusBar().setStyleSheet(
             f"color: {theme.color('status_text')};"
-            f" background: {theme.color('status_bg')}; font-size: 11px;"
+            f" background: {theme.surface('status_bg')}; font-size: 11px;"
         )
 
     def _apply_window_chrome(self) -> None:
         self.setStyleSheet(
-            f"QMainWindow {{ background: {theme.color('window_bg')}; }}"
+            f"QMainWindow {{ background: {theme.surface('window_bg')}; }}"
         )
+
+    def _apply_glass(self) -> None:
+        """Put the window into the configured style (solid / acrylic / mica).
+
+        Three-way, because only one of them is a real effect:
+
+        * **solid** -- what the app always did. Everything here is undone.
+        * a DWM backdrop, when ``window_glass`` says this machine can render
+          one. ``WA_TranslucentBackground`` is our half of that contract; the
+          rgba backgrounds from ``theme.surface`` are the other half.
+        * otherwise **fade the whole window**. Not the same thing -- text goes
+          see-through too -- but it is the only translucency Windows 10 and
+          most Linux compositors will give us, and it beats silently doing
+          nothing. Settings says which one is in effect.
+
+        Toggling ``WA_TranslucentBackground`` on a window that is already up
+        makes Qt destroy and recreate the native window, which silently
+        invalidates the ``HWND`` -- the DWM calls then succeed against a dead
+        handle and nothing renders. So the attribute is set here and the
+        backdrop is applied on the next turn of the event loop, by which point
+        ``winId()`` returns the handle that actually exists.
+        """
+        self.setAttribute(Qt.WA_TranslucentBackground, theme.glass_active())
+        self._apply_backdrop()
+        QTimer.singleShot(0, self._apply_backdrop)
+
+    def _apply_backdrop(self) -> None:
+        """The ``HWND``-facing half of :meth:`_apply_glass`. Idempotent."""
+        glass = theme.glass_active()
+        hwnd = int(self.winId())
+        dark = theme.mode() == "dark"
+        if not glass:
+            window_glass.clear(hwnd, dark)
+            self.setWindowOpacity(1.0)
+            return
+        if window_glass.apply(hwnd, theme.glass_style(), dark):
+            self.setWindowOpacity(1.0)
+        else:
+            self.setWindowOpacity(max(0.3, theme.glass_opacity() / 100.0))
 
     def _refresh_theme_button(self) -> None:
         self._theme_btn.setIcon(theme_icon(16))
@@ -602,6 +651,9 @@ class TerminalPanel(QMainWindow):
         if app is not None:
             theme.apply_palette(app)
 
+        # First: the window style itself. The fan-out below repaints every
+        # surface on top of whatever backdrop this leaves.
+        self._apply_glass()
         self._apply_window_chrome()
         self._toolbar.setStyleSheet(self._toolbar_qss())
         self._style_brand()
@@ -671,6 +723,20 @@ class TerminalPanel(QMainWindow):
         """Colour-scheme dropdown -> repaint every surface (theme.set_scheme
         fires theme.manager().changed, which _on_theme_changed handles)."""
         theme.set_scheme(key)
+
+    def _on_settings_glass_changed(self) -> None:
+        """Window style / opacity / terminal-translucency changed.
+
+        One handler for all three: they are one visual decision, and re-reading
+        the config dict keeps the Settings panel down to a single signal.
+        ``theme.set_glass`` fires ``changed`` -> ``_on_theme_changed`` ->
+        ``_apply_glass`` plus the usual repaint.
+        """
+        theme.set_glass(
+            self.config.get("window_style", "solid"),
+            self.config.get("window_opacity", theme.DEFAULT_OPACITY),
+            self.config.get("terminal_translucent", False),
+        )
 
     def _on_settings_font_family_changed(self, family: str) -> None:
         """Terminal-font dropdown -> re-resolve the font in every open pane."""
@@ -800,6 +866,7 @@ class TerminalPanel(QMainWindow):
         self._settings_panel.theme_changed.connect(self._on_settings_theme_changed)
         self._settings_panel.scheme_changed.connect(self._on_settings_scheme_changed)
         self._settings_panel.font_family_changed.connect(self._on_settings_font_family_changed)
+        self._settings_panel.glass_changed.connect(self._on_settings_glass_changed)
         self._settings_panel.font_size_changed.connect(self._set_font)
         self._settings_panel.voice_settings_changed.connect(self._on_settings_voice_changed)
         self._settings_panel.notifications_changed.connect(self._configure_notifications)
@@ -3399,7 +3466,7 @@ class TerminalPanel(QMainWindow):
         a graphics effect is the only way -- same trick as the pane focus glow.)
         """
         self._update_glow = QGraphicsDropShadowEffect(self)
-        self._update_glow.setColor(QColor("#ff3b30"))
+        self._update_glow.setColor(QColor(theme.color("danger")))
         self._update_glow.setOffset(0, 0)
         self._update_glow.setBlurRadius(0)
         self._update_glow.setEnabled(False)
