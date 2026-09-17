@@ -71,6 +71,10 @@ DEFAULT_DIFF_MAX_BYTES = 2_000_000
 _DEFAULT_TIMEOUT = 30.0
 #: Branch names we consider "the mainline" when the repo doesn't tell us.
 _BASE_CANDIDATES = ("main", "master", "trunk", "develop", "development")
+#: AgentDeck's per-folder scratch dir (handoff transcripts, PR review briefs,
+#: materialised skills). Never staged by :func:`commit_all` -- keep in step with
+#: ``agent_sessions._HANDOFF_DIR`` / ``github_mcp.AGENTDECK_DIR``.
+_SCRATCH_DIR = ".agentdeck"
 
 
 # --------------------------------------------------------------------------- #
@@ -700,10 +704,24 @@ def diff_text(
 def commit_all(worktree_path: "str | os.PathLike", message: str) -> str:
     """Stage everything in the worktree and commit. Returns the new sha.
 
+    Everything *except* ``.agentdeck/`` -- AgentDeck's own scratch directory,
+    which holds cross-agent handoff transcripts and PR review briefs. A handoff
+    transcript is a verbatim record of an agent conversation, so committing one
+    onto a branch this function's callers then push is a disclosure, not a
+    tidiness problem. ``git_exclude`` already keeps the directory out of
+    ``git status``; the ``:(exclude)`` pathspec is the belt to that braces, for
+    the cases where writing the exclude file failed (read-only ``.git``) or the
+    files were staged by something other than this call.
+
     Raises :class:`GitError` when there is nothing to commit.
     """
     wt = str(worktree_path)
     _run(["add", "-A"], wt)
+    # Unstage rather than filter the pathspec: `git add -A -- . :(exclude)â€¦`
+    # still *errors* when the positive pathspec matches an ignored path, so the
+    # normal (already-excluded) case would fail the commit. A reset of a path
+    # that matched nothing is a silent no-op.
+    _run(["reset", "-q", "--", _SCRATCH_DIR], wt, check=False)
     proc = _run(["commit", "-m", message or "WIP (AgentDeck worktree)"], wt, check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
