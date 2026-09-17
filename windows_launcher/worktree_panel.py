@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -140,7 +140,12 @@ QListWidget#wtList, QListWidget#wtFiles {{
     border: 1px solid {t('border')}; border-radius: 10px; padding: 4px;
     font-size: 12px; outline: none;
 }}
-QListWidget#wtList::item, QListWidget#wtFiles::item {{
+QListWidget#wtList::item {{
+    /* rows carry their own padding inside _WorktreeRow; padding here would
+       shrink the item widget's rect and clip the branch line. */
+    border-radius: 7px; padding: 0; margin: 1px 0;
+}}
+QListWidget#wtFiles::item {{
     border-radius: 7px; padding: 6px 8px; margin: 1px 0;
 }}
 QListWidget#wtList::item:selected, QListWidget#wtFiles::item:selected {{
@@ -249,7 +254,7 @@ class _WorktreeRow(QFrame):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setContentsMargins(10, 7, 10, 7)
         lay.setSpacing(2)
 
         top = QHBoxLayout()
@@ -465,7 +470,10 @@ class WorktreePanel(QWidget):
             item = QListWidgetItem(self._list)
             item.setData(Qt.UserRole, rec.id)
             row = _WorktreeRow(rec, st, deltas)
-            item.setSizeHint(row.sizeHint())
+            hint = row.sizeHint()
+            # +2 for the item's 1px top/bottom margin, which the view takes out
+            # of the widget's rect rather than adding around it.
+            item.setSizeHint(QSize(hint.width(), hint.height() + 2))
             self._list.addItem(item)
             self._list.setItemWidget(item, row)
         self._list.blockSignals(False)
