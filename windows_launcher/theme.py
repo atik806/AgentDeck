@@ -11,6 +11,8 @@ Usage:
 * ``theme.manager().changed`` -- a signal (carries the new mode string);
   ``terminal_panel`` fans it out to the sidebar / panes / dialogs.
 * ``theme.set_mode("light")`` -- flip and notify.
+* ``theme.surface("toolbar_bg")`` -- the same thing for a QSS *background*,
+  which in a glass window style comes back as ``rgba(...)`` instead of hex.
 
 Nothing here imports the widgets it themes; callers pull tokens.
 """
@@ -26,6 +28,9 @@ __all__ = ["init", "mode", "set_mode", "toggle", "color", "qcolor", "ansi",
            "apply_palette", "manager", "MODES",
            "scheme", "set_scheme", "scheme_labels", "scheme_is_dark_only",
            "DEFAULT_SCHEME", "chrome_font",
+           "surface", "qcolor_surface", "set_glass", "glass_style",
+           "glass_opacity", "glass_active", "terminal_translucent",
+           "GLASS_STYLES", "GLASS_LABELS", "DEFAULT_OPACITY",
            "FONT_SIZE_SM", "FONT_SIZE_BASE", "FONT_SIZE_MD", "FONT_SIZE_LG"]
 
 MODES = ("light", "dark")
@@ -578,6 +583,135 @@ _AYU = {
     },
 }
 
+# -- GitHub -------------------------------------------------------------------
+# The palette most developers see every day, and the strongest *light* scheme
+# in the set -- GitHub tuned its light mode as carefully as its dark one, which
+# is rarer than it sounds.
+_GITHUB_DARK = {
+    "crust": "#010409", "mantle": "#0d1117", "base": "#0d1117", "layer1": "#161b22",
+    "surface": "#161b22", "surface_hi": "#21262d", "overlay": "#30363d", "overlay_hi": "#3d444d",
+    "fg": "#e6edf3", "fg_dim": "#9198a1", "fg_faint": "#6e7681",
+    "accent": "#4493f8", "accent_hi": "#79c0ff", "accent_soft": "#132b46", "accent2": "#3fb950",
+    "on_accent": "#0d1117", "danger": "#f85149", "warn": "#d29922", "ok": "#3fb950",
+    "cursor": "#e6edf3", "selection": "#264f78",
+    "ansi": {
+        "black": "#484f58", "red": "#ff7b72", "green": "#3fb950", "yellow": "#d29922",
+        "blue": "#58a6ff", "magenta": "#bc8cff", "cyan": "#39c5cf", "white": "#b1bac4",
+        "brightblack": "#6e7681", "brightred": "#ffa198", "brightgreen": "#56d364",
+        "brightyellow": "#e3b341", "brightblue": "#79c0ff", "brightmagenta": "#d2a8ff",
+        "brightcyan": "#56d4dd", "brightwhite": "#f0f6fc",
+    },
+}
+
+_GITHUB_LIGHT = {
+    "crust": "#d1d9e0", "mantle": "#f6f8fa", "base": "#ffffff", "layer1": "#f6f8fa",
+    "surface": "#ffffff", "surface_hi": "#eef1f4", "overlay": "#d1d9e0", "overlay_hi": "#b7bec6",
+    "fg": "#1f2328", "fg_dim": "#59636e", "fg_faint": "#818b98",
+    "accent": "#0969da", "accent_hi": "#0550ae", "accent_soft": "#ddf4ff", "accent2": "#1a7f37",
+    "on_accent": "#ffffff", "danger": "#cf222e", "warn": "#9a6700", "ok": "#1a7f37",
+    "cursor": "#1f2328", "selection": "#cce5ff",
+    "ansi": {
+        "black": "#24292f", "red": "#cf222e", "green": "#116329", "yellow": "#4d2d00",
+        "blue": "#0969da", "magenta": "#8250df", "cyan": "#1b7c83", "white": "#6e7781",
+        "brightblack": "#57606a", "brightred": "#a40e26", "brightgreen": "#1a7f37",
+        "brightyellow": "#633c01", "brightblue": "#218bff", "brightmagenta": "#a475f9",
+        "brightcyan": "#3192aa", "brightwhite": "#8c959f",
+    },
+}
+
+# -- Material Ocean -----------------------------------------------------------
+# Material Theme's deepest variant: a blue-black that is properly navy rather
+# than grey, with the Material accent spread over it.
+_MATERIAL_OCEAN = {
+    "crust": "#090b10", "mantle": "#0f111a", "base": "#0f111a", "layer1": "#151720",
+    "surface": "#1a1c25", "surface_hi": "#232530", "overlay": "#2e3243", "overlay_hi": "#3e4451",
+    "fg": "#a6accd", "fg_dim": "#8f95b2", "fg_faint": "#4b526d",
+    "accent": "#82aaff", "accent_hi": "#a9c4ff", "accent_soft": "#1c2740", "accent2": "#89ddff",
+    "on_accent": "#0f111a", "danger": "#f07178", "warn": "#ffcb6b", "ok": "#c3e88d",
+    "cursor": "#ffcc00", "selection": "#2e3243",
+    "ansi": {
+        "black": "#0f111a", "red": "#f07178", "green": "#c3e88d", "yellow": "#ffcb6b",
+        "blue": "#82aaff", "magenta": "#c792ea", "cyan": "#89ddff", "white": "#a6accd",
+        "brightblack": "#4b526d", "brightred": "#ff8b92", "brightgreen": "#ddffa7",
+        "brightyellow": "#ffe585", "brightblue": "#9cc4ff", "brightmagenta": "#e1acff",
+        "brightcyan": "#a3f7ff", "brightwhite": "#ffffff",
+    },
+}
+
+# -- Carbonfox ----------------------------------------------------------------
+# IBM Carbon by way of the Nightfox family: genuinely neutral greys, no blue or
+# purple cast at all. The one scheme here that does not pick a mood.
+_CARBONFOX = {
+    "crust": "#0c0c0c", "mantle": "#161616", "base": "#161616", "layer1": "#1c1c1c",
+    "surface": "#252525", "surface_hi": "#2a2a2a", "overlay": "#353535", "overlay_hi": "#484848",
+    "fg": "#f2f4f8", "fg_dim": "#b6b8bb", "fg_faint": "#7b7c7e",
+    "accent": "#78a9ff", "accent_hi": "#a6c8ff", "accent_soft": "#1f2c40", "accent2": "#33b1ff",
+    "on_accent": "#161616", "danger": "#ee5396", "warn": "#08bdba", "ok": "#25be6a",
+    "cursor": "#f2f4f8", "selection": "#2a2a2a",
+    "ansi": {
+        "black": "#282828", "red": "#ee5396", "green": "#25be6a", "yellow": "#08bdba",
+        "blue": "#78a9ff", "magenta": "#be95ff", "cyan": "#33b1ff", "white": "#dfdfe0",
+        "brightblack": "#484848", "brightred": "#f16da6", "brightgreen": "#46c880",
+        "brightyellow": "#2dc7c4", "brightblue": "#8cb6ff", "brightmagenta": "#c8a5ff",
+        "brightcyan": "#52bdff", "brightwhite": "#e4e4e5",
+    },
+}
+
+# -- Vitesse ------------------------------------------------------------------
+# Anthony Fu's editor theme. Deliberately desaturated -- the calmest pair in the
+# set, and the one that holds up longest in a room with a window.
+_VITESSE_DARK = {
+    "crust": "#050505", "mantle": "#121212", "base": "#121212", "layer1": "#181818",
+    "surface": "#1c1c1c", "surface_hi": "#242424", "overlay": "#2f2f2f", "overlay_hi": "#3c3c3c",
+    "fg": "#dbd7ca", "fg_dim": "#a8a29e", "fg_faint": "#758575",
+    "accent": "#4d9375", "accent_hi": "#69b295", "accent_soft": "#1b2b23", "accent2": "#6394bf",
+    "on_accent": "#121212", "danger": "#cb7676", "warn": "#d4976c", "ok": "#4d9375",
+    "cursor": "#dbd7ca", "selection": "#2f2f2f",
+    "ansi": {
+        "black": "#393a34", "red": "#cb7676", "green": "#4d9375", "yellow": "#d4976c",
+        "blue": "#6394bf", "magenta": "#d3869b", "cyan": "#5eaab5", "white": "#dbd7ca",
+        "brightblack": "#758575", "brightred": "#d68c8c", "brightgreen": "#69b295",
+        "brightyellow": "#e0a878", "brightblue": "#7aa7cc", "brightmagenta": "#dda3b4",
+        "brightcyan": "#74bcc7", "brightwhite": "#f1efe7",
+    },
+}
+
+_VITESSE_LIGHT = {
+    "crust": "#e5e3da", "mantle": "#f7f6f3", "base": "#ffffff", "layer1": "#f7f6f3",
+    "surface": "#ffffff", "surface_hi": "#f0efeb", "overlay": "#dfdedb", "overlay_hi": "#c8c6c0",
+    "fg": "#393a34", "fg_dim": "#5c5f5a", "fg_faint": "#8e8f8b",
+    "accent": "#1e754f", "accent_hi": "#145c3c", "accent_soft": "#dfeee7", "accent2": "#296aa3",
+    "on_accent": "#ffffff", "danger": "#ab5959", "warn": "#a65e2b", "ok": "#1e754f",
+    "cursor": "#393a34", "selection": "#dfdedb",
+    "ansi": {
+        "black": "#393a34", "red": "#ab5959", "green": "#1e754f", "yellow": "#a65e2b",
+        "blue": "#296aa3", "magenta": "#b05a78", "cyan": "#2993a3", "white": "#5c5f5a",
+        "brightblack": "#8e8f8b", "brightred": "#bd6a6a", "brightgreen": "#2a8a60",
+        "brightyellow": "#b87038", "brightblue": "#3a7cb5", "brightmagenta": "#c26b8a",
+        "brightcyan": "#37a5b5", "brightwhite": "#393a34",
+    },
+}
+
+# -- Midnight -----------------------------------------------------------------
+# A true ``#000000`` ground for OLED panels, where black costs no backlight and
+# the contrast is genuinely infinite. Everything above it is a lifted grey so
+# the layering still reads.
+_MIDNIGHT = {
+    "crust": "#000000", "mantle": "#000000", "base": "#000000", "layer1": "#0a0a0c",
+    "surface": "#121216", "surface_hi": "#1a1a20", "overlay": "#26262e", "overlay_hi": "#35353f",
+    "fg": "#e4e4ea", "fg_dim": "#a0a0ac", "fg_faint": "#6b6b78",
+    "accent": "#5eb1ff", "accent_hi": "#8ac8ff", "accent_soft": "#0d1e2e", "accent2": "#4fd6be",
+    "on_accent": "#000000", "danger": "#ff6b81", "warn": "#ffc46b", "ok": "#5ede8f",
+    "cursor": "#5eb1ff", "selection": "#26262e",
+    "ansi": {
+        "black": "#1a1a20", "red": "#ff6b81", "green": "#5ede8f", "yellow": "#ffc46b",
+        "blue": "#5eb1ff", "magenta": "#c58aff", "cyan": "#4fd6be", "white": "#c8c8d2",
+        "brightblack": "#6b6b78", "brightred": "#ff8a9b", "brightgreen": "#7ee8a7",
+        "brightyellow": "#ffd48c", "brightblue": "#8ac8ff", "brightmagenta": "#d6a8ff",
+        "brightcyan": "#74e4d0", "brightwhite": "#ffffff",
+    },
+}
+
 _SCHEMES: "dict[str, dict]" = {
     "catppuccin": {
         "label": "Catppuccin",
@@ -636,6 +770,28 @@ _SCHEMES: "dict[str, dict]" = {
         "label": "Ayu",
         "dark": _expand(_AYU), "ansi_dark": _AYU["ansi"],
     },
+    "github": {
+        "label": "GitHub",
+        "dark": _expand(_GITHUB_DARK), "light": _expand(_GITHUB_LIGHT),
+        "ansi_dark": _GITHUB_DARK["ansi"], "ansi_light": _GITHUB_LIGHT["ansi"],
+    },
+    "materialocean": {
+        "label": "Material Ocean",
+        "dark": _expand(_MATERIAL_OCEAN), "ansi_dark": _MATERIAL_OCEAN["ansi"],
+    },
+    "carbonfox": {
+        "label": "Carbonfox",
+        "dark": _expand(_CARBONFOX), "ansi_dark": _CARBONFOX["ansi"],
+    },
+    "vitesse": {
+        "label": "Vitesse",
+        "dark": _expand(_VITESSE_DARK), "light": _expand(_VITESSE_LIGHT),
+        "ansi_dark": _VITESSE_DARK["ansi"], "ansi_light": _VITESSE_LIGHT["ansi"],
+    },
+    "midnight": {
+        "label": "Midnight (OLED)",
+        "dark": _expand(_MIDNIGHT), "ansi_dark": _MIDNIGHT["ansi"],
+    },
 }
 
 
@@ -676,6 +832,164 @@ def set_scheme(new_scheme: str) -> None:
         return
     _scheme = new_scheme
     manager().changed.emit(_mode)
+
+
+# ---------------------------------------------------------------------------
+# Window style (glass)
+# ---------------------------------------------------------------------------
+#
+# A third appearance axis, orthogonal to mode and scheme: how solid the window
+# is. "solid" is the historical behaviour and the default. The other two ask
+# ``window_glass`` for a real Windows 11 DWM backdrop and, in exchange, every
+# *background* in the app has to carry alpha -- an opaque child covers a
+# backdrop right back up.
+#
+# The alpha lives here rather than in the scheme tables on purpose: it applies
+# to all 18 schemes rather than being one more palette to maintain, and
+# ``color()`` keeps its contract (an opaque 6-digit hex, always) so the ~26
+# ``QColor(theme.color(...))`` painter call sites are untouched. QSS wants
+# ``rgba(r, g, b, a)`` -- Qt stylesheets do not parse ``#RRGGBBAA`` -- so
+# :func:`surface` returns that, and only for backgrounds.
+
+GLASS_STYLES = ("solid", "acrylic", "mica")
+
+#: For the Settings picker -- ``[(key, label)]`` in display order.
+GLASS_LABELS = (
+    ("solid", "Solid"),
+    ("acrylic", "Glass (Acrylic)"),
+    ("mica", "Mica"),
+)
+
+DEFAULT_OPACITY = 85
+_OPACITY_MIN, _OPACITY_MAX = 60, 100
+
+#: Backgrounds that dissolve in a glass style. Text, borders and accents are
+#: deliberately absent -- fading those is how a theme becomes unreadable.
+_SURFACE_TOKENS = frozenset({
+    "window_bg", "toolbar_bg", "sidebar_bg", "status_bg",
+    "card_bg", "card_raised", "menu_bg", "surface",
+    "pane_header_bg", "pane_header_bg_active",
+})
+
+#: Alpha'd only when the terminal opt-in is on as well -- a see-through
+#: terminal costs a full-widget clear per frame (see terminal_view.paintEvent).
+_TERM_TOKENS = frozenset({"term_bg"})
+
+#: The chrome sits *on* the window rather than beside it, so it stays a little
+#: more solid than the window ground -- otherwise sidebar, toolbar and window
+#: all wash out to the same flat sheet and the layering reads as a bug. The
+#: ground itself gets exactly the opacity the user asked for; everything
+#: layered above it is nudged up by this much.
+_CHROME_BOOST = 0.08
+
+#: The backmost surfaces -- what the opacity slider percentage literally means.
+_GROUND_TOKENS = frozenset({"window_bg"}) | _TERM_TOKENS
+
+_glass_style = "solid"
+_glass_opacity = DEFAULT_OPACITY
+_term_translucent = False
+
+
+def glass_style() -> str:
+    return _glass_style
+
+
+def glass_opacity() -> int:
+    return _glass_opacity
+
+
+def glass_active() -> bool:
+    return _glass_style != "solid"
+
+
+def terminal_translucent() -> bool:
+    """Whether terminal panes dissolve too (only meaningful with glass on)."""
+    return _term_translucent and glass_active()
+
+
+def _clamp_opacity(value: object) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_OPACITY
+    return max(_OPACITY_MIN, min(_OPACITY_MAX, n))
+
+
+def _norm_style(value: object) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in GLASS_STYLES else "solid"
+
+
+def set_glass(style: str, opacity: object = None,
+              term_translucent: "bool | None" = None) -> None:
+    """Set the window style / opacity / terminal opt-in and repaint if changed.
+
+    One setter for all three because they are one visual decision, and because
+    it keeps the Settings panel down to a single ``glass_changed`` signal.
+    """
+    global _glass_style, _glass_opacity, _term_translucent
+    new_style = _norm_style(style)
+    new_op = _glass_opacity if opacity is None else _clamp_opacity(opacity)
+    new_term = _term_translucent if term_translucent is None else bool(term_translucent)
+    if (new_style, new_op, new_term) == (_glass_style, _glass_opacity, _term_translucent):
+        return
+    _glass_style, _glass_opacity, _term_translucent = new_style, new_op, new_term
+    manager().changed.emit(_mode)
+
+
+def _alpha_for(token: str) -> float:
+    base = _glass_opacity / 100.0
+    if token in _GROUND_TOKENS:
+        return base
+    return min(1.0, base + _CHROME_BOOST)
+
+
+def _rgba(hex_colour: str, alpha: float) -> str:
+    """``"#1e1e2e"`` + 0.85 -> ``"rgba(30, 30, 46, 0.850)"``."""
+    c = QColor(hex_colour)
+    if not c.isValid():
+        return hex_colour
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.3f})"
+
+
+def _surface_alpha(token: str) -> Optional[float]:
+    """The alpha ``token`` should carry right now, or None for fully opaque."""
+    if not glass_active():
+        return None
+    if token in _SURFACE_TOKENS or (token in _TERM_TOKENS and terminal_translucent()):
+        a = _alpha_for(token)
+        return None if a >= 0.999 else a
+    return None
+
+
+def surface(token: str, mode_override: Optional[str] = None) -> str:
+    """A QSS **background** value for ``token``.
+
+    Identical to :func:`color` in the solid style, so swapping a call site over
+    is free. In a glass style, and only for a background token, it returns an
+    ``rgba(...)`` string instead.
+
+    Never hand the result to ``QColor(...)`` -- it does not parse ``rgba()``.
+    Painters want :func:`color` / :func:`qcolor`, or :func:`qcolor_surface`
+    when they specifically need the translucent version.
+    """
+    hex_colour = color(token, mode_override)
+    alpha = _surface_alpha(token)
+    return hex_colour if alpha is None else _rgba(hex_colour, alpha)
+
+
+def qcolor_surface(token: str, mode_override: Optional[str] = None) -> QColor:
+    """:func:`surface` as a ``QColor`` with its alpha channel set.
+
+    For the painters that have to honour translucency themselves rather than
+    going through a stylesheet -- ``vt_screen.Palette.BACKGROUND`` is the one
+    that matters.
+    """
+    c = QColor(color(token, mode_override))
+    alpha = _surface_alpha(token)
+    if alpha is not None:
+        c.setAlpha(max(0, min(255, round(alpha * 255))))
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -721,14 +1035,18 @@ def _detect_system() -> str:
 
 
 def init(config: Optional[dict] = None) -> str:
-    """Resolve ``config['theme']`` to a concrete mode + read ``color_scheme``.
-    Idempotent; returns the resolved mode."""
-    global _mode, _scheme
+    """Resolve ``config['theme']`` to a concrete mode + read the rest of the
+    appearance keys (``color_scheme``, ``window_style``, ``window_opacity``,
+    ``terminal_translucent``). Idempotent; returns the resolved mode."""
+    global _mode, _scheme, _glass_style, _glass_opacity, _term_translucent
     pref = "system"
     sch = DEFAULT_SCHEME
     if isinstance(config, dict):
         pref = str(config.get("theme", "system") or "system").strip().lower()
         sch = str(config.get("color_scheme", DEFAULT_SCHEME) or DEFAULT_SCHEME).strip().lower()
+        _glass_style = _norm_style(config.get("window_style", "solid"))
+        _glass_opacity = _clamp_opacity(config.get("window_opacity", DEFAULT_OPACITY))
+        _term_translucent = bool(config.get("terminal_translucent", False))
     _mode = _detect_system() if pref not in MODES else pref
     _scheme = sch if sch in _SCHEMES else DEFAULT_SCHEME
     return _mode
