@@ -30,6 +30,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 
+import git_exclude
 import mcp_io
 import mcp_targets
 from mcp_targets import McpLedger
@@ -63,16 +64,6 @@ _SERVER_NAME = "github"
 
 #: Agents whose one-shot "review this PR" task invocation is verified to work.
 _REVIEW_AGENTS = {"claude", "codex"}
-
-
-def _is_claude(agent_command: str) -> bool:
-    try:
-        from agents import is_claude_command
-
-        return is_claude_command(agent_command)
-    except Exception:  # noqa: BLE001
-        first = (agent_command or "").strip().split()[:1]
-        return bool(first) and Path(first[0].strip('"\'')).stem.lower() == "claude"
 
 
 def _key_of(agent: Optional[str]) -> str:
@@ -388,24 +379,13 @@ def write_review_brief(
 
 
 def _git_exclude(folder: Path, pattern: str) -> None:
-    """Add ``pattern`` to ``.git/info/exclude`` if ``folder`` is a git work tree.
+    """Add ``pattern`` to the repository-local exclude file for ``folder``.
 
     Local-only (never committed), so it keeps AgentDeck's scratch files out of
-    ``git status`` without touching a tracked ``.gitignore``. Best-effort.
+    ``git status`` without touching a tracked ``.gitignore``. Worktree-aware --
+    see ``git_exclude``. Best-effort.
     """
-    exclude = folder / ".git" / "info" / "exclude"
-    try:
-        if not exclude.parent.is_dir():
-            return
-        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-        if pattern in existing.split():
-            return
-        with exclude.open("a", encoding="utf-8") as fh:
-            if existing and not existing.endswith("\n"):
-                fh.write("\n")
-            fh.write(f"{pattern}\n")
-    except OSError:
-        pass
+    git_exclude.add(folder, pattern)
 
 
 def review_startup_command(
