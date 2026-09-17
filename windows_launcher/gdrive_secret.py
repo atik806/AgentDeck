@@ -1,4 +1,4 @@
-"""The Google Drive OAuth **client secret**, encrypted at rest on this machine.
+r"""The Google Drive OAuth **client secret**, encrypted at rest on this machine.
 
 Google's auth servers have no Dynamic Client Registration, so -- alone among
 AgentDeck's plugins -- the Drive plugin needs a client *secret*. The user brings
@@ -47,7 +47,7 @@ def _default_store_path() -> Path:
 
 
 class GDriveSecretStore:
-    """The connected Drive client secret, at ``%APPDATA%\multi-terminal\gdrive.bin``."""
+    r"""The connected Drive client secret, at ``%APPDATA%\multi-terminal\gdrive.bin``."""
 
     def __init__(self, path=None):
         self._store = EncryptedJsonStore(path or _default_store_path())
