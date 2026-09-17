@@ -685,7 +685,8 @@ class _GitHubDetail(QWidget):
         if connected:
             conn = gh.connection
             who = f"Connected as @{gh.login}" if gh.login else "Connected"
-            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            # Header-auth, not OAuth: GitHub injects the token itself.
+            wired = _wired_agent_labels(self._agents_provider, "mcp_remote_headers")
             if wired:
                 who += " · tools in: " + ", ".join(wired)
             self._sub.setText(who)
