@@ -67,6 +67,7 @@ from jira_controller import JiraController
 from gitlab_controller import GitLabController
 from linear_controller import LinearController
 from supabase_controller import SupabaseController
+from gdrive_controller import GDriveController
 from account_dialog import AccountDialog
 from agents import agent_label, installed_agent_keys, pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -166,6 +167,7 @@ class TerminalPanel(QMainWindow):
         # The Supabase plugin surface -- database review, scoped to one project
         # (project_ref) and read-only by default. See docs/PLUGINS.md §17.
         self.supabase = SupabaseController(self.account, self.config, self)
+        self.gdrive = GDriveController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -754,6 +756,7 @@ class TerminalPanel(QMainWindow):
         self._plugins_panel = PluginsPanel(
             central, github=self.github, vercel=self.vercel, jira=self.jira,
             gitlab=self.gitlab, linear=self.linear, supabase=self.supabase,
+            gdrive=self.gdrive,
             account=self.account, config=self.config,
             agents_provider=lambda: self.github._target_agent_keys(self._startup_command),
         )
@@ -961,6 +964,7 @@ class TerminalPanel(QMainWindow):
             self._wire_gitlab_for(self._working_folder, startup_command)
             self._wire_linear_for(self._working_folder, startup_command)
             self._wire_supabase_for(self._working_folder, startup_command)
+            self._wire_gdrive_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -1785,6 +1789,20 @@ class TerminalPanel(QMainWindow):
         except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
             return False
 
+    def _wire_gdrive_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Best-effort: add the Google Drive MCP server to Claude Code's config.
+        Mirrors :meth:`_wire_supabase_for`, but ``gdrive_mcp.inject`` filters to
+        the static-OAuth agents, so in practice this only ever writes Claude.
+        Returns True if any config changed.
+        """
+        g = getattr(self, "gdrive", None)
+        if g is None:
+            return False
+        try:
+            return bool(g.is_connected and g.ensure_wired(folder or None, agent_command))
+        except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
+            return False
+
     def _start_github_review(self, payload: dict) -> None:
         """Open a workspace that runs a GitHub PR review (Plugins → Review a PR)."""
         import github_mcp
@@ -2019,6 +2037,7 @@ class TerminalPanel(QMainWindow):
         self._wire_gitlab_for(folder, base_command)
         self._wire_linear_for(folder, base_command)
         self._wire_supabase_for(folder, base_command)
+        self._wire_gdrive_for(folder, base_command)
 
         # Isolated workspace -> give the handoff pane its own worktree too.
         # Best-effort: any failure just falls back to a plain pane. Deliberately
@@ -2137,6 +2156,7 @@ class TerminalPanel(QMainWindow):
         self._wire_gitlab_for(self._working_folder, command)
         self._wire_linear_for(self._working_folder, command)
         self._wire_supabase_for(self._working_folder, command)
+        self._wire_gdrive_for(self._working_folder, command)
 
         prompt = routine.prompt.strip()
 
@@ -2276,6 +2296,7 @@ class TerminalPanel(QMainWindow):
         self._wire_gitlab_for(self._working_folder, command)
         self._wire_linear_for(self._working_folder, command)
         self._wire_supabase_for(self._working_folder, command)
+        self._wire_gdrive_for(self._working_folder, command)
 
         if command:
             ws.add_pane_with_command(command)
@@ -2490,6 +2511,7 @@ class TerminalPanel(QMainWindow):
         self._wire_gitlab_for(folder, command)
         self._wire_linear_for(folder, command)
         self._wire_supabase_for(folder, command)
+        self._wire_gdrive_for(folder, command)
 
         target = skills_sync.agent_review_target(skill, folder, agent_key)
         prompt = (
@@ -3564,6 +3586,10 @@ class TerminalPanel(QMainWindow):
         if sb is not None:
             sb.connected.connect(lambda _i: self._on_supabase_connected())
             sb.disconnected.connect(self._on_supabase_disconnected)
+        gd = getattr(self, "gdrive", None)
+        if gd is not None:
+            gd.connected.connect(lambda _i: self._on_gdrive_connected())
+            gd.disconnected.connect(self._on_gdrive_disconnected)
 
     def _on_github_connected(self) -> None:
         if self._wire_github_for(self._working_folder, self._startup_command):
@@ -3643,6 +3669,18 @@ class TerminalPanel(QMainWindow):
     def _on_supabase_disconnected(self) -> None:
         self.statusBar().showMessage(
             "Supabase disabled — restart the agent (↻) to drop the Supabase tools", 6000
+        )
+
+    def _on_gdrive_connected(self) -> None:
+        self._wire_gdrive_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            f"Google Drive enabled — restart the agent (↻) in a pane, then {self._oauth_hint('gdrive')}",
+            8000,
+        )
+
+    def _on_gdrive_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "Google Drive disabled — restart the agent (↻) to drop the Drive tools", 6000
         )
 
     def _recheck_plan(self) -> None:
@@ -4048,6 +4086,9 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "supabase", None) is not None:
             self.supabase.unwire_all()
             self.supabase.shutdown()
+        if getattr(self, "gdrive", None) is not None:
+            self.gdrive.unwire_all()
+            self.gdrive.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 

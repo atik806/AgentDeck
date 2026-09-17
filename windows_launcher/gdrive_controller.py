@@ -234,6 +234,12 @@ class GDriveController(QObject):
         if self._busy:
             return
         self.unwire_all()
+        # Only an explicit disconnect drops Claude Code's own copy of the
+        # secret -- NOT app shutdown, which also calls unwire_all().
+        try:
+            gdrive_mcp.forget_secret()
+        except Exception:  # noqa: BLE001
+            pass
         self._vault.clear()
         self._store.remove(GDRIVE)
         self._mirror_delete()
@@ -279,13 +285,17 @@ class GDriveController(QObject):
         return self.ensure_wired()
 
     def unwire_all(self) -> None:
+        """Drop our MCP entry from every agent config.
+
+        Called on **app shutdown** as well as disconnect (see
+        ``terminal_panel._shutdown_all``), so it must stay cheap and must not
+        touch the credential: Claude Code keys its stored secret by server name
+        and URL, both of which we re-write unchanged on the next launch, so the
+        secret survives a restart and the plugin keeps working. Dropping it
+        belongs to :meth:`disconnect` alone.
+        """
         try:
             gdrive_mcp.remove()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            # Also drop Claude Code's own copy of the client secret.
-            gdrive_mcp.forget_secret()
         except Exception:  # noqa: BLE001
             pass
 

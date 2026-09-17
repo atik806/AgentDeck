@@ -265,6 +265,42 @@ c7.disconnect()
 
 
 # ---------------------------------------------------------------------------
+print("[8] app shutdown must NOT drop Claude Code's copy of the secret")
+# terminal_panel._shutdown_all() calls unwire_all() on every exit. If that also
+# ran `claude mcp remove`, the stored client secret would be gone and the plugin
+# would silently stop working on the next launch -- the JSON entry gets rewritten
+# but nothing re-seeds the secret. Only an explicit disconnect may drop it.
+_reset_sandbox()
+tmp8 = tempfile.mkdtemp(prefix="adk-gd8-")
+c8 = fresh_controller(tmp8)
+done8 = []
+c8.connected.connect(done8.append)
+c8.start_connect(_CLIENT_ID, _SECRET)
+pump(lambda: bool(done8))
+check("connected", c8.is_connected is True)
+
+_PROBE_OUT.unlink(missing_ok=True)
+c8.unwire_all()
+check("unwire_all removed our MCP entry", _gdrive_srv() is None)
+check("unwire_all ran NO subprocess at all", _probe_calls() == [])
+check("vault untouched by unwire_all", c8.has_secret is True)
+check("still 'connected' in plugins.json (entry is rewritten next launch)",
+      c8.is_connected is True)
+
+# ...and a relaunch re-wires from the stored connection without re-seeding
+check("ensure_wired restores the entry", c8.ensure_wired() is True)
+check("entry back with the same client id",
+      _gdrive_srv()["oauth"]["clientId"] == _CLIENT_ID)
+check("still no subprocess needed to re-wire", _probe_calls() == [])
+
+# an explicit disconnect DOES drop it
+c8.disconnect()
+check("disconnect runs claude mcp remove",
+      any("remove" in x["argv"] for x in _probe_calls()))
+check("disconnect clears the vault", c8.has_secret is False)
+
+
+# ---------------------------------------------------------------------------
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
