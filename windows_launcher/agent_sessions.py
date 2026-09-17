@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+import git_exclude
+
 __all__ = [
     "AgentSession",
     "SessionAdapter",
@@ -1111,19 +1113,12 @@ def handoff_store_dir(folder: str | Path) -> Path:
 
 
 def _git_exclude(folder: Path, pattern: str) -> None:
-    exclude = folder / ".git" / "info" / "exclude"
-    try:
-        if not exclude.parent.is_dir():
-            return
-        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-        if pattern in existing.split():
-            return
-        with exclude.open("a", encoding="utf-8") as fh:
-            if existing and not existing.endswith("\n"):
-                fh.write("\n")
-            fh.write(f"{pattern}\n")
-    except OSError:
-        pass
+    """Keep ``pattern`` out of git, in this checkout only.
+
+    Worktree-aware -- see ``git_exclude``. Returning quietly when the folder
+    isn't a repository is intentional; :func:`write_handoff_doc` is best-effort.
+    """
+    git_exclude.add(folder, pattern)
 
 
 def write_handoff_doc(

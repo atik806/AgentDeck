@@ -30,6 +30,7 @@ import os
 from pathlib import Path
 from typing import Iterable, Optional
 
+import git_exclude
 import mcp_io  # for locked() -- serialise ledger + AGENTS.md writes
 
 __all__ = [
@@ -424,18 +425,6 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _git_exclude(folder: Path, pattern: str) -> None:
-    """Add ``pattern`` to ``.git/info/exclude`` if the folder is a git repo and
-    it isn't already there. Copy of ``agent_sessions._git_exclude``."""
-    exclude = folder / ".git" / "info" / "exclude"
-    try:
-        if not exclude.parent.is_dir():
-            return
-        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-        if pattern in existing.split():
-            return
-        with exclude.open("a", encoding="utf-8") as fh:
-            if existing and not existing.endswith("\n"):
-                fh.write("\n")
-            fh.write(f"{pattern}\n")
-    except OSError:
-        pass
+    """Add ``pattern`` to the repository-local exclude file if it isn't already
+    there. Worktree-aware -- see ``git_exclude``."""
+    git_exclude.add(folder, pattern)
