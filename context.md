@@ -1368,6 +1368,92 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       §2a's "Five live cards". `context.md` had no Supabase-plugin item at all
       (the log jumps 33 → 34); still missing, worth backfilling.
 
+42. **Appearance: glass window styles + five more colour schemes (2026-09-17, v0.26.0)** —
+    Settings ▸ Appearance grows a third axis, **Window style** (Solid / Glass
+    (Acrylic) / Mica) with an opacity slider and an opt-in "Translucent
+    terminal panes", and the scheme list goes 13 → 18. Full design in
+    `docs/THEMING.md` (new; there was no theming doc before).
+    - **Why a third axis and not a "Glass" colour scheme.** Translucency is
+      orthogonal to palette: as an axis it applies to all 18 schemes for free,
+      instead of being a 19th palette to maintain that only looks right in one
+      mode. A `Glass` entry in *both* dropdowns would also just be confusing.
+    - **The token contract is unchanged, deliberately.** `theme.color()` still
+      returns an opaque 6-digit hex in every mode/scheme/style — ~26
+      `QColor(theme.color(...))` painter sites depend on it, and two of them
+      (`notes_panel.py:125`, `navbar.py:462`) use a *surface* colour as an
+      opaque knockout, so widening `color()` would have broken icons silently.
+      Translucency is a second accessor, `theme.surface(token)`, returning
+      `rgba(...)` — which Qt QSS parses and `#RRGGBBAA` is not — and only for
+      backgrounds in `_SURFACE_TOKENS`. In the solid style `surface() ==
+      color()` for all 57 tokens in both modes, asserted, so swapping a QSS
+      call site over is free. `qcolor_surface()` is the painter-side variant,
+      used only by `vt_screen.Palette`.
+    - **The DWM recipe, found by probing, not from the docs.** On build 26200
+      all four candidate recipes return `S_OK` and three of them render solid
+      black. The backdrop only paints into the window's *extended frame*, so
+      `DwmExtendFrameIntoClientArea(-1,-1,-1,-1)` is mandatory alongside
+      `WA_TranslucentBackground` + `DWMWA_SYSTEMBACKDROP_TYPE`. With it,
+      acrylic and mica both work. `window_glass.py` is plain ctypes, Qt-free
+      and inert off Windows, matching `global_hotkey.py` / `secret_store.py`.
+    - **Trap: the handle swap.** Toggling `WA_TranslucentBackground` on a
+      visible window makes Qt destroy and recreate the native window. The old
+      `HWND` is dead, the DWM calls against it *still return `S_OK`*, and
+      nothing renders — which is exactly what the first working build did.
+      `_apply_glass()` now sets the attribute and applies the backdrop twice,
+      once inline and once via `QTimer.singleShot(0, ...)`, plus once in
+      `__init__` before the first `show()`.
+    - **Trap: `WA_OpaquePaintEvent` has to stay ON for a see-through pane.**
+      It reads like a lie and is not — it promises we paint every pixel of the
+      damage rect, not that the result is opaque. Turning it off (the obvious
+      reading) makes Qt erase the whole widget before each paint, so the
+      dirty-row repaint wipes every row outside the damage band; the terminal
+      came up blank except the cursor line. The matching half is a
+      `CompositionMode_Source` base fill in `paintEvent`: with the default
+      `SourceOver` a translucent ground composites over the row's own previous
+      pixels and darkens a frame at a time until it goes black. Both are
+      guarded by `test_theme.py` §13, which was checked against a deliberately
+      reverted fix (2 failures) rather than assumed.
+    - **Perf.** `bench_terminal.py` with the terminal opt-in off is unchanged
+      from `main` — paint 2.05/1.94/1.82/1.79 ms/frame vs 2.04/1.99/1.86/1.78,
+      inside run-to-run noise. The translucent path is opt-in precisely because
+      it is the only one that costs anything.
+    - **Fallback.** `window_glass.supported()` gates on Windows 11 22H2 (build
+      22621). Below that, and off Windows, `_apply_glass` falls back to
+      `setWindowOpacity`, which fades text too — a different look, so the
+      Settings hint says so rather than letting the user think it is broken.
+    - **Five new schemes**, filling real gaps in the 13: **GitHub**
+      (dark+light; the strongest true light scheme in the set),
+      **Material Ocean**, **Carbonfox** (IBM Carbon neutrals — no colour cast),
+      **Vitesse** (dark+light, the most desaturated) and **Midnight (OLED)**
+      (true `#000000` ground). Each is a 20-key `_expand()` spec + 16 ANSI
+      slots.
+    - **Three colour-token bugs fixed while surveying.**
+      `worktree_panel.py:100` asked for `theme.color("green")`/`("red")` —
+      neither is a token, so `color()`'s last-resort fallback returned
+      `#ff00ff` and **every add/remove line in the Worktrees diff view was
+      magenta**. Now `activity`/`danger`. Also `terminal_panel`'s update-pulse
+      glow and `navbar._BADGE_COLOR`, both hardcoded `#ff3b30`, now follow
+      `danger` (`_BADGE_COLOR` became a function, matching the existing
+      `_PRO()`/`_MUTED()` pattern; `test_navbar.py` now asserts against the
+      token instead of a fixed RGB range, since Catppuccin's red is a pastel).
+    - **The `CONFIG_CHOICES` trap is now tested.** `load_config()` hard-resets
+      any value missing from `CONFIG_CHOICES`, so a scheme added to
+      `theme._SCHEMES` and nowhere else works for one session then silently
+      reverts. `test_theme.py` §8 asserts the two lists match in both
+      directions — it would have caught it.
+    - New: `window_glass.py`, `test_window_glass.py` (14), `docs/THEMING.md`.
+      Touched: `theme.py` (glass layer + 5 schemes), `config.py` (3 keys +
+      choices + range), `account.py` (`CLOUD_KEYS`), `terminal_panel.py`,
+      `settings_dialog.py` (§Appearance + `glass_changed`), `workspace.py`,
+      `workspace_sidebar.py`, `terminal_view.py`, `vt_screen.py`,
+      `worktree_panel.py`, `navbar.py`, `version.py`, `README.md`,
+      `test_theme.py` (106), `test_settings_dialog.py` (82),
+      `test_navbar.py` (29).
+    - Still hardcoded, flagged not fixed: `terminal_panel._WS_ACCENTS`, the six
+      workspace swatch colours, is a Catppuccin list that ignores the active
+      scheme.
+
+
 ## Running / testing
 
 ```cmd
@@ -1402,7 +1488,8 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_skills_store.py          # skills JSON store + frontmatter; offline
 .venv\Scripts\python.exe test_skills_sync.py           # skills materialize/prune/ledger; offline
 .venv\Scripts\python.exe test_skills_panel.py          # skills panel + sidebar nav; offline
-.venv\Scripts\python.exe test_theme.py                 # light/dark theme + toggle; offline
+.venv\Scripts\python.exe test_theme.py                 # theme/scheme/glass + toggle; offline
+.venv\Scripts\python.exe test_window_glass.py          # DWM backdrop shim; offline, no Qt
 .venv\Scripts\python.exe test_update_progress.py       # animated update download/install dialog; offline
 .venv\Scripts\python.exe test_settings_dialog.py       # Settings dialog + Updates section; offline
 .venv\Scripts\python.exe test_agent_sessions.py        # conversation-handoff session readers; offline
