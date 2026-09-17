@@ -83,9 +83,10 @@ class _ConnectWorker(QThread):
             }
         )
         deadline = time.monotonic() + min(self._flow.timeout, device.expires_in)
-        interval = max(1, device.interval)
         while time.monotonic() < deadline:
-            for _ in range(interval * 4):
+            # Re-read every round: poll_once() raises the flow's interval when
+            # GitHub answers `slow_down`, and ignoring that earns more of them.
+            for _ in range(self._flow.interval * 4):
                 if self._cancel or self.isInterruptionRequested():
                     self.failed.emit("Sign-in was cancelled.")
                     return
