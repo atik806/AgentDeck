@@ -178,8 +178,10 @@ def _run(
 ) -> subprocess.CompletedProcess:
     """Run ``git <args>`` in ``cwd`` and return the completed process.
 
-    Raises :class:`GitError` when ``git`` is missing, times out, or (with
-    ``check``) exits non-zero. ``stdout``/``stderr`` are text.
+    Raises :class:`GitError` when ``git`` is missing, times out, fails to
+    spawn (a ``cwd`` that vanished, say), or (with ``check``) exits non-zero --
+    never a raw ``OSError``, so callers on a worker thread can catch one type.
+    ``stdout``/``stderr`` are text.
     """
     env = {
         **os.environ,
@@ -201,10 +203,19 @@ def _run(
             env=env,
             creationflags=CREATE_NO_WINDOW,
         )
-    except FileNotFoundError as exc:  # git not on PATH
+    except NotADirectoryError as exc:
+        # Windows raises this (WinError 267) when ``cwd`` is not a directory --
+        # the usual cause is a worktree folder that was discarded/merged away
+        # while a probe or diff for it was still in flight.
+        raise GitError(f"working directory is gone: {cwd}") from exc
+    except FileNotFoundError as exc:  # git not on PATH -- or a cwd that vanished
+        if cwd is not None and not os.path.isdir(str(cwd)):
+            raise GitError(f"working directory is gone: {cwd}") from exc
         raise GitError("git is not installed or not on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise GitError(f"git {' '.join(args)} timed out after {timeout:g}s") from exc
+    except OSError as exc:  # spawn failed (permissions, handle exhaustion, ...)
+        raise GitError(f"git {' '.join(args)} could not start: {exc}") from exc
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise GitError(f"git {' '.join(args)} failed ({proc.returncode}): {detail}")
@@ -717,7 +728,7 @@ def commit_all(worktree_path: "str | os.PathLike", message: str) -> str:
     """
     wt = str(worktree_path)
     _run(["add", "-A"], wt)
-    # Unstage rather than filter the pathspec: `git add -A -- . :(exclude)â€¦`
+    # Unstage rather than filter the pathspec: `git add -A -- . :(exclude)…`
     # still *errors* when the positive pathspec matches an ignored path, so the
     # normal (already-excluded) case would fail the commit. A reset of a path
     # that matched nothing is a silent no-op.
