@@ -59,6 +59,8 @@ hiddenimports += [
     "jira_mcp", "jira_controller",
     "gitlab_mcp", "gitlab_controller",
     "linear_mcp", "linear_controller",
+    "supabase_mcp", "supabase_controller",
+    "gdrive_mcp", "gdrive_controller", "gdrive_secret",
     "mcp_io", "mcp_targets",
 ]
 
