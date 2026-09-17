@@ -294,6 +294,76 @@ check("drag past the edge clamps inside the bounds",
 
 
 # ---------------------------------------------------------------------------
+print("[9] the wave actually animates")
+#
+# Regression: the resting curve used to move ~1px over a 7s cycle while the
+# paint floor pinned every bar under `bw` to a dead minimum, so the strip
+# rendered as a static row of dots. Measure the drawn bar heights the way
+# paintEvent does and require real motion in every mode -- including a
+# listening pause, where the mic level is ~0.
+
+from voice_overlay import _MIN_BAR  # noqa: E402
+
+probe = VoiceOverlay(area)
+eq = probe._eq
+eq._timer.stop()          # drive _tick by hand; no wall-clock dependency
+
+
+def sweep(mode, ticks=600, level=None, warm=200):
+    """Steady-state per-bar (min, max) drawn height, in pixels."""
+    eq.set_mode(mode)
+    w, h = eq.width(), eq.height()
+    n = eq._BARS
+    bw = min(3.4, (w / n) * 0.64)
+    span, floor = h - 6.0, bw * _MIN_BAR
+    for _ in range(warm + ticks):
+        if level is not None:
+            eq.set_level(level)
+        eq._tick()
+    lo = [9e9] * n
+    hi = [-9e9] * n
+    for _ in range(ticks):
+        if level is not None:
+            eq.set_level(level)
+        eq._tick()
+        for i in range(n):
+            bh = max(floor, eq._heights[i] * span)
+            lo[i] = min(lo[i], bh)
+            hi[i] = max(hi[i], bh)
+    return lo, hi, floor, span
+
+
+for mode, level, min_swing in [
+    ("idle", None, 3.0),
+    ("loading", None, 3.0),
+    ("listening", 0.0, 2.0),      # a pause must still ripple
+    ("listening", 0.03, 6.0),     # quiet speech must read clearly
+]:
+    lo, hi, floor, span = sweep(mode, level=level)
+    swing = [hi[i] - lo[i] for i in range(len(hi))]
+    label = f"{mode}" + ("" if level is None else f" @ rms={level}")
+    check(f"{label}: centre bars move ({max(swing):.1f}px)",
+          max(swing) >= min_swing)
+    check(f"{label}: no bar is frozen at the floor",
+          not any(h <= floor + 1e-6 for h in hi))
+    check(f"{label}: stays inside the strip",
+          max(hi) <= span + 0.01)
+
+# The level curve has to lift ordinary speech, not just a shout.
+eq.set_mode("listening")
+eq.set_level(0.0)
+check("silence reads as zero", eq._target == 0.0)
+eq.set_level(0.02)
+quiet = eq._target
+eq.set_level(0.10)
+loud = eq._target
+check("quiet speech already uses a third of the range", quiet >= 0.30)
+check("louder speech still reads louder", loud > quiet)
+check("level is clamped to 1.0", (eq.set_level(5.0), eq._target)[1] == 1.0)
+
+probe.deleteLater()
+
+# ---------------------------------------------------------------------------
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

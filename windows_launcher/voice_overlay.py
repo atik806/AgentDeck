@@ -63,6 +63,12 @@ _RADIUS = 12.0
 #: Bars in the waveform.
 _BARS = 40
 
+#: Floor for a drawn bar, as a fraction of the bar width. Bars are stadiums
+#: with a ``bw / 2`` radius, so a bar this short still reads as a dot -- but
+#: unlike a full-``bw`` floor it leaves the quiet end bars room to move instead
+#: of pinning them to a dead minimum.
+_MIN_BAR = 0.55
+
 #: A smooth taper (low at the ends, full in the middle) -- the silhouette the
 #: bars are drawn inside, so the wave reads as one rounded "clip" rather than a
 #: row of sticks. Filled in at import.
@@ -253,7 +259,10 @@ class _Waveform(QWidget):
         self.update()
 
     def set_level(self, rms: float) -> None:
-        self._target = max(0.0, min(1.0, rms * 7.0))
+        # Compressive, not linear: speech RMS sits around 0.01-0.15, so a flat
+        # gain leaves ordinary talking bunched at the bottom of the range and
+        # only a shout moves the bars.
+        self._target = min(1.0, (max(0.0, rms) * 9.0) ** 0.65)
 
     def _tick(self) -> None:
         self._phase += 0.22
@@ -261,21 +270,31 @@ class _Waveform(QWidget):
         self._target *= 0.90
 
         n = self._BARS
+        ph = self._phase
         for i in range(n):
             t = i / (n - 1)
             centre_lead = 1.0 - 0.55 * abs(t - 0.5) * 2.0  # centre reacts fuller
             if self._mode == "listening":
-                wob = 0.60 + 0.40 * math.sin(self._phase * 1.7 + i * 0.7)
-                goal = 0.07 + _ENV[i] * (0.10 + 1.15 * self._level * wob) * centre_lead
+                # A travelling shimmer underneath the level-driven swell. The
+                # shimmer matters: in a pause the mic level is ~0, and a wave
+                # frozen mid-sentence reads as "voice has hung".
+                shimmer = 0.5 + 0.5 * math.sin(ph * 0.55 + i * 0.62)
+                wob = 0.55 + 0.45 * math.sin(ph * 1.7 + i * 0.7)
+                goal = 0.05 + _ENV[i] * (
+                    0.09 + 0.16 * shimmer + 1.45 * self._level * wob
+                ) * centre_lead
             elif self._mode == "loading":
-                pos = (self._phase * 0.16) % 1.0
+                pos = (ph * 0.16) % 1.0
                 d = abs(t - pos)
-                goal = 0.07 + _ENV[i] * (0.20 + 0.60 * max(0.0, 1.0 - d * 4.5))
+                goal = 0.05 + _ENV[i] * (0.18 + 0.62 * max(0.0, 1.0 - d * 4.5))
             elif self._mode in ("error", "unavailable"):
-                goal = 0.06 + _ENV[i] * 0.12
+                goal = 0.05 + _ENV[i] * 0.12
             else:
-                breathe = 0.5 + 0.5 * math.sin(self._phase * 0.11 + i * 0.4)
-                goal = 0.06 + _ENV[i] * (0.15 + 0.05 * breathe)
+                # The resting trace: one slow wave travelling along the strip.
+                # Amplitude and rate both have to clear the drawn floor or the
+                # strip looks like a dead row of dots.
+                breathe = 0.5 + 0.5 * math.sin(ph * 0.42 + i * 0.5)
+                goal = 0.05 + _ENV[i] * (0.09 + 0.24 * breathe)
             goal = max(0.0, min(1.0, goal))
             self._heights[i] += (goal - self._heights[i]) * 0.34
         self.update()
@@ -320,9 +339,10 @@ class _Waveform(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(base)
             for i in range(n):
-                bh = max(bw, self._heights[i] * span)
+                bh = max(bw * _MIN_BAR, self._heights[i] * span)
                 x = i * pitch + (pitch - bw) / 2.0
-                p.drawRoundedRect(QRectF(x, mid - bh / 2.0, bw, bh), rad, rad)
+                p.drawRoundedRect(QRectF(x, mid - bh / 2.0, bw, bh),
+                                  rad, min(rad, bh / 2.0))
 
         if self._cap_alpha > 0.02 and self._caption:
             c = QColor(self._cap_color)
