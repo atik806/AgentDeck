@@ -64,7 +64,9 @@ class Palette:
 
             self.mode = mode or theme.mode()
             slots = theme.ansi(self.mode)
-            self.BACKGROUND = theme.qcolor("term_bg", self.mode)
+            # qcolor_surface, not qcolor: carries the glass alpha when the
+            # translucent-terminal opt-in is on, and is identical otherwise.
+            self.BACKGROUND = theme.qcolor_surface("term_bg", self.mode)
             self.FOREGROUND = theme.qcolor("term_fg", self.mode)
             self.CURSOR = theme.qcolor("term_cursor", self.mode)
             sel = theme.qcolor("term_selection", self.mode)

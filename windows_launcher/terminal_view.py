@@ -368,7 +368,7 @@ class TerminalCanvas(QWidget):
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.IBeamCursor)
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self._sync_opaque()
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Dropping a file onto a terminal types its path, the way it does in
         # Windows Terminal and cmd -- see dropEvent.
@@ -383,9 +383,25 @@ class TerminalCanvas(QWidget):
 
     # -- theme -----------------------------------------------------------------
 
+    def _sync_opaque(self) -> None:
+        """Keep Qt from pre-clearing the widget before every paint.
+
+        ``WA_OpaquePaintEvent`` stays on even for a translucent pane, which
+        looks wrong and is not: it promises we paint *every pixel* of the
+        damage rect, not that the result is opaque, and the Source-mode base
+        fill in :meth:`paintEvent` keeps that promise alpha and all.
+
+        Turning it off instead -- the obvious reading -- makes Qt erase the
+        whole widget before each paint, so a dirty-row repaint (which damages
+        one thin band) wipes every other row on screen. The terminal came up
+        blank except for the cursor line.
+        """
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
     def apply_theme(self) -> None:
         """Rebuild the colour palette for the current theme and repaint."""
         self._palette = Palette()
+        self._sync_opaque()
         self.invalidate_all()
 
     # -- repaint invalidation -------------------------------------------------
@@ -571,7 +587,16 @@ class TerminalCanvas(QWidget):
         t0 = perf.now() if perf.enabled() else 0.0
         painter = QPainter(self)
         painter.setFont(self._font)
-        painter.fillRect(event.rect(), self._palette.BACKGROUND)
+        if self._palette.BACKGROUND.alpha() < 255:
+            # A translucent ground must *replace* the damage rect, not blend
+            # over it: the dirty-row repaint hands us a band whose old pixels
+            # are still there, and SourceOver would darken it a little more
+            # on every frame until the row went black.
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
+            painter.fillRect(event.rect(), self._palette.BACKGROUND)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        else:
+            painter.fillRect(event.rect(), self._palette.BACKGROUND)
 
         screen = self._screen
         history = screen.history_length
