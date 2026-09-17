@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -38,6 +37,37 @@ __all__ = ["GitHubReviewDialog"]
 
 _FOCI = [("bugs", "Bugs"), ("security", "Security"), ("tests", "Tests"),
          ("style", "Style"), ("perf", "Performance")]
+
+
+class _PrFetch(QThread):
+    """One open-PR listing, off the GUI thread.
+
+    Both calls it makes block: ``_valid_token_blocking`` for up to 6s (it may
+    refresh over the network) and ``list_open_prs`` for up to 20s. On the GUI
+    thread that freezes the dialog; the repo box is editable, so it would do so
+    once per keystroke.
+    """
+
+    ready = Signal(str, list)   # repo, [pr, ...]
+
+    def __init__(self, github, repo: str, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._gh = github
+        self._repo = repo
+
+    def run(self) -> None:
+        prs: list = []
+        try:
+            token = self._gh._valid_token_blocking()  # noqa: SLF001 - controller helper
+        except Exception:  # noqa: BLE001
+            token = None
+        if token and list_open_prs is not None and not self.isInterruptionRequested():
+            try:
+                prs = list_open_prs(token, self._repo)
+            except Exception:  # noqa: BLE001
+                prs = []
+        if not self.isInterruptionRequested():
+            self.ready.emit(self._repo, prs)
 
 
 class GitHubReviewDialog(QDialog):
@@ -132,13 +162,21 @@ class GitHubReviewDialog(QDialog):
         btns.addWidget(self._go)
         lay.addLayout(btns)
 
+        # The repo combo is editable, so currentTextChanged fires per keystroke.
+        # Coalesce a burst of those into one fetch.
+        self._pending_repo = ""
+        self._pr_fetch: Optional[_PrFetch] = None
+        self._pr_timer = QTimer(self)
+        self._pr_timer.setSingleShot(True)
+        self._pr_timer.setInterval(400)
+        self._pr_timer.timeout.connect(self._fetch_prs)
+
         self._populate_repos(preselect_repo)
 
     # -- population ---------------------------------------------------
 
     def _populate_repos(self, preselect: str) -> None:
         repos = []
-        conn = getattr(self._gh, "connection", None)
         # The panel already fetched repos into its list; re-fetch is cheap but
         # async. Use whatever the controller cached if exposed, else just allow
         # free text.
@@ -152,23 +190,55 @@ class GitHubReviewDialog(QDialog):
             self._repo.setCurrentText(preselect)
 
     def _on_repo_changed(self, repo: str) -> None:
-        repo = (repo or "").strip()
+        """Queue a PR fetch for ``repo`` -- never run one inline (see
+        :class:`_PrFetch`)."""
+        self._pending_repo = (repo or "").strip()
         self._pr.clear()
-        if not repo or "/" not in repo or list_open_prs is None:
+        self._pr_timer.stop()
+        if self._pending_repo and "/" in self._pending_repo and list_open_prs is not None:
+            self._pr_timer.start()
+
+    def _fetch_prs(self) -> None:
+        repo = self._pending_repo
+        if not repo or self._gh is None:
             return
-        token = None
-        try:
-            token = self._gh._valid_token_blocking()  # noqa: SLF001 - controller helper
-        except Exception:  # noqa: BLE001
-            token = None
-        if not token:
+        self._detach_fetch()
+        # Parented to the controller, not to this dialog: an in-flight request
+        # can outlive a dialog the user closes, and a QThread destroyed while
+        # still running takes the process with it.
+        owner = self._gh if isinstance(self._gh, QObject) else None
+        worker = _PrFetch(self._gh, repo, parent=owner)
+        worker.ready.connect(self._fill_prs)
+        worker.finished.connect(worker.deleteLater)
+        self._pr_fetch = worker
+        worker.start()
+
+    def _detach_fetch(self) -> None:
+        """Let the in-flight fetch finish unheard. Doesn't wait -- ``requests``
+        won't notice an interruption request mid-call, and waiting here would
+        put the freeze straight back."""
+        worker, self._pr_fetch = self._pr_fetch, None
+        if worker is None:
             return
         try:
-            prs = list_open_prs(token, repo)
-        except Exception:  # noqa: BLE001
-            prs = []
+            worker.requestInterruption()
+            worker.ready.disconnect(self._fill_prs)
+        except (RuntimeError, TypeError):
+            # The worker finished and ``deleteLater`` already took the C++ object
+            # out from under this handle -- there is nothing left to detach.
+            pass
+
+    def _fill_prs(self, repo: str, prs: list) -> None:
+        if repo != self._pending_repo:   # a later keystroke already won
+            return
+        self._pr.clear()
         for pr in prs:
             self._pr.addItem(f"#{pr['number']} — {pr['title']}", pr["number"])
+
+    def done(self, result: int) -> None:  # noqa: D102 - QDialog override
+        self._pr_timer.stop()
+        self._detach_fetch()
+        super().done(result)
 
     def _on_post_toggled(self, on: bool) -> None:
         self._event.setEnabled(on)
