@@ -39,7 +39,8 @@ keys = mcp_targets.all_keys()
 check("11 supported agents", len(keys) == 11)
 check("aider is absent", "aider" not in keys)
 check("caps(aider) all-False", mcp_targets.caps("aider") ==
-      {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False, "format": None})
+      {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False,
+       "mcp_oauth_static": False, "format": None})
 check("caps(unknown) all-False", not mcp_targets.caps("nope")["mcp"])
 check("every agent can bear a remote token (GitHub)",
       all(mcp_targets.caps(k)["mcp_remote_headers"] for k in keys))
@@ -189,6 +190,42 @@ print("[7] oauth_hint")
 check("claude -> /mcp", "/mcp" in mcp_targets.oauth_hint("claude", "vercel"))
 check("codex -> codex mcp login", "codex mcp login vercel" in mcp_targets.oauth_hint("codex", "vercel"))
 check("unknown -> generic", "authorisation prompt" in mcp_targets.oauth_hint("???", "x"))
+
+
+print("[8] static OAuth clients -- caps()['mcp_oauth_static'] and the rendered oauth block")
+
+check("claude is the one static-OAuth target",
+      mcp_targets.caps("claude")["mcp_oauth_static"] is True)
+for key in ("opencode", "codex", "gemini", "cursor-agent", "copilot",
+            "amp", "antigravity", "qwen", "crush", "goose"):
+    check(f"{key} is NOT static-OAuth capable",
+          mcp_targets.caps(key)["mcp_oauth_static"] is False)
+check("unknown agent has the flag too (all-False shape)",
+      mcp_targets.caps("nope")["mcp_oauth_static"] is False)
+check("aider has the flag too", mcp_targets.caps("aider")["mcp_oauth_static"] is False)
+check("static-OAuth targets are still plain mcp_oauth targets",
+      mcp_targets.caps("claude")["mcp_oauth"] is True)
+
+_static = {"transport": "http", "url": "https://example.test/mcp",
+           "oauth": {"clientId": "cid", "callbackPort": 8976, "scopes": "a b"}}
+entry = mcp_targets.render_entry(mcp_targets.target("claude"), "demo", _static)
+check("claude renders the oauth block", entry.get("oauth") == _static["oauth"])
+check("  ...alongside the usual fields",
+      entry["type"] == "http" and entry["url"] == "https://example.test/mcp")
+check("  ...and the managed marker", entry["x-agentdeck-managed"] is True)
+
+for key in ("opencode", "codex", "gemini", "goose"):
+    e = mcp_targets.render_entry(mcp_targets.target(key), "demo", _static)
+    check(f"{key} does NOT get the claude-shaped oauth block", "oauth" not in e)
+
+_bool_oauth = {"transport": "http", "url": "https://example.test/mcp", "oauth": True}
+for key in ("claude", "opencode", "codex", "gemini", "goose"):
+    e = mcp_targets.render_entry(mcp_targets.target(key), "demo", _bool_oauth)
+    check(f"{key}: a bool oauth stays metadata-only (REGRESSION)", "oauth" not in e)
+
+_no_oauth = {"transport": "http", "url": "https://example.test/mcp"}
+check("a spec with no oauth key renders unchanged",
+      "oauth" not in mcp_targets.render_entry(mcp_targets.target("claude"), "demo", _no_oauth))
 
 
 print()

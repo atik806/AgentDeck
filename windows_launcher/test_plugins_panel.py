@@ -737,6 +737,161 @@ check("Free plan labels Connect (Pro) and disables it",
       sbp_free._supabase_detail._primary.text().endswith("(Pro)")
       and not sbp_free._supabase_detail._primary.isEnabled())
 
+from PySide6.QtWidgets import QLineEdit
+
+# ---------------------------------------------------------------------------
+print("[10] Google Drive card + detail (static OAuth client: id + secret)")
+
+from plugin_store import GDRIVE
+
+_GD_ID = "1234567890-abcdefg.apps.googleusercontent.com"
+_GD_SECRET = "GOCSPX-fake"
+
+
+class FakeGDrive(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+
+    def __init__(self, connected=False, client_id="", has_secret=False):
+        super().__init__()
+        self._connected = connected
+        self._id = client_id
+        self._has_secret = has_secret
+        self.is_busy = False
+        self.login = ""
+        self.started_with = None
+        self.updated_with = None
+        self.rewired = False
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def client_id(self):
+        return self._id if self._connected else ""
+
+    @property
+    def has_secret(self):
+        return self._has_secret
+
+    @property
+    def connection(self):
+        return PluginConnection(GDRIVE, settings={"client_id": self._id}) if self._connected else None
+
+    def start_connect(self, client_id, client_secret):
+        cid = (client_id or "").strip()
+        secret = (client_secret or "").strip()
+        if not cid or not secret:
+            self.error.emit("Paste both the Client ID and the Client secret.")
+            return False
+        self.started_with = (cid, secret)
+        self._id = cid
+        self._has_secret = True
+        self._connected = True
+        self.connected.emit({})
+        return True
+
+    def update_settings(self, *, client_id=None, client_secret=None):
+        self.updated_with = (client_id, client_secret)
+        if client_id:
+            self._id = client_id
+        self.connected.emit({})
+        return True
+
+    def ensure_wired(self, folder=None, agent_command=None, **kw):
+        self.rewired = True
+        return True
+
+    def disconnect(self):
+        self._connected = False
+        self._id = ""
+        self._has_secret = False
+        self.disconnected.emit()
+
+
+# -- tolerates a missing controller
+check("panel tolerates gdrive=None", PluginsPanel(github=FakeGitHub(), gdrive=None, config={}) is not None)
+
+fgd = FakeGDrive()
+gdp = PluginsPanel(github=FakeGitHub(), gdrive=fgd, config={})
+gd_card = [c for c in gdp._cards if c.key == "gdrive"][0]
+check("Google Drive card exists", gd_card is not None)
+check("card is interactive (live)", gd_card.property("interactive") == "true")
+check("card starts NOT ENABLED", "NOT ENABLED" in gd_card._pill.text())
+
+gdp._open_detail("gdrive")
+check("opens stack index 7", gdp._stack.currentIndex() == 7)
+gdd = gdp._gdrive_detail
+
+# -- the console link shows while disconnected, hides once connected
+check("console link visible before connecting", gdd._console_btn.isVisibleTo(gdd))
+check("save button hidden before connecting", not gdd._save_btn.isVisibleTo(gdd))
+check("secret field is a password box", gdd._secret_field.echoMode() == QLineEdit.Password)
+check("Claude-Code-only badge present", gdd._claude_badge.text() == "Claude Code only")
+check("badge explains why in its tooltip",
+      "dynamic client registration" in gdd._claude_badge.toolTip())
+
+# -- connect needs BOTH fields
+gdd._id_field.setText(_GD_ID)
+gdd._secret_field.setText("")
+gdd._on_primary()
+check("connect with no secret is refused", fgd.is_connected is False)
+check("  ...and the error lands in the subtitle", "Client ID" in gdd._sub.text())
+
+gdd._secret_field.setText(_GD_SECRET)
+gdd._on_primary()
+check("connect passes both fields to the controller",
+      fgd.started_with == (_GD_ID, _GD_SECRET))
+check("card flips to ENABLED", "ENABLED" in gd_card._pill.text())
+check("info box shows once connected", gdd._info.isVisibleTo(gdd))
+check("save button appears once connected", gdd._save_btn.isVisibleTo(gdd))
+check("console link hides once connected", not gdd._console_btn.isVisibleTo(gdd))
+check("client id shown back", gdd._id_field.text() == _GD_ID)
+check("secret box cleared after connect", gdd._secret_field.text() == "")
+check("secret box says it is stored", "stored" in gdd._secret_field.placeholderText())
+
+# -- authorise instructions name Claude Code only
+check("authorise text mentions Claude Code", "Claude Code" in gdd._step.text())
+for other in ("opencode", "Codex", "Gemini", "Goose"):
+    check(f"authorise text does NOT mention {other}", other not in gdd._step.text())
+check("subtitle lists only Claude Code", gdd._sub.text().startswith("Enabled for:"))
+
+# -- saving only the id keeps the stored secret (empty secret box)
+gdd._id_field.setText("999-other.apps.googleusercontent.com")
+gdd._secret_field.setText("")
+gdd._on_save()
+check("save passes the new id", fgd.updated_with[0] == "999-other.apps.googleusercontent.com")
+check("save passes an empty secret (= keep the stored one)", not fgd.updated_with[1])
+
+# -- re-sync
+fgd.rewired = False
+gdd._on_resync()
+check("re-sync button calls ensure_wired on the controller", fgd.rewired)
+
+# -- search filter
+gdp.show_catalog()
+gdp._filter_cards("drive")
+check("search 'drive' keeps the card", not gd_card.isHidden())
+gdp._filter_cards("google")
+check("search 'google' keeps the card", not gd_card.isHidden())
+gdp._filter_cards("zzz")
+check("search 'zzz' hides the card", gd_card.isHidden())
+gdp._filter_cards("")
+
+# -- disconnect flips the card back
+gdd._on_disconnect()
+check("disconnect flips the card back to NOT ENABLED", "NOT ENABLED" in gd_card._pill.text())
+
+# -- Pro gate
+gdp_free = PluginsPanel(github=FakeGitHub(), gdrive=FakeGDrive(), account=_FreeAccount(), config={})
+gdp_free._open_detail("gdrive")
+check("Free plan labels Connect (Pro) and disables it",
+      gdp_free._gdrive_detail._primary.text().endswith("(Pro)")
+      and not gdp_free._gdrive_detail._primary.isEnabled())
+
 
 print()
 print(f"{_passed} passed, {_failed} failed")

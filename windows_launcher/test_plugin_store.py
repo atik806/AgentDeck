@@ -204,6 +204,42 @@ with tempfile.TemporaryDirectory() as d:
           and store.is_connected(GITLAB) and store.is_connected(LINEAR))
 
 
+print("[11] the store is provider-generic (Google Drive -- settings carry the client id, never the secret)")
+from plugin_store import GDRIVE
+
+check("GDRIVE constant", GDRIVE == "gdrive")
+_GD_ID = "1234567890-abcdefg.apps.googleusercontent.com"
+with tempfile.TemporaryDirectory() as d:
+    path = Path(d) / "plugins.json"
+    store = PluginStore(path)
+    check("gdrive not connected initially", not store.is_connected(GDRIVE))
+    store.put(PluginConnection(GDRIVE, settings={"client_id": _GD_ID, "scopes": "a b"}))
+    check("connected after put", store.is_connected(GDRIVE))
+    check("client id round-trips", store.get(GDRIVE).settings["client_id"] == _GD_ID)
+    check("scopes round-trip", store.get(GDRIVE).settings["scopes"] == "a b")
+    check("no login for this provider", store.get(GDRIVE).login == "")
+
+    raw = path.read_text(encoding="utf-8")
+    check("client id is on disk (it is not a secret)", _GD_ID in raw)
+    check("no client_secret key is ever written", "client_secret" not in raw)
+    check("no clientSecret key either", "clientSecret" not in raw)
+
+    check("all seven providers coexist in one file",
+          store.put(PluginConnection(GITHUB, login="atik806"))
+          and store.put(PluginConnection(VERCEL))
+          and store.put(PluginConnection(JIRA))
+          and store.put(PluginConnection(GITLAB))
+          and store.put(PluginConnection(LINEAR))
+          and store.put(PluginConnection(SUPABASE, settings={"project_ref": "abcdefghijkl"}))
+          and all(store.is_connected(p) for p in
+                  (GITHUB, VERCEL, JIRA, GITLAB, LINEAR, SUPABASE, GDRIVE)))
+    store.remove(GDRIVE)
+    check("gdrive removed, the other six untouched",
+          not store.is_connected(GDRIVE)
+          and all(store.is_connected(p) for p in
+                  (GITHUB, VERCEL, JIRA, GITLAB, LINEAR, SUPABASE)))
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
