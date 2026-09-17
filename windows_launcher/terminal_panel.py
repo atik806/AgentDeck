@@ -3610,12 +3610,25 @@ class TerminalPanel(QMainWindow):
             8000,
         )
 
-    def _oauth_hint(self, server: str) -> str:
-        """How the current workspace's agent authorises a hosted OAuth MCP server."""
+    def _oauth_hint(self, server: str, need: str = "mcp_oauth") -> str:
+        """How to authorise a hosted OAuth MCP server, for an agent that got it.
+
+        ``need`` is the capability the plugin actually wires. Google Drive needs
+        a *static* OAuth client, which only Claude Code takes, so naming the
+        workspace's agent would point the user at one the server was never
+        written into -- "run `codex mcp login gdrive`" for a server codex hasn't
+        got. Fall back to the first installed agent that can take it.
+        """
         import agents
         import mcp_targets
 
         key = agents.agent_key_for_command(self._startup_command) or "claude"
+        if not mcp_targets.caps(key).get(need):
+            key = next(
+                (k for k in agents.installed_agent_keys()
+                 if mcp_targets.caps(k).get(need)),
+                "claude",
+            )
         return mcp_targets.oauth_hint(key, server)
 
     def _on_vercel_disconnected(self) -> None:
@@ -3674,7 +3687,8 @@ class TerminalPanel(QMainWindow):
     def _on_gdrive_connected(self) -> None:
         self._wire_gdrive_for(self._working_folder, self._startup_command)
         self.statusBar().showMessage(
-            f"Google Drive enabled — restart the agent (↻) in a pane, then {self._oauth_hint('gdrive')}",
+            "Google Drive enabled — restart the agent (↻) in a pane, then "
+            f"{self._oauth_hint('gdrive', 'mcp_oauth_static')}",
             8000,
         )
 
