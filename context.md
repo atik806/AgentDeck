@@ -1297,6 +1297,77 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       already has a history (item 25) of whisper.cpp/ggml segfaulting on a
       similar-shaped concurrency mistake (concurrent model *construction*).
 
+41. **Plugins — Google Drive, the first plugin that isn't thin (2026-09-17)** —
+    seventh live card (`gdrive`), full design in `docs/PLUGINS.md` §18.
+    - **Why it breaks the mould.** Vercel/Jira/GitLab/Linear/Supabase are
+      tokenless because each vendor implements OAuth 2.1 **Dynamic Client
+      Registration** — the agent registers itself, AgentDeck never handles a
+      credential. Google does **not**, and Google's token endpoint wants a
+      client secret even for a Desktop-app client. Every alternative server
+      (`workspace-mcp`, the archived `server-gdrive`) has the same requirement,
+      so this is a Google constraint, not a choice. The user therefore brings a
+      Desktop-app OAuth client from their own Google Cloud project — which is
+      what Google's own Drive-MCP guide tells people to do, and needs no Google
+      verification. A shipped AgentDeck-owned client is the obvious upgrade but
+      is gated on OAuth verification + a paid CASA assessment, because
+      `drive.readonly` is a Google *restricted* scope.
+    - **Endpoint**: Google's first-party `https://drivemcp.googleapis.com/mcp/v1`
+      (streamable HTTP), 8 tools (`search_files`, `read_file_content`,
+      `create_file`, `copy_file`, permissions/metadata, `list_recent_files`).
+      Scopes `drive.readonly drive.file`; `callbackPort` fixed at **8976**
+      because Google requires pre-registered redirect URIs.
+    - **New capability, deliberately narrow.** `mcp_targets` gains
+      `McpTarget.oauth_static` + `caps()["mcp_oauth_static"]`, set on `claude`
+      only, and `render_entry` now emits a **dict** `oauth` block for such a
+      target. A **bool** `oauth` — what all six other plugins pass — is still
+      metadata that is never rendered, so their entries are byte-identical
+      (regression-asserted in `test_gdrive_mcp.py` §3 and `test_mcp_targets.py`
+      §8). The other ten agents shape static OAuth differently and would produce
+      an entry that *fails to authorise* rather than failing loudly, so they are
+      held back rather than written broken; the card says "Claude Code only" with
+      the reason in the badge tooltip.
+    - **The subprocess.** Claude Code will not read a client secret out of
+      `.claude.json` — it keeps it in `~/.claude/.credentials.json` under
+      `mcpOAuthClientConfig["gdrive|<hash of name+url>"]`, and the only supported
+      way in is `claude mcp add --client-secret`, which reads `MCP_CLIENT_SECRET`
+      from the environment. So `gdrive_mcp.seed_secret()` shells out — the first
+      plugin to run a subprocess rather than only write JSON. The secret goes via
+      the **environment only**, never `argv` (readable by other processes).
+      AgentDeck's own copy is a DPAPI/keyring blob (`gdrive_secret.py` over the
+      existing `secret_store.EncryptedJsonStore`), never in `plugins.json` and
+      never cloud-mirrored — the Supabase row is presence-only.
+    - **Two ordering traps, both tested.** (a) `claude mcp add` writes the entry
+      itself, sailing past the "don't clobber the user's own server" guarantee
+      `write_server` gives every other plugin — hence
+      `foreign_server_agents()` → `seed_secret()` → `inject(seeded=True)`. It
+      also *refuses* an existing name while still exiting 0, so `seed_secret`
+      removes first and checks what the command printed, not the exit code.
+      (b) `_shutdown_all()` calls `unwire_all()` on **every app exit**; an early
+      version also ran `claude mcp remove` there, which would have dropped the
+      stored secret on every close and silently broken the plugin after the
+      first restart (relaunch rewrites the JSON but nothing re-seeds the
+      credential). `forget_secret()` now belongs to `disconnect()` alone.
+    - **Verified against Claude Code 2.1.274** in a sandboxed `CLAUDE_CONFIG_DIR`:
+      the flags exist, `claude mcp get gdrive` reports "client_id configured,
+      client_secret configured", and the server reaches Connected. The DCR
+      regression in claude-code#67258 / #38102 (configured `clientId` ignored in
+      favour of DCR, on 2.1.172) did **not** reproduce. Not yet exercised
+      end-to-end with a real Google client — that needs a real Cloud project.
+    - New: `gdrive_mcp.py`, `gdrive_controller.py`, `gdrive_secret.py`,
+      `test_gdrive_mcp.py` (78), `test_gdrive_controller.py` (63). Touched:
+      `mcp_targets.py`, `plugin_store.py`, `plugins_panel.py` (`_GDriveDetail`
+      cloned from `_SupabaseDetail`, `_gdrive_icon`, stack index 7;
+      `_oauth_auth_html` gained a `need` arg so authorise lines name only the
+      agents actually wired), `terminal_panel.py`, `packaging/AgentDeck.spec`
+      (also added the two `supabase_*` modules, which were missing from
+      `hiddenimports` — statically reachable, so not a broken build, just a gap),
+      `test_plugin_store.py` §11, `test_plugins_panel.py` §10,
+      `test_mcp_targets.py` §8 (+ its `caps(aider)` exact-dict assertion).
+    - **Note**: `docs/PLUGINS.md` §17 still said Supabase was "PLANNED, not yet
+      built" although it shipped in v0.20.0 — corrected in this pass, along with
+      §2a's "Five live cards". `context.md` had no Supabase-plugin item at all
+      (the log jumps 33 → 34); still missing, worth backfilling.
+
 ## Running / testing
 
 ```cmd
@@ -1323,6 +1394,9 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_linear_mcp.py            # Linear MCP injector; offline
 .venv\Scripts\python.exe test_gitlab_controller.py     # GitLab Qt bridge; offline
 .venv\Scripts\python.exe test_linear_controller.py     # Linear Qt bridge; offline
+.venv\Scripts\python.exe test_gdrive_mcp.py            # Google Drive MCP injector + seed_secret; offline
+.venv\Scripts\python.exe test_gdrive_controller.py     # Google Drive Qt bridge (stub claude binary); offline
+.venv\Scripts\python.exe test_mcp_targets.py           # per-agent MCP adapters + capabilities; offline
 .venv\Scripts\python.exe test_notes_store.py           # notebook JSON store; offline
 .venv\Scripts\python.exe test_notes_panel.py           # notes panel + sidebar nav; offline
 .venv\Scripts\python.exe test_skills_store.py          # skills JSON store + frontmatter; offline

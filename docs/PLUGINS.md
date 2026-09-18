@@ -89,9 +89,13 @@ structure below is what the code needs to support.)
 
 Each **card**: icon, name, category tag, one-line description, a status pill
 (`Not connected` / `Connected as @login` / `Needs attention`), and one primary
-button (`Connect` → `Manage`). Five live cards — **GitHub**, **Vercel**, **Jira**,
-**GitLab** and **Linear** (all but GitHub thin — see §12 / §13 / §15 / §16) — with
-the rest rendered disabled as `Coming soon` (Bitbucket, Sentry, Netlify).
+button (`Connect` → `Manage`). Seven live cards — **GitHub**, **Vercel**,
+**Jira**, **GitLab**, **Linear**, **Supabase** and **Google Drive** (see §12 /
+§13 / §15 / §16 / §17 / §18) — with the rest rendered disabled as `Coming soon`
+(Bitbucket, Sentry, Netlify). All but GitHub and Google Drive are *thin*: the
+agent owns the OAuth and AgentDeck never handles a credential. Google Drive is
+the exception — Google has no dynamic client registration, so the user supplies
+an OAuth client (§18).
 
 ### 2b. Detail / manage view (click a card)
 
@@ -758,9 +762,9 @@ Reuses `entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
 
 ---
 
-## 17. Supabase plugin (database review) — PLANNED, not yet built
+## 17. Supabase plugin (database review) — shipped v0.20.0 (2026-09-13)
 
-The sixth card, and the first **"Database"** category. Goal: an agent in a pane
+The sixth card, and the first **"Database"** category. An agent in a pane
 can inspect a user's *own* Supabase project — schema, tables, RLS policies,
 migrations, logs, advisors — to answer "review this database" without the user
 pasting SQL or screenshots. Scoped deliberately narrow (read-only) because a
@@ -874,3 +878,170 @@ does, nothing new to teach `mcp_targets.py`.
 * **Self-hosted / local Supabase** (`http://localhost:54321/mcp`, per Supabase's
   own docs) is out of scope for v1 — same "hosted only" call GitLab made for
   self-managed instances; revisit if asked.
+
+
+## 18. Google Drive plugin (static OAuth client) — built 2026-09-17
+
+The seventh live card, and **the first one that is not thin**. Read §12/§16
+first for the thin-clone shape; this section is mostly about where Drive departs
+from it and why.
+
+### Why this one can't be thin
+
+Every other hosted plugin is tokenless because its vendor implements **OAuth 2.1
+Dynamic Client Registration** (RFC 7591): the agent registers itself at the
+provider, so AgentDeck never handles a credential and "Connect" is one click.
+
+Google does not implement DCR, and Google's token endpoint requires a client
+secret *even for a Desktop-app client*. There is no way around it — it is a
+Google constraint, not a choice of server. The community alternatives
+(`workspace-mcp`, the archived `server-gdrive`) all demand the same thing.
+
+So the user brings a **Desktop-app OAuth client** from their own Google Cloud
+project. That is exactly what Google's own Drive-MCP guide instructs, it needs
+no Google verification, and it keeps the blast radius on the user's own project.
+
+> **A shipped AgentDeck-owned client is the obvious future upgrade** — one-click
+> Connect, no console trip. It is not done yet because `drive.readonly` is a
+> Google **restricted** scope: shipping it under our own client would require
+> OAuth verification *and* a paid CASA security assessment. Until then, BYO.
+> `gdrive_mcp.canonical_server` already reads the id from settings, so a built-in
+> default client is a small change when that clears.
+
+### The endpoint
+
+Google's first-party server: `https://drivemcp.googleapis.com/mcp/v1`,
+streamable HTTP. Eight tools — `search_files`, `read_file_content`,
+`download_file_content`, `create_file`, `copy_file`, `get_file_metadata`,
+`get_file_permissions`, `list_recent_files`.
+
+Scopes: `drive.readonly drive.file` (read anything; create/edit what the client
+touches), space-separated per RFC 6749 §3.3.
+
+### Claude Code only — on purpose
+
+`mcp_targets` gains a third capability, **`mcp_oauth_static`**, set only on the
+`claude` target. The other ten agents shape static OAuth config differently
+(Gemini/Antigravity use their own `oauth` schemas, opencode assumes DCR), so
+writing Claude's shape into them produces an entry that *fails to authorise*
+rather than one that fails loudly. Holding them back is the honest option; each
+can be enabled individually once actually verified.
+
+`render_entry` only emits a dict `oauth` for a target with `oauth_static`. A
+**bool** `oauth` — what all six other plugins pass — is still metadata that is
+never rendered, so their entries are byte-identical (regression-tested in
+`test_gdrive_mcp.py` §3 and `test_mcp_targets.py` §8).
+
+### The injected block (root `mcpServers.gdrive` of `~/.claude.json`)
+
+```json
+{
+  "type": "http",
+  "url": "https://drivemcp.googleapis.com/mcp/v1",
+  "oauth": {
+    "clientId": "1234-abc.apps.googleusercontent.com",
+    "callbackPort": 8976,
+    "scopes": "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file"
+  },
+  "x-agentdeck-managed": true
+}
+```
+
+`callbackPort` is fixed at **8976** because Google requires every redirect URI to
+be pre-registered — it cannot be ephemeral. The user registers
+`http://localhost:8976/callback` on their client.
+
+### Where the secret lives — three places, one of them not ours
+
+This is the part worth understanding before changing anything here.
+
+1. **AgentDeck's vault** — `gdrive_secret.GDriveSecretStore`, a DPAPI/keyring
+   blob at `%APPDATA%\multi-terminal\gdrive.bin` via the generic
+   `secret_store.EncryptedJsonStore`. Same rules as the GitHub token: never
+   cloud-mirrored, never in `plugins.json`.
+2. **Claude Code's credential store** — `~/.claude/.credentials.json`, under
+   `mcpOAuthClientConfig["gdrive|<hash of name+url>"].clientSecret`. Claude Code
+   will **not** read a secret out of `.claude.json`; the only supported way in is
+   `claude mcp add --client-secret`, which reads `MCP_CLIENT_SECRET` from the
+   environment. That is why `gdrive_mcp.seed_secret()` shells out — the one
+   plugin that runs a subprocess instead of only writing JSON. Note this copy is
+   **plaintext JSON on Windows**; that is Claude Code's storage, not ours, and
+   it is part of why the plugin insists on a *Desktop-app* client, whose secret
+   RFC 8252 already treats as non-confidential.
+3. **Never** in `plugins.json`, the Supabase mirror, or `argv` — the secret goes
+   to the subprocess in the environment only, since argv is readable by other
+   processes. Asserted in `test_gdrive_mcp.py` §8.
+
+### Two ordering traps
+
+**Connect order.** `claude mcp add` creates the server entry itself, so it would
+sail past the "don't clobber a server the user wrote" guarantee that
+`mcp_targets.write_server` gives every other plugin for free. Hence:
+`foreign_server_agents()` → `seed_secret()` → `inject(seeded=True)`. The
+`seeded` flag is what lets us restamp the entry `claude mcp add` just wrote with
+our marker and scopes, and it is only ever passed after the conflict check came
+back empty. `claude mcp add` also *refuses* an existing name while still exiting
+0, so `seed_secret` removes first and checks what the command actually printed.
+
+**Shutdown order.** `terminal_panel._shutdown_all()` calls `unwire_all()` on
+every app exit. `unwire_all()` must therefore **not** drop Claude Code's secret —
+relaunch rewrites the JSON entry but nothing re-seeds the credential, so the
+plugin would silently stop working after the first restart. `forget_secret()`
+belongs to `disconnect()` alone. The stored secret is keyed by server name + URL,
+both of which we rewrite unchanged, so it survives the restart.
+Regression-tested in `test_gdrive_controller.py` §8.
+
+### Modules
+
+| Module | Notes |
+|---|---|
+| `gdrive_mcp.py` | Closest to `supabase_mcp.py` (settings-aware). Adds `seed_secret()` / `forget_secret()` (subprocess) and `foreign_server_agents()` (pre-seed conflict check). Filters on `mcp_oauth_static`. |
+| `gdrive_secret.py` | `GDriveSecretStore` over `secret_store.EncryptedJsonStore`; mirrors `github_auth.GitHubTokenStore`. |
+| `gdrive_controller.py` | Copy of `supabase_controller.py` → `GDriveController`. Connect runs on a worker thread (subprocess) with a busy state; a failed seed rolls the vault back and emits the command to run by hand. |
+| `mcp_targets.py` | New `McpTarget.oauth_static` + `caps()["mcp_oauth_static"]`; `render_entry` emits a dict `oauth`. |
+| `plugin_store.py` | Added `GDRIVE = "gdrive"`. `settings` carries `client_id` / `scopes` — never the secret. |
+| `plugins_panel.py` | `_GDriveDetail` (cloned from `_SupabaseDetail`), `_gdrive_icon`, catalog tuple, 8th stack page (index 7), `_open_detail` / `_sync_cards` branches, `PluginsPanel(gdrive=…)`. `_oauth_auth_html` gained a `need` arg so the authorise lines name only the agents actually wired. |
+| `terminal_panel.py` | Builds `GDriveController`, `gdrive=` kwarg, `_wire_gdrive_for`, `_on_gdrive_connected/_disconnected` nudges, teardown. |
+| `packaging/AgentDeck.spec` | `hiddenimports` += the three gdrive modules (and the two supabase ones, which were missing — statically reachable, so not a broken build, just a gap in the defensive list). |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='gdrive'`. **No migration** —
+`provider` is unconstrained free text. The mirrored row is presence-only:
+`external_login` empty, no client id, no secret. Reuses
+`entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### The user's setup, once
+
+Google Cloud console → enable the Drive API → OAuth consent screen (add yourself
+as a test user) → Credentials → Create OAuth client ID → **Desktop app** → add
+`http://localhost:8976/callback` as a redirect URI → paste the ID and secret into
+the card. Then restart the agent in a pane and run `/mcp` to authorise.
+
+### Tests
+
+`test_gdrive_mcp.py` (78 checks), `test_gdrive_controller.py` (63);
+`test_plugin_store.py` §11, `test_plugins_panel.py` §10 (`FakeGDrive` stub),
+`test_mcp_targets.py` §8. The controller suite is fully offline — a stub shim
+stands in for the `claude` binary and records its argv and environment.
+
+### Verified against Claude Code 2.1.274
+
+`claude mcp add --client-id/--client-secret/--callback-port` exists and works;
+`claude mcp get gdrive` reports *"client_id configured, client_secret
+configured"* and the server reaches **Connected**. The DCR regression reported in
+claude-code#67258 / #38102 (a configured `clientId` ignored in favour of DCR, on
+2.1.172) did **not** reproduce. If it resurfaces on a future version the card is
+blocked upstream — nothing in AgentDeck can work around it; the fallback would be
+the `workspace-mcp` stdio server, which `render_entry`'s stdio branch already
+supports for Claude only, at the cost of a `uvx` runtime dependency.
+
+### Known caveats
+
+* Same "(re)start the agent, then `/mcp`" caveat as every other plugin.
+* The end-to-end browser authorisation has not been exercised with a real Google
+  client — that needs the user's own Cloud project.
+* Only Claude Code is wired (above). The card says so, with the reason in the
+  badge tooltip.
+
+---

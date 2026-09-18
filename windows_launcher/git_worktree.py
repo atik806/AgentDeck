@@ -71,6 +71,10 @@ DEFAULT_DIFF_MAX_BYTES = 2_000_000
 _DEFAULT_TIMEOUT = 30.0
 #: Branch names we consider "the mainline" when the repo doesn't tell us.
 _BASE_CANDIDATES = ("main", "master", "trunk", "develop", "development")
+#: AgentDeck's per-folder scratch dir (handoff transcripts, PR review briefs,
+#: materialised skills). Never staged by :func:`commit_all` -- keep in step with
+#: ``agent_sessions._HANDOFF_DIR`` / ``github_mcp.AGENTDECK_DIR``.
+_SCRATCH_DIR = ".agentdeck"
 
 
 # --------------------------------------------------------------------------- #
@@ -174,8 +178,10 @@ def _run(
 ) -> subprocess.CompletedProcess:
     """Run ``git <args>`` in ``cwd`` and return the completed process.
 
-    Raises :class:`GitError` when ``git`` is missing, times out, or (with
-    ``check``) exits non-zero. ``stdout``/``stderr`` are text.
+    Raises :class:`GitError` when ``git`` is missing, times out, fails to
+    spawn (a ``cwd`` that vanished, say), or (with ``check``) exits non-zero --
+    never a raw ``OSError``, so callers on a worker thread can catch one type.
+    ``stdout``/``stderr`` are text.
     """
     env = {
         **os.environ,
@@ -197,10 +203,19 @@ def _run(
             env=env,
             creationflags=CREATE_NO_WINDOW,
         )
-    except FileNotFoundError as exc:  # git not on PATH
+    except NotADirectoryError as exc:
+        # Windows raises this (WinError 267) when ``cwd`` is not a directory --
+        # the usual cause is a worktree folder that was discarded/merged away
+        # while a probe or diff for it was still in flight.
+        raise GitError(f"working directory is gone: {cwd}") from exc
+    except FileNotFoundError as exc:  # git not on PATH -- or a cwd that vanished
+        if cwd is not None and not os.path.isdir(str(cwd)):
+            raise GitError(f"working directory is gone: {cwd}") from exc
         raise GitError("git is not installed or not on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise GitError(f"git {' '.join(args)} timed out after {timeout:g}s") from exc
+    except OSError as exc:  # spawn failed (permissions, handle exhaustion, ...)
+        raise GitError(f"git {' '.join(args)} could not start: {exc}") from exc
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise GitError(f"git {' '.join(args)} failed ({proc.returncode}): {detail}")
@@ -700,10 +715,24 @@ def diff_text(
 def commit_all(worktree_path: "str | os.PathLike", message: str) -> str:
     """Stage everything in the worktree and commit. Returns the new sha.
 
+    Everything *except* ``.agentdeck/`` -- AgentDeck's own scratch directory,
+    which holds cross-agent handoff transcripts and PR review briefs. A handoff
+    transcript is a verbatim record of an agent conversation, so committing one
+    onto a branch this function's callers then push is a disclosure, not a
+    tidiness problem. ``git_exclude`` already keeps the directory out of
+    ``git status``; the ``:(exclude)`` pathspec is the belt to that braces, for
+    the cases where writing the exclude file failed (read-only ``.git``) or the
+    files were staged by something other than this call.
+
     Raises :class:`GitError` when there is nothing to commit.
     """
     wt = str(worktree_path)
     _run(["add", "-A"], wt)
+    # Unstage rather than filter the pathspec: `git add -A -- . :(exclude)…`
+    # still *errors* when the positive pathspec matches an ignored path, so the
+    # normal (already-excluded) case would fail the commit. A reset of a path
+    # that matched nothing is a silent no-op.
+    _run(["reset", "-q", "--", _SCRATCH_DIR], wt, check=False)
     proc = _run(["commit", "-m", message or "WIP (AgentDeck worktree)"], wt, check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()

@@ -23,7 +23,7 @@ a pane -- see docs/PLUGINS.md §17.
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 

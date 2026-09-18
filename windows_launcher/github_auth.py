@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import requests
@@ -219,6 +219,16 @@ class DeviceFlow:
             raise GitHubAuthError("GitHub returned an unreadable device-code response.")
         self._device = device
         return device
+
+    @property
+    def interval(self) -> int:
+        """Seconds to wait before the next poll.
+
+        Read this fresh each round rather than caching it: :meth:`poll_once`
+        raises it when GitHub answers ``slow_down``, and polling on regardless
+        just earns more of them.
+        """
+        return max(1, self._device.interval if self._device else 5)
 
     def poll_once(self) -> Optional[GitHubToken]:
         """One token poll. Returns a :class:`GitHubToken` when authorised,

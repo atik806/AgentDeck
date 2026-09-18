@@ -252,6 +252,35 @@ def main() -> int:
         gw.prune_worktrees(info)
         check(True, "prune_worktrees ran without error")
 
+        # -- a worktree folder that vanished under a running git call --
+        # Discarding a worktree while the Review panel is still probing/diffing
+        # it used to let Windows' NotADirectoryError (WinError 267) escape the
+        # module and crash the app. Every spawn failure must surface as
+        # GitError, and the guarded readers must simply come back empty.
+        try:
+            gw._run(["status", "--porcelain"], dest, check=False)
+            check(False, "git in a deleted worktree raises GitError")
+        except gw.GitError as exc:
+            check("gone" in str(exc).lower(), "git in a deleted worktree raises GitError")
+        except OSError:
+            check(False, "git in a deleted worktree raises GitError, not OSError")
+        check(gw.diff_text(dest, "main") == "", "diff_text on a deleted worktree is empty")
+        check(gw.diff_stat(dest, "main") == [], "diff_stat on a deleted worktree is empty")
+
+        # ...and when the folder goes away *after* the isdir() guard, the
+        # GitError still reaches the caller rather than a raw OSError.
+        real_isdir = os.path.isdir
+        os.path.isdir = lambda p, _d=str(dest), _r=real_isdir: True if str(p) == _d else _r(p)
+        try:
+            gw.diff_text(dest, "main")
+            check(False, "a worktree deleted mid-diff raises GitError")
+        except gw.GitError:
+            check(True, "a worktree deleted mid-diff raises GitError")
+        except OSError:
+            check(False, "a worktree deleted mid-diff raises GitError, not OSError")
+        finally:
+            os.path.isdir = real_isdir
+
     print(f"\n{_PASS} passed, {_FAIL} failed")
     return 1 if _FAIL else 0
 

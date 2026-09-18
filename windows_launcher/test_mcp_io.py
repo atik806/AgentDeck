@@ -4,6 +4,8 @@
 """
 
 import json
+import os
+import stat
 import sys
 import tempfile
 import threading
@@ -143,6 +145,56 @@ with tempfile.TemporaryDirectory() as d:
         check("nested locked(same path) does not deadlock", True)
     except Exception as e:  # noqa: BLE001
         check(f"nested locked raised {e!r}", False)
+
+
+# ---------------------------------------------------------------------------
+# An agent config holds the GitHub plugin's bearer token, so the temp file dump()
+# writes through is a credential too: owner-only, deleted on failure, and never
+# left behind for a `git add -A` in someone's home directory to pick up.
+print("[8] the temp file is treated as a secret")
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / "claude.json"
+    check("dump ok", mcp_io.dump(p, {"mcpServers": {"github": {"t": 1}}}, "json"))
+    check("no temp left on success", not list(Path(d).glob("*.adk*.tmp")))
+
+    if os.name != "nt":
+        mode = stat.S_IMODE(p.stat().st_mode)
+        check(f"config is 0600 (got {mode:04o})", mode == 0o600)
+    else:
+        check("mode check is POSIX-only (skipped on Windows)", True)
+
+    # A write that blows up mid-way must not leave the plaintext copy behind.
+    real_replace = os.replace
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    os.replace = _boom
+    try:
+        ok = mcp_io.dump(p, {"mcpServers": {"github": {"t": 2}}}, "json")
+    finally:
+        os.replace = real_replace
+    check("failed dump reports False", ok is False)
+    check("failed dump leaves no temp behind", not list(Path(d).glob("*.adk*.tmp")))
+    check("failed dump left the old file intact", mcp_io.load(p, "json")[0]["mcpServers"]["github"]["t"] == 1)
+
+    # An orphan from a killed process (no one left to clean it up) is swept on
+    # the next write past it -- but only once it is stale.
+    orphan = Path(d) / "claude.json.adk99999.tmp"
+    orphan.write_text('{"secret": "x"}', encoding="utf-8")
+    os.utime(orphan, (time.time() - 3600, time.time() - 3600))
+    fresh = Path(d) / "claude.json.adk99998.tmp"
+    fresh.write_text('{"in": "flight"}', encoding="utf-8")
+
+    check("dump ok", mcp_io.dump(p, {"mcpServers": {"github": {"t": 3}}}, "json"))
+    check("stale orphan swept", not orphan.exists())
+    check("another writer's in-flight temp untouched", fresh.exists())
+
+    unrelated = Path(d) / "other.json.adk12345.tmp"
+    unrelated.write_text("{}", encoding="utf-8")
+    os.utime(unrelated, (time.time() - 3600, time.time() - 3600))
+    check("dump ok", mcp_io.dump(p, {"mcpServers": {"github": {"t": 4}}}, "json"))
+    check("a different file's temp is not swept", unrelated.exists())
 
 
 print()

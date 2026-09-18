@@ -80,7 +80,12 @@ def supports_agent(agent: Optional[str]) -> bool:
 def _truthy(value: object, default: bool) -> bool:
     if value is None:
         return default
-    return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+    text = str(value).strip().lower()
+    if not text:
+        # Blank is "not set", not "off" -- read_only defaults *on*, and an empty
+        # string silently turning it off is the wrong way to fail.
+        return default
+    return text not in ("false", "0", "no", "off")
 
 
 def canonical_server(settings: Optional[Dict[str, str]] = None) -> dict:
@@ -157,13 +162,14 @@ def inject(
         tgt = mcp_targets.target(key)
         if tgt is None:
             continue
-        did, _root = mcp_targets.write_server(
+        did, wrote_root_extra = mcp_targets.write_server(
             tgt, _SERVER_NAME, canonical,
             path_override=_path_override(key, config_paths, claude_config),
             ledger_managed=ledger.has(_PROVIDER, key),
         )
         if did:
-            ledger.record(_PROVIDER, key, _SERVER_NAME, wrote_root_extra=False)
+            ledger.record(_PROVIDER, key, _SERVER_NAME,
+                          wrote_root_extra=wrote_root_extra)
             changed = True
     return changed
 
@@ -192,6 +198,7 @@ def remove(
             tgt, _SERVER_NAME,
             path_override=_path_override(key, config_paths, claude_config),
             ledger_managed=ledger.has(_PROVIDER, key),
+            drop_root_extra=ledger.wrote_root_extra(_PROVIDER, key),
         )
         ledger.forget(_PROVIDER, key)
         changed = changed or did

@@ -20,7 +20,7 @@ def new(cols=40, lines=8, sb=500):
 print("== 1. full-screen program restores the shell screen ==")
 s, st = new()
 for i in range(6):
-    st.feed(f"C:\> command {i}\r\n")
+    st.feed(f"C:\\> command {i}\r\n")
 before = [l.rstrip() for l in s.display]
 hist_before = s.history_length
 st.feed(ESC + "[?1049h")

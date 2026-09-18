@@ -96,6 +96,10 @@ class McpTarget:
     mcp: bool = True
     header_auth: bool = True
     oauth: bool = True
+    # Can this agent take a *static* OAuth client (id + secret we supply) rather
+    # than relying on Dynamic Client Registration? Only Claude Code today -- see
+    # ``OAUTH_ALLOWLIST`` below and docs/PLUGINS.md 18.
+    oauth_static: bool = False
 
 
 # Vercel / Jira / GitLab / Linear are tokenless -- the agent runs the remote-MCP
@@ -117,6 +121,7 @@ _TARGETS: Dict[str, McpTarget] = {
         key="claude", label="Claude Code", fmt="json",
         path=lambda: _home() / ".claude.json",
         server_map=("mcpServers",), type_value="http",
+        oauth_static=True,
     ),
     "codex": McpTarget(
         key="codex", label="Codex", fmt="toml",
@@ -192,20 +197,24 @@ def target(key: Optional[str]) -> Optional[McpTarget]:
 
 
 def caps(key: Optional[str]) -> Dict[str, object]:
-    """``{"mcp", "mcp_remote_headers", "mcp_oauth", "format"}`` for an agent key.
+    """``{"mcp", "mcp_remote_headers", "mcp_oauth", "mcp_oauth_static", "format"}``.
 
     All-False / ``None`` for an unknown key or one with no MCP support (aider).
     ``mcp_oauth`` also respects :data:`OAUTH_ALLOWLIST`.
     """
     tgt = target(key)
     if tgt is None:
-        return {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False, "format": None}
+        return {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False,
+                "mcp_oauth_static": False, "format": None}
     return {
         "mcp": tgt.mcp,
         # can carry a bearer credential on a remote server -- via an Authorization
         # header (most agents) or a dedicated field (Codex's ``bearer_token``).
         "mcp_remote_headers": tgt.mcp and tgt.header_auth,
         "mcp_oauth": tgt.mcp and tgt.oauth and tgt.key in OAUTH_ALLOWLIST,
+        # a hosted OAuth server whose provider has no Dynamic Client
+        # Registration, so the client id/secret comes from us (Google Drive).
+        "mcp_oauth_static": tgt.mcp and tgt.oauth_static and tgt.key in OAUTH_ALLOWLIST,
         "format": tgt.fmt,
     }
 
@@ -222,7 +231,12 @@ def render_entry(tgt: McpTarget, server_name: str, canonical: dict) -> Optional[
         {"transport": "http"|"stdio",
          "url": str, "headers": {str: str}, "bearer": str | None,   # http
          "command": str, "args": [str], "env": {str: str},          # stdio
-         "oauth": bool}
+         "oauth": bool | {"clientId": str, "callbackPort": int, "scopes": str}}
+
+    A bool ``oauth`` is metadata only (the agent runs Dynamic Client
+    Registration itself). A dict is a *static* client and is rendered into the
+    entry -- but only for a target with ``oauth_static``, since the shape is
+    Claude Code's.
 
     Returns ``None`` if this target can't represent the spec (e.g. a stdio spec for
     an agent we only wire remotely).
@@ -252,6 +266,13 @@ def render_entry(tgt: McpTarget, server_name: str, canonical: dict) -> Optional[
             entry["bearer_token"] = bearer
     if headers and tgt.headers_field:
         entry[tgt.headers_field] = headers
+
+    # A dict ``oauth`` is a *static client* spec (clientId/callbackPort/scopes).
+    # Every other plugin passes ``oauth: True`` -- bool metadata that is not
+    # rendered -- so this branch is inert for them.
+    oauth_cfg = canonical.get("oauth")
+    if isinstance(oauth_cfg, dict) and tgt.oauth_static:
+        entry["oauth"] = dict(oauth_cfg)
 
     for k, v in tgt.server_extra.items():
         entry[k] = list(v) if isinstance(v, list) else v
@@ -521,13 +542,37 @@ class McpLedger:
             data = self._read()
             if provider not in data:
                 return
+            prov = data[provider] if isinstance(data[provider], dict) else {}
+            dropped = dict(prov) if agent_key is None else {agent_key: prov.get(agent_key)}
             if agent_key is None:
                 del data[provider]
             else:
                 data[provider].pop(agent_key, None)
                 if not data[provider]:
                     del data[provider]
+            self._hand_on_root_extra(data, provider, dropped)
             self._write(data)
+
+    @staticmethod
+    def _hand_on_root_extra(data: dict, provider: str, dropped: Dict[str, object]) -> None:
+        """Pass "we added this file's ``root_extra``" on to whoever is still wired.
+
+        ``wrote_root_extra`` is a fact about the *config file*, not about one
+        provider: ``remove_server`` refuses to strip the key while any other
+        managed server is still in that file. So the flag has to travel to the
+        last provider out. Without this, the first provider to disconnect takes
+        the only record with it and Codex's global
+        ``experimental_use_rmcp_client`` is stranded for good.
+        """
+        for agent, entry in dropped.items():
+            if not (isinstance(entry, dict) and entry.get("wrote_root_extra")):
+                continue
+            for other, agents in data.items():
+                if other == provider or not isinstance(agents, dict):
+                    continue
+                theirs = agents.get(agent)
+                if isinstance(theirs, dict):
+                    theirs["wrote_root_extra"] = True
 
     def agents_for(self, provider: str) -> Dict[str, dict]:
         prov = self._read().get(provider)

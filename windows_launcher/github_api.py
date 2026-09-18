@@ -26,6 +26,10 @@ __all__ = [
 _API = "https://api.github.com"
 _TIMEOUT = 20
 
+#: One path segment of an ``owner/name`` -- GitHub allows alphanumerics, ``-``,
+#: ``_`` and ``.`` and nothing else.
+_SLUG = r"[A-Za-z0-9._-]+"
+
 
 def _headers(token: str) -> dict:
     return {
@@ -221,10 +225,14 @@ def parse_pr_url(url: str) -> Optional[tuple[str, int]]:
         return None
     import re
 
-    m = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", text)
+    # ``_SLUG`` rather than ``[^/\s]+``: an owner/name is alphanumerics plus
+    # ``.-_``, and the result is interpolated into a shell command downstream
+    # (``github_mcp.review_startup_command``), so a pasted URL must not be able
+    # to smuggle a quote or a separator through.
+    m = re.search(rf"github\.com/({_SLUG}/{_SLUG})/pull/(\d+)", text)
     if m:
         return m.group(1), int(m.group(2))
-    m = re.fullmatch(r"([^/\s]+/[^/\s]+)#(\d+)", text)
+    m = re.fullmatch(rf"({_SLUG}/{_SLUG})#(\d+)", text)
     if m:
         return m.group(1), int(m.group(2))
     return None

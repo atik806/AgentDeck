@@ -28,6 +28,7 @@ __all__ = [
     "GITLAB",
     "LINEAR",
     "SUPABASE",
+    "GDRIVE",
     "CAPABILITIES",
     "CAPABILITY_LABELS",
     "DEFAULT_CAPABILITIES",
@@ -68,6 +69,15 @@ LINEAR = "linear"
 #: table this module writes to -- those are AgentDeck's *own* backend Supabase
 #: project. See ``supabase_controller`` / ``supabase_mcp``.
 SUPABASE = "supabase"
+
+#: Google Drive -- Google's first-party hosted MCP at
+#: ``drivemcp.googleapis.com/mcp/v1``. The odd one out: Google's auth servers do
+#: **not** implement Dynamic Client Registration, so unlike every other thin
+#: plugin the agent cannot register itself. The user brings a Desktop-app OAuth
+#: client from their own Google Cloud project; the id lives in this row's
+#: ``settings``, the secret in a DPAPI-encrypted vault (``gdrive_secret``) and
+#: never touches ``plugins.json``. Claude Code only -- see docs/PLUGINS.md 18.
+GDRIVE = "gdrive"
 
 #: Ordered capability keys. Each maps to one or more GitHub MCP toolsets and a
 #: tier of GitHub App permissions -- see docs/PLUGINS.md §5.
@@ -241,7 +251,9 @@ class PluginStore:
     def _write(self, data: dict) -> bool:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
+            # PID-scoped (matches ``mcp_io.dump`` / ``McpLedger._write``) so two
+            # AgentDeck instances flushing at once can't clobber each other's temp.
+            tmp = self.path.with_name(f"{self.path.name}.adk{os.getpid()}.tmp")
             tmp.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )

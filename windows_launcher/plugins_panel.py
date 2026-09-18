@@ -2,14 +2,16 @@
 
 Two levels (see ``docs/PLUGINS.md`` §2):
 
-* **catalog** -- a vertical list of plugin cards, one per row. v1 ships six
-  live cards, **GitHub**, **Vercel**, **Jira**, **GitLab**, **Linear** and
-  **Supabase**; the rest render disabled as "Coming soon".
+* **catalog** -- a vertical list of plugin cards, one per row. Seven live
+  cards: **GitHub**, **Vercel**, **Jira**, **GitLab**, **Linear**,
+  **Supabase** and **Google Drive**; the rest render disabled as "Coming soon".
 * **detail** -- click GitHub to connect it, pick which capabilities the agent
   gets, list your repos, and kick off a **GitHub review**; click Vercel, Jira,
   GitLab or Linear to enable its (thin, agent-owns-the-OAuth) MCP server; click
   Supabase to scope a project (required) and connect for read-only database
-  review (see docs/PLUGINS.md §17).
+  review (see docs/PLUGINS.md §17); click Google Drive to paste a Desktop-app
+  OAuth client -- the one plugin that needs a credential, because Google has no
+  dynamic client registration (docs/PLUGINS.md 18).
 
 Keep :func:`plugin_icon` -- the sidebar's "Plugins" nav button reuses it.
 """
@@ -51,7 +53,8 @@ def _wired_agent_labels(agents_provider, need: str = "mcp") -> list[str]:
     """Human labels of the agents a plugin will write its MCP server into.
 
     ``need`` -- the capability the plugin requires: ``"mcp"`` for GitHub (token
-    injected), ``"mcp_oauth"`` for Vercel / Jira (agent runs the OAuth itself).
+    injected), ``"mcp_oauth"`` for Vercel / Jira (agent runs the OAuth itself),
+    ``"mcp_oauth_static"`` for Google Drive (we supply the OAuth client).
     """
     import agents
     import mcp_targets
@@ -60,13 +63,18 @@ def _wired_agent_labels(agents_provider, need: str = "mcp") -> list[str]:
     return [agents.agent_label(k) for k in keys if mcp_targets.caps(k).get(need)]
 
 
-def _oauth_auth_html(agents_provider, server: str) -> str:
-    """One authorise-instruction line per OAuth-capable wired agent, as HTML."""
+def _oauth_auth_html(agents_provider, server: str, need: str = "mcp_oauth") -> str:
+    """One authorise-instruction line per OAuth-capable wired agent, as HTML.
+
+    ``need`` matches the capability the plugin actually wires, so a static-client
+    plugin (Google Drive) doesn't tell the user to authorise in agents it never
+    wrote the server into.
+    """
     import agents
     import mcp_targets
 
     keys = list(agents_provider()) if agents_provider else ["claude"]
-    keys = [k for k in keys if mcp_targets.caps(k).get("mcp_oauth")]
+    keys = [k for k in keys if mcp_targets.caps(k).get(need)]
     if not keys:
         return (
             f"Connected. No installed agent can authorise {server} on its own yet — "
@@ -252,6 +260,61 @@ def _linear_icon(px: int = 40) -> QPixmap:
     return pm
 
 
+def _gdrive_icon(px: int = 40) -> QPixmap:
+    """The Drive mark, drawn (no asset dependency): the folded triangle.
+
+    Three faces of the classic Drive trifold, tinted from the theme rather than
+    Google's brand colours -- the whole catalog is monochrome-with-accent, and a
+    single full-colour logo would read as a foreign object.
+    """
+    px = max(12, int(px))
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    u = px / 16.0
+    text = QColor(theme.color("text"))
+    accent = QColor(theme.color("accent"))
+    mid = QColor(text)
+    mid.setAlpha(150)
+    faint = QColor(text)
+    faint.setAlpha(90)
+
+    # left face
+    left = QPainterPath()
+    left.moveTo(6.2 * u, 2.2 * u)
+    left.lineTo(1.2 * u, 11.0 * u)
+    left.lineTo(3.7 * u, 11.0 * u)
+    left.lineTo(8.7 * u, 2.2 * u)
+    left.closeSubpath()
+    p.setBrush(faint)
+    p.drawPath(left)
+
+    # right face
+    right = QPainterPath()
+    right.moveTo(9.3 * u, 2.2 * u)
+    right.lineTo(14.8 * u, 11.0 * u)
+    right.lineTo(12.3 * u, 11.0 * u)
+    right.lineTo(6.8 * u, 2.2 * u)
+    right.closeSubpath()
+    p.setBrush(mid)
+    p.drawPath(right)
+
+    # base bar
+    base = QPainterPath()
+    base.moveTo(3.2 * u, 12.2 * u)
+    base.lineTo(12.8 * u, 12.2 * u)
+    base.lineTo(11.4 * u, 14.6 * u)
+    base.lineTo(4.6 * u, 14.6 * u)
+    base.closeSubpath()
+    p.setBrush(accent)
+    p.drawPath(base)
+
+    p.end()
+    return pm
+
+
 # ---------------------------------------------------------------------------
 # QSS
 # ---------------------------------------------------------------------------
@@ -326,6 +389,8 @@ _CATALOG = [
      "Manage deployments, inspect build logs, roll back — your agent runs Vercel directly.", True),
     ("supabase", "Supabase", "Database",
      "Review your database schema, tables and RLS — read-only, scoped to one project.", True),
+    ("gdrive", "Google Drive", "Files",
+     "Search, read and create files in your Drive — your agent works Drive directly.", True),
 ]
 
 
@@ -361,6 +426,8 @@ class _PluginCard(QFrame):
             icon.setPixmap(_linear_icon(28))
         elif key == "supabase":
             icon.setPixmap(_supabase_icon(28))
+        elif key == "gdrive":
+            icon.setPixmap(_gdrive_icon(28))
         else:
             icon.setPixmap(plugin_icon(24, theme.color("text_faint")).pixmap(24, 24))
         row.addWidget(icon, 0, Qt.AlignVCenter)
@@ -618,7 +685,8 @@ class _GitHubDetail(QWidget):
         if connected:
             conn = gh.connection
             who = f"Connected as @{gh.login}" if gh.login else "Connected"
-            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth")
+            # Header-auth, not OAuth: GitHub injects the token itself.
+            wired = _wired_agent_labels(self._agents_provider, "mcp_remote_headers")
             if wired:
                 who += " · tools in: " + ", ".join(wired)
             self._sub.setText(who)
@@ -1520,6 +1588,235 @@ class _SupabaseDetail(QWidget):
         pass
 
 
+class _GDriveDetail(QWidget):
+    """Detail page: connect Google Drive with your own OAuth client.
+
+    The odd one out in this panel. Every other hosted plugin is tokenless
+    because its vendor implements Dynamic Client Registration -- the agent
+    registers itself and the user just clicks Connect. Google does not, so this
+    page has to ask for a **Desktop-app OAuth client** (id + secret) from the
+    user's own Google Cloud project, and says why rather than leaving two
+    unexplained credential boxes on screen.
+
+    Closest relative is :class:`_SupabaseDetail`: editable fields that stay live
+    once connected, so changing the client re-injects without a
+    disconnect/reconnect. The secret box is write-only -- once stored it shows a
+    "stored" placeholder, and an empty box means "leave it alone", so editing
+    the id cannot silently wipe the secret.
+    """
+
+    back = Signal()
+
+    #: Where the user creates the OAuth client.
+    _CONSOLE_URL = "https://console.cloud.google.com/apis/credentials"
+
+    def __init__(self, gdrive, account, config, agents_provider=None, parent=None):
+        super().__init__(parent)
+        self._gdrive = gdrive
+        self._account = account
+        self._config = config or {}
+        self._agents_provider = agents_provider
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        back = QPushButton("‹  All plugins")
+        back.setObjectName("link")
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(self.back.emit)
+        root.addWidget(back, 0, Qt.AlignLeft)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setPixmap(_gdrive_icon(40))
+        head.addWidget(icon)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel("Google Drive")
+        title.setObjectName("pluginsTitle")
+        self._sub = QLabel("")
+        self._sub.setObjectName("pluginsBody")
+        self._sub.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(self._sub)
+        head.addLayout(col, 1)
+        self._primary = QPushButton("Connect")
+        self._primary.setObjectName("primary")
+        self._primary.setCursor(Qt.PointingHandCursor)
+        self._primary.clicked.connect(self._on_primary)
+        head.addWidget(self._primary, 0, Qt.AlignTop)
+        root.addLayout(head)
+
+        # -- the credential pair -------------------------------------------
+        creds = QHBoxLayout()
+        creds.setSpacing(8)
+        self._id_field = QLineEdit()
+        self._id_field.setPlaceholderText("Client ID, e.g. 1234-abc.apps.googleusercontent.com")
+        creds.addWidget(self._id_field, 2)
+        self._secret_field = QLineEdit()
+        self._secret_field.setEchoMode(QLineEdit.Password)
+        self._secret_field.setPlaceholderText("Client secret")
+        creds.addWidget(self._secret_field, 1)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setCursor(Qt.PointingHandCursor)
+        self._save_btn.clicked.connect(self._on_save)
+        creds.addWidget(self._save_btn, 0)
+        self._claude_badge = QLabel("Claude Code only")
+        self._claude_badge.setObjectName("pill")
+        self._claude_badge.setToolTip(
+            "Google's OAuth servers don't support dynamic client registration, "
+            "so the client id and secret have to be configured per agent. Only "
+            "Claude Code takes them today -- the other agents would fail to "
+            "authorise, so AgentDeck doesn't write a broken entry into them."
+        )
+        creds.addWidget(self._claude_badge, 0, Qt.AlignVCenter)
+        root.addLayout(creds)
+
+        hint = QLabel(
+            "Google needs an OAuth client of your own — there is no one-click "
+            "option for Drive. In the Google Cloud console: enable the Drive API, "
+            "then Credentials → Create credentials → OAuth client ID → "
+            "<b>Desktop app</b>, and add <code>http://localhost:8976/callback</code> "
+            "as an authorised redirect URI. Add yourself as a test user on the "
+            "consent screen, then copy the ID and secret here."
+        )
+        hint.setObjectName("pluginsBody")
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.RichText)
+        root.addWidget(hint)
+
+        self._console_btn = QPushButton("Open Google Cloud credentials ↗")
+        self._console_btn.setObjectName("link")
+        self._console_btn.setCursor(Qt.PointingHandCursor)
+        self._console_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self._CONSOLE_URL))
+        )
+        root.addWidget(self._console_btn, 0, Qt.AlignLeft)
+
+        # one-time-authorise instructions (shown once connected)
+        self._info = QFrame()
+        self._info.setObjectName("codeBox")
+        ib = QVBoxLayout(self._info)
+        ib.setContentsMargins(14, 12, 14, 12)
+        ib.setSpacing(4)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
+        self._info.setVisible(False)
+        root.addWidget(self._info)
+
+        drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the Google Drive MCP server into Claude Code again (run this "
+            "after reinstalling it, or after finishing a failed connect by hand)."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
+        drow.addStretch(1)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.setObjectName("danger")
+        self._disconnect_btn.clicked.connect(self._on_disconnect)
+        drow.addWidget(self._disconnect_btn)
+        root.addLayout(drow)
+        root.addStretch(1)
+
+        if self._gdrive is not None:
+            self._gdrive.connected.connect(lambda _i: self.refresh())
+            self._gdrive.disconnected.connect(self.refresh)
+            self._gdrive.error.connect(self._on_error)
+            self._gdrive.busy_changed.connect(lambda _b: self.refresh())
+
+        self.refresh()
+
+    def _plan_ok(self) -> bool:
+        if entitlements is None or self._account is None:
+            return True
+        try:
+            return entitlements.plugins_enabled(self._account.plan)
+        except Exception:  # noqa: BLE001
+            return True
+
+    def refresh(self) -> None:
+        g = self._gdrive
+        connected = bool(g and g.is_connected)
+        busy = bool(g and g.is_busy)
+        pro = self._plan_ok()
+
+        self._primary.setVisible(not connected)
+        self._primary.setEnabled(pro and not busy)
+        self._primary.setText("Connect" if pro else "Connect  (Pro)")
+
+        self._id_field.setEnabled(pro and not busy)
+        self._secret_field.setEnabled(pro and not busy)
+        self._save_btn.setVisible(connected)
+        self._save_btn.setEnabled(pro and not busy)
+        self._info.setVisible(connected)
+        self._disconnect_btn.setVisible(connected)
+        self._resync_btn.setVisible(connected)
+        self._console_btn.setVisible(not connected)
+
+        if connected:
+            self._id_field.setText(g.client_id)
+            self._secret_field.clear()
+            self._secret_field.setPlaceholderText(
+                "•••••• stored — leave blank to keep"
+                if g.has_secret else "Client secret"
+            )
+            self._step.setText(
+                _oauth_auth_html(self._agents_provider, "gdrive", "mcp_oauth_static")
+            )
+            wired = _wired_agent_labels(self._agents_provider, "mcp_oauth_static")
+            self._sub.setText(
+                "Enabled for: "
+                + (", ".join(wired) if wired else "Claude Code isn't installed yet")
+            )
+        elif busy:
+            self._sub.setText("Handing your client secret to Claude Code…")
+        else:
+            self._sub.setText(
+                "Search, read and create files in your Drive. Needs an OAuth "
+                "client from your own Google Cloud project — Google has no "
+                "one-click option for Drive."
+            )
+
+    def _on_primary(self) -> None:
+        if self._gdrive is not None:
+            self._gdrive.start_connect(self._id_field.text(), self._secret_field.text())
+
+    def _on_save(self) -> None:
+        if self._gdrive is not None:
+            self._gdrive.update_settings(
+                client_id=self._id_field.text(),
+                client_secret=self._secret_field.text(),
+            )
+
+    def _on_disconnect(self) -> None:
+        if self._gdrive is not None:
+            self._gdrive.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._gdrive is None:
+            return
+        try:
+            self._gdrive.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
+
+    def _on_error(self, message: str) -> None:
+        self._sub.setText(message)
+
+    def apply_theme(self) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
@@ -1530,7 +1827,8 @@ class PluginsPanel(QWidget):
     review_ready = Signal(dict)
 
     def __init__(self, parent: QWidget | None = None, *, github=None, vercel=None,
-                 jira=None, gitlab=None, linear=None, supabase=None, account=None,
+                 jira=None, gitlab=None, linear=None, supabase=None, gdrive=None,
+                 account=None,
                  config: Optional[dict] = None, agents_provider=None):
         super().__init__(parent)
         self._github = github
@@ -1539,6 +1837,7 @@ class PluginsPanel(QWidget):
         self._gitlab = gitlab
         self._linear = linear
         self._supabase = supabase
+        self._gdrive = gdrive
         # () -> list[str] of agent keys the plugins will wire (installed + active).
         self._agents_provider = agents_provider
         self.setObjectName("pluginsPanel")
@@ -1669,6 +1968,19 @@ class PluginsPanel(QWidget):
         sb_host.setWidget(sb_inner)
         self._stack.addWidget(sb_host)
 
+        # -- google drive detail page (stack index 7) --
+        gd_host = QScrollArea()
+        gd_host.setWidgetResizable(True)
+        gd_host.setFrameShape(QFrame.NoFrame)
+        gd_inner = QWidget()
+        gdil = QVBoxLayout(gd_inner)
+        gdil.setContentsMargins(40, 28, 40, 24)
+        self._gdrive_detail = _GDriveDetail(gdrive, account, config, agents_provider=agents_provider)
+        self._gdrive_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
+        gdil.addWidget(self._gdrive_detail)
+        gd_host.setWidget(gd_inner)
+        self._stack.addWidget(gd_host)
+
         if github is not None:
             github.connected.connect(lambda _i: self._sync_cards())
             github.disconnected.connect(self._sync_cards)
@@ -1687,6 +1999,9 @@ class PluginsPanel(QWidget):
         if supabase is not None:
             supabase.connected.connect(lambda _i: self._sync_cards())
             supabase.disconnected.connect(self._sync_cards)
+        if gdrive is not None:
+            gdrive.connected.connect(lambda _i: self._sync_cards())
+            gdrive.disconnected.connect(self._sync_cards)
         self._sync_cards()
 
     # -- helpers ------------------------------------------------------
@@ -1715,6 +2030,9 @@ class PluginsPanel(QWidget):
         elif key == "supabase":
             self._stack.setCurrentIndex(6)
             self._supabase_detail.refresh()
+        elif key == "gdrive":
+            self._stack.setCurrentIndex(7)
+            self._gdrive_detail.refresh()
 
     def _sync_cards(self) -> None:
         login = None
@@ -1729,6 +2047,7 @@ class PluginsPanel(QWidget):
             if self._supabase is not None and self._supabase.is_connected
             else None
         )
+        gdrive_on = bool(self._gdrive is not None and self._gdrive.is_connected)
         for card in self._cards:
             if card.key == "github":
                 card.set_status(login)
@@ -1742,6 +2061,8 @@ class PluginsPanel(QWidget):
                 card.set_toggle_status(linear_on)
             elif card.key == "supabase":
                 card.set_scoped_status(supabase_ref)
+            elif card.key == "gdrive":
+                card.set_toggle_status(gdrive_on)
 
     def show_catalog(self) -> None:
         self._stack.setCurrentIndex(0)
