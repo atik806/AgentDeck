@@ -73,9 +73,12 @@ def _gap_icon(icon, glyph: int = 16, gap: int = 8):
 
 def _sidebar_qss() -> str:
     t = theme.color
+    # Backgrounds via theme.surface so a glass window style dissolves them;
+    # text, borders and accents stay opaque via theme.color.
+    s = theme.surface
     return f"""
-QWidget#workspaceSidebar {{ background: {t('sidebar_bg')}; }}
-QWidget#wsNav {{ background: {t('sidebar_bg')}; }}
+QWidget#workspaceSidebar {{ background: {s('sidebar_bg')}; }}
+QWidget#wsNav {{ background: {s('sidebar_bg')}; }}
 QToolButton#navBtn {{
     color: {t('sidebar_text')}; background: transparent; border: none; text-align: left;
     border-left: 2px solid transparent;
@@ -90,7 +93,7 @@ QToolButton#navBtn:checked {{
 QToolButton#navBtn:checked:hover {{ background: {t('accent_soft_bg')}; }}
 QToolButton#navBtn:focus {{ outline: none; }}
 QFrame#navRule {{ background: {t('separator')}; max-height: 1px; border: none; }}
-QWidget#wsHeader {{ background: {t('sidebar_bg')}; }}
+QWidget#wsHeader {{ background: {s('sidebar_bg')}; }}
 QLabel#wsTitle {{
     color: {t('sidebar_heading')}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;
 }}
@@ -124,8 +127,8 @@ QToolButton#wsEdit, QToolButton#wsClose {{
 QToolButton#wsEdit:hover {{ color: {t('text')}; background: {t('sidebar_hover')}; border-radius: 3px; }}
 QToolButton#wsClose:hover {{ color: {t('on_accent')}; background: {t('danger_hover')}; border-radius: 3px; }}
 
-QScrollArea {{ background: {t('sidebar_bg')}; border: none; }}
-QScrollBar:vertical {{ background: {t('sidebar_bg')}; width: 8px; margin: 0; }}
+QScrollArea {{ background: {s('sidebar_bg')}; border: none; }}
+QScrollBar:vertical {{ background: {s('sidebar_bg')}; width: 8px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {t('border')}; border-radius: 4px; min-height: 20px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """

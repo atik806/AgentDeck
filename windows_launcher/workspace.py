@@ -553,7 +553,9 @@ class TerminalPane(QFrame):
             # idle -- a light-on-light / dark-on-dark clash if it used on_accent
             badge_fg = t("text_muted")
 
-        header_bg = t("pane_header_bg_active") if self._active else t("pane_header_bg")
+        header_bg = theme.surface(
+            "pane_header_bg_active" if self._active else "pane_header_bg"
+        )
         accent = t("accent")
         on_accent = t("on_accent")
 
@@ -569,7 +571,7 @@ class TerminalPane(QFrame):
             TerminalPane {{
                 border: 1px solid {border};
                 border-radius: 10px;
-                background: {theme.color('term_bg')};
+                background: {theme.surface('term_bg')};
             }}
             QWidget#paneHeaderHost {{
                 background: {header_bg};

@@ -51,6 +51,9 @@ CLOUD_KEYS = [
     "default_shell",
     "theme",
     "color_scheme",
+    "window_style",
+    "window_opacity",
+    "terminal_translucent",
     # Voice preferences that are about *what* is transcribed, not the machine's
     # hardware. Mic device, overlay position, hotkey and the on/off master
     # switch stay machine-local.

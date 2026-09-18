@@ -48,12 +48,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 import theme
+import window_glass
 from config import CONFIG_RANGES, save_config
 
 __all__ = ["SettingsPanel", "SettingsDialog"]
@@ -78,6 +80,11 @@ class SettingsPanel(QWidget):
     theme_changed = Signal(str)
     #: The colour-scheme dropdown changed; the new scheme key.
     scheme_changed = Signal(str)
+    #: The window style, its opacity or the translucent-terminal opt-in
+    #: changed. Deliberately argument-free and shared by all three: they are
+    #: one visual decision, and the caller re-reads config rather than keeping
+    #: three handlers in step.
+    glass_changed = Signal()
     #: The terminal-font dropdown changed; the new family ("" = automatic).
     font_family_changed = Signal(str)
     #: The font stepper changed; the new size in px.
@@ -245,6 +252,59 @@ class SettingsPanel(QWidget):
         self._scheme_hint.setWordWrap(True)
         outer.addWidget(self._scheme_hint)
         self._sync_scheme_hint()
+        outer.addSpacing(14)
+
+        # -- window style ---------------------------------------------------
+        # A third axis, orthogonal to mode and scheme: how solid the window is.
+        outer.addWidget(QLabel("Window style"))
+        self._style_combo = QComboBox()
+        for key, label in theme.GLASS_LABELS:
+            self._style_combo.addItem(label, key)
+        cur_style = str(self._config.get("window_style", "solid") or "solid").lower()
+        wi = self._style_combo.findData(cur_style)
+        self._style_combo.setCurrentIndex(wi if wi >= 0 else 0)
+        outer.addWidget(self._style_combo)
+        self._style_hint = QLabel("")
+        self._style_hint.setObjectName("hint")
+        self._style_hint.setWordWrap(True)
+        outer.addWidget(self._style_hint)
+
+        self._opacity_lo, self._opacity_hi = CONFIG_RANGES.get("window_opacity", (60, 100))
+        self._opacity_row = QWidget()
+        op_row = QHBoxLayout(self._opacity_row)
+        op_row.setContentsMargins(0, 6, 0, 0)
+        op_row.setSpacing(8)
+        op_row.addWidget(QLabel("Opacity"))
+        self._opacity = QSlider(Qt.Horizontal)
+        self._opacity.setRange(self._opacity_lo, self._opacity_hi)
+        self._opacity.setValue(max(self._opacity_lo, min(
+            self._opacity_hi,
+            int(self._config.get("window_opacity", theme.DEFAULT_OPACITY) or theme.DEFAULT_OPACITY),
+        )))
+        self._opacity.setMinimumWidth(160)
+        op_row.addWidget(self._opacity, 1)
+        self._opacity_value = QLabel()
+        self._opacity_value.setObjectName("fontValue")
+        self._opacity_value.setMinimumWidth(42)
+        self._opacity_value.setAlignment(Qt.AlignCenter)
+        op_row.addWidget(self._opacity_value)
+        outer.addWidget(self._opacity_row)
+
+        self._term_glass = self._check(
+            outer, "Translucent terminal panes",
+            self._config.get("terminal_translucent", False),
+        )
+
+        # Connect after every initial value is in place, so building the panel
+        # cannot fire a spurious change (writing config, emitting the signal).
+        self._style_combo.currentIndexChanged.connect(self._on_style_pick)
+        # valueChanged tracks the drag for the live label; the config write and
+        # the repaint wait for the release, so dragging is not a write storm.
+        self._opacity.valueChanged.connect(self._sync_opacity_label)
+        self._opacity.sliderReleased.connect(self._on_opacity_commit)
+        self._term_glass.toggled.connect(self._on_term_glass_toggle)
+        self._sync_opacity_label()
+        self._sync_style_controls()
         outer.addSpacing(14)
 
         # -- terminal font family ------------------------------------------
@@ -838,6 +898,52 @@ class SettingsPanel(QWidget):
             if dark_only else ""
         )
         self._scheme_hint.setVisible(dark_only)
+
+    def _sync_opacity_label(self) -> None:
+        self._opacity_value.setText(f"{self._opacity.value()}%")
+
+    def _sync_style_controls(self) -> None:
+        """Enable/disable the opacity + terminal controls and set the hint.
+
+        The hint is the honest bit: on anything but Windows 11 22H2+ there is
+        no DWM backdrop, and the fallback fades the whole window (text and
+        all), which is a different look. Saying so beats the user deciding the
+        feature is broken.
+        """
+        key = self._style_combo.currentData() or "solid"
+        glass = key != "solid"
+        self._opacity_row.setEnabled(glass)
+        self._term_glass.setEnabled(glass)
+        if not glass:
+            self._style_hint.setText("")
+            self._style_hint.setVisible(False)
+            return
+        if window_glass.supported():
+            self._style_hint.setText(
+                "The desktop blurs behind AgentDeck."
+                if key == "acrylic" else
+                "Tints the window with your desktop wallpaper."
+            )
+        else:
+            self._style_hint.setText(
+                "Needs Windows 11 22H2 or newer — AgentDeck will fade the "
+                "whole window instead, text included."
+            )
+        self._style_hint.setVisible(True)
+
+    def _on_style_pick(self, _idx: int) -> None:
+        key = self._style_combo.currentData() or "solid"
+        self._set("window_style", key)
+        self._sync_style_controls()
+        self.glass_changed.emit()
+
+    def _on_opacity_commit(self) -> None:
+        self._set("window_opacity", int(self._opacity.value()))
+        self.glass_changed.emit()
+
+    def _on_term_glass_toggle(self, checked: bool) -> None:
+        self._set("terminal_translucent", bool(checked))
+        self.glass_changed.emit()
 
     def _on_font_family_pick(self, _idx: int) -> None:
         family = self._font_combo.currentData() or ""

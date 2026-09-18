@@ -11,9 +11,10 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
+import theme
 from navbar import AccountChip, HelpButton, circular_avatar, gear_icon, help_icon
 
 app = QApplication(sys.argv)
@@ -99,15 +100,20 @@ check("circular_avatar empty fallback text ok", not circular_avatar(None, 20, ""
 check("gear icon", not gear_icon(16).isNull())
 check("help icon", not help_icon(16).isNull())
 
-# The badged gear (the "an update is waiting" cue) must actually paint a red
-# dot in the top-right corner and differ from the plain gear.
+# The badged gear (the "an update is waiting" cue) must actually paint a dot in
+# the top-right corner and differ from the plain gear. The dot follows the
+# active scheme's `danger` token rather than a fixed red, so assert against the
+# token -- Catppuccin's red is a pastel and would fail a hardcoded RGB range.
 _plain = gear_icon(18).pixmap(18, 18).toImage()
 _badged = gear_icon(18, badge=True).pixmap(18, 18).toImage()
 check("badged gear differs from plain", _plain != _badged)
 _corner = _badged.pixelColor(14, 3)
-check("badged gear has a red corner dot",
-      _corner.alpha() > 200 and _corner.red() > 180
-      and _corner.green() < 120 and _corner.blue() < 120)
+_danger = QColor(theme.color("danger"))
+check("badged gear has a corner dot in the theme's danger colour",
+      _corner.alpha() > 200
+      and abs(_corner.red() - _danger.red()) <= 2
+      and abs(_corner.green() - _danger.green()) <= 2
+      and abs(_corner.blue() - _danger.blue()) <= 2)
 
 
 # ---------------------------------------------------------------------------

@@ -234,7 +234,10 @@ the sidebar; `Ctrl+Shift+PgDn` / `Ctrl+Shift+PgUp` step between workspaces.
 | `layout` | `grid`, `columns`, `rows` |
 | `font_size` | 6–48 |
 | `font_family` | Terminal font; `""` = best installed monospace. Settings ▸ Appearance lists the fixed-pitch families. |
-| `color_scheme` | `catppuccin` (default), `dracula`, `nord`, `tokyonight`, `gruvbox`. `theme` stays the light/dark axis; dark-only schemes ignore Light mode. |
+| `color_scheme` | One of 18: `catppuccin` (default), `dracula`, `nord`, `tokyonight`, `gruvbox`, `rosepine`, `kanagawa`, `onedark`, `synthwave`, `solarized`, `monokai`, `everforest`, `ayu`, `github`, `materialocean`, `carbonfox`, `vitesse`, `midnight`. `theme` stays the light/dark axis; dark-only schemes ignore Light mode. See `docs/THEMING.md`. |
+| `window_style` | `solid` (default), `acrylic`, `mica` — a real Windows 11 DWM backdrop so the desktop shows through. Below Windows 11 22H2 the app fades the whole window instead (text included) and Settings says so. |
+| `window_opacity` | 60–100. Only applies when `window_style` isn't `solid`. |
+| `terminal_translucent` | Let terminal panes dissolve too. Off by default — it costs a full-widget clear per frame that the dirty-row repaint otherwise avoids. |
 | `scrollback` | Lines kept per pane; `0` disables |
 | `working_folder` | Folder the terminals start in; `""` = home. The wizard's step 2. |
 | `recent_folders` | The wizard's quick-launch list, newest first |

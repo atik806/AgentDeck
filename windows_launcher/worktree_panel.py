@@ -98,8 +98,10 @@ class _DiffHighlighter(QSyntaxHighlighter):
 
     def __init__(self, document):
         super().__init__(document)
-        self._add = self._fmt(theme.color("green"))
-        self._del = self._fmt(theme.color("red"))
+        # "green"/"red" are not tokens -- theme.color() fell through to its
+        # last-resort magenta and every diff line came out #ff00ff.
+        self._add = self._fmt(theme.color("activity"))
+        self._del = self._fmt(theme.color("danger"))
         self._hunk = self._fmt(theme.color("text_muted"), bold=True)
         self._meta = self._fmt(theme.color("text_faint"))
 

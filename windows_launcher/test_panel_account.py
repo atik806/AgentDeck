@@ -16,8 +16,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("ADK_NO_VOICE_PREWARM", "1")
 
 from PySide6.QtCore import QAbstractAnimation
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
+import theme
 import updater
 
 app = QApplication(sys.argv)
@@ -79,7 +81,11 @@ check("glow effect exists", hasattr(panel, "_update_glow"))
 check("glow is on the settings button",
       panel._settings_btn.graphicsEffect() is panel._update_glow)
 check("glow starts disabled", not panel._update_glow.isEnabled())
-check("glow colour is red", panel._update_glow.color().name() == "#ff3b30")
+# The glow follows the active scheme's `danger` token rather than a fixed
+# red -- same change as the navbar badge (see test_navbar.py [1]), so assert
+# against the token. Catppuccin's red is a pastel and fails a hardcoded one.
+check("glow colour is the theme's danger colour",
+      panel._update_glow.color().name() == QColor(theme.color("danger")).name())
 check("glow offset is zero (a halo, not a shadow)",
       panel._update_glow.offset().manhattanLength() == 0)
 check("settings tooltip starts plain", panel._settings_btn.toolTip() == "Settings")

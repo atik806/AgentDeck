@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 import theme
-from config import DEFAULT_CONFIG
+from config import CONFIG_RANGES, DEFAULT_CONFIG
 from settings_dialog import SettingsDialog
 
 app = QApplication(sys.argv)
@@ -211,6 +211,57 @@ d.close()
 
 
 # ---------------------------------------------------------------------------
+print("[6d] Appearance -- window style, opacity and translucent terminals")
+c = new_cfg()
+d = SettingsDialog(c, current_version="1.2.3")
+seen_glass = []
+d.glass_changed.connect(lambda: seen_glass.append(1))
+check("style combo lists every glass style",
+      d._style_combo.count() == len(theme.GLASS_LABELS))
+check("starts on the stored style", d._style_combo.currentData() == "solid")
+check("opacity + terminal controls are disabled in the solid style",
+      not d._opacity_row.isEnabled() and not d._term_glass.isEnabled())
+check("no hint while solid", d._style_hint.isHidden())
+
+d._style_combo.setCurrentIndex(d._style_combo.findData("acrylic"))
+check("picking a style writes config", c["window_style"] == "acrylic")
+check("picking a style emits glass_changed once", len(seen_glass) == 1)
+check("the controls enable for a glass style",
+      d._opacity_row.isEnabled() and d._term_glass.isEnabled())
+check("a hint appears", not d._style_hint.isHidden() and d._style_hint.text() != "")
+
+d._opacity.setValue(70)
+check("dragging updates the label", d._opacity_value.text() == "70%")
+check("...but does not write config yet", c["window_opacity"] != 70)
+check("...and does not emit yet", len(seen_glass) == 1)
+d._opacity.sliderReleased.emit()
+check("releasing writes config", c["window_opacity"] == 70)
+check("releasing emits once more", len(seen_glass) == 2)
+check("the slider is clamped to CONFIG_RANGES",
+      (d._opacity.minimum(), d._opacity.maximum())
+      == CONFIG_RANGES["window_opacity"])
+
+d._term_glass.setChecked(True)
+check("the terminal checkbox writes config", c["terminal_translucent"] is True)
+check("the terminal checkbox emits", len(seen_glass) == 3)
+
+d._style_combo.setCurrentIndex(d._style_combo.findData("solid"))
+check("back to solid disables the controls again",
+      not d._opacity_row.isEnabled() and not d._term_glass.isEnabled())
+
+# Building a panel from a stored glass config must not fire a spurious change.
+c2 = new_cfg()
+c2["window_style"] = "mica"
+c2["window_opacity"] = 66
+c2["terminal_translucent"] = True
+d2 = SettingsDialog(c2, current_version="1.2.3")
+spurious = []
+d2.glass_changed.connect(lambda: spurious.append(1))
+check("a stored style is restored", d2._style_combo.currentData() == "mica")
+check("a stored opacity is restored", d2._opacity.value() == 66)
+check("a stored terminal opt-in is restored", d2._term_glass.isChecked())
+check("building the panel emitted nothing", spurious == [])
+
 print("[7] voice section — model combo, mic, VAD, language write config")
 import voice_models
 
@@ -286,6 +337,7 @@ print("[10] category nav -- one page at a time, buttons stay in sync")
 c = new_cfg()
 d = SettingsDialog(c, current_version="1.2.3", voice_enabled=True)
 check("six categories", len(d._nav_buttons) == 6)
+
 check("opens on Appearance", d._stack.currentIndex() == 0)
 check("Appearance button starts checked", d._nav_buttons[0].isChecked())
 
