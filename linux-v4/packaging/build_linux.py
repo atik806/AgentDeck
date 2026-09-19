@@ -79,6 +79,28 @@ def read_version() -> str:
     return m.group(1)
 
 
+def read_app_id() -> str:
+    """The Velopack pack id, from version.APP_ID -- same regex trick as above.
+
+    Read rather than hard-coded for the same reason ../../packaging/build.py
+    reads it: the Windows app derives its AppUserModelID from this very
+    constant (``main.APP_USER_MODEL_ID`` is ``"velopack." + APP_ID``), and a
+    taskbar button whose id matches no Velopack-created shortcut falls back to
+    the generic Windows application icon.
+
+    Linux has no AppUserModelID, so nothing here breaks if this one drifts --
+    but the pack id is also the *update-feed identity*, and the two channels
+    (releases.win.json / releases.linux.json) describe one app. Letting the
+    Windows side follow a constant while this side hard-codes a string is
+    exactly how they come apart at the next rename.
+    """
+    src = (LAUNCHER / "version.py").read_text(encoding="utf-8")
+    m = re.search(r'APP_ID\s*=\s*"([^"]+)"', src)
+    if not m:
+        fail("could not parse APP_ID from windows_launcher/version.py")
+    return m.group(1)
+
+
 def clean() -> None:
     for d in (REPO / "build", REPO / "dist"):
         if d.exists():
@@ -150,7 +172,7 @@ def vpk_pack(version: str) -> None:
     # linux-v4/context.md.
     subprocess.run(
         ["vpk", "pack",
-         "--packId", "AgentDeck",
+         "--packId", read_app_id(),
          "--packVersion", version,
          "--packDir", str(DIST_APP),
          "--mainExe", "AgentDeck",

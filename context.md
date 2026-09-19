@@ -1634,10 +1634,14 @@ Start-menu shortcut showed the real mark. Measured on a live install:
 | none at all | the *interpreter's* icon under `pythonw.exe` |
 
 Velopack stamps `"velopack." + <packId>` on every shortcut it creates, so
-`main.APP_USER_MODEL_ID` is `f"velopack.{version.APP_ID}"` and
-`packaging/build.py` reads `--packId` out of the same `version.APP_ID`
-(`read_app_id()`) — the two can no longer drift. `test_app_user_model_id.py`
-pins both ends. Read a shortcut's real id back with its `IPropertyStore`,
+`main.APP_USER_MODEL_ID` is `f"velopack.{version.APP_ID}"`, and **both**
+packers read `--packId` out of that same `version.APP_ID` via their own
+`read_app_id()` — `packaging/build.py` and
+`linux-v4/packaging/build_linux.py`. Linux has no AppUserModelID, but the
+pack id is also the update-feed identity behind `releases.win.json` and
+`releases.linux.json`, which describe one app; a hard-coded copy on either
+side is how they come apart at the next rename. `test_app_user_model_id.py`
+pins all three ends. Read a shortcut's real id back with its `IPropertyStore`,
 `PKEY_AppUserModel_ID` = `{9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3}, 5`.
 
 ## Packaging / releases (2026-08-29)
