@@ -11,10 +11,15 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter, QPixmap,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
-from voice_overlay import VoiceOverlay, mic_icon
+from voice_overlay import (
+    _MARK_GAP, _MARK_PX, _W, _WORDMARK, VoiceOverlay, _lockup_width,
+    _paint_mark, mic_icon,
+)
 
 app = QApplication(sys.argv)
 
@@ -50,22 +55,39 @@ check("waveform is dense", overlay._eq._BARS >= 24)
 
 # ---------------------------------------------------------------------------
 print("[2] state drives the mic, the bars and the caption")
-for state, eq_mode, enabled, has_cap in [
-    ("idle", "idle", True, False),
-    ("loading", "loading", True, True),
-    ("listening", "listening", True, False),
-    ("error", "idle", True, True),
-    ("unavailable", "idle", False, True),
+for state, eq_mode, enabled, has_cap, brand in [
+    ("idle", "idle", True, False, 1.0),
+    ("loading", "loading", True, True, 0.0),
+    ("listening", "listening", True, False, 0.0),
+    ("error", "idle", True, True, 0.0),
+    ("unavailable", "idle", False, True, 0.0),
 ]:
     overlay.set_state(state)
     check(f"{state}: bar mode {eq_mode}", overlay._eq._mode == eq_mode)
     check(f"{state}: mic enabled == {enabled}", overlay._mic.isEnabled() is enabled)
     check(f"{state}: caption {'set' if has_cap else 'empty'}",
           bool(overlay.caption_text()) is has_cap)
+    check(f"{state}: brand {'shown' if brand else 'hidden'}",
+          overlay.brand_target() == brand)
 
-check("bar timer always runs (idle breathes, listening/loading animate)",
+check("bar timer runs whenever bars are on screen",
       (overlay.set_state("listening") or overlay._eq._timer.isActive())
-      and (overlay.set_state("idle") or overlay._eq._timer.isActive()))
+      and (overlay.set_state("loading") or overlay._eq._timer.isActive()))
+# ...and parks once the lockup has the strip to itself. The crossfade needs an
+# event loop, so drive the property here the way the animation would.
+overlay.set_state("idle")
+check("bar timer still runs while the lockup is fading in",
+      overlay._eq._timer.isActive())
+overlay._eq.brandAlpha = 1.0
+check("bar timer parks once the lockup is fully up (no idle repaint)",
+      not overlay._eq._timer.isActive())
+overlay._eq.brandAlpha = 0.4
+check("bar timer restarts as soon as a bar could show again",
+      overlay._eq._timer.isActive())
+overlay._eq.brandAlpha = 1.0
+overlay.set_state("listening")
+check("a state change restarts the timer too", overlay._eq._timer.isActive())
+overlay._eq.brandAlpha = 0.0
 check("mic pulse timer runs only while active",
       (overlay.set_state("loading") or overlay._mic._pulse_timer.isActive())
       and (overlay.set_state("idle") or not overlay._mic._pulse_timer.isActive()))
@@ -161,6 +183,158 @@ check("a draining backlog does not blank out a still-pending flash",
       overlay.caption_text() == "first sentence done")
 overlay._revert(overlay._revert_token)
 check("the flash still reverts normally afterwards", overlay.caption_text() == "")
+
+
+# ---------------------------------------------------------------------------
+print("[3e] the AgentDeck lockup is the resting look")
+overlay.set_state("idle")
+check("idle shows the lockup", overlay.brand_target() == 1.0)
+overlay.set_state("listening")
+check("the hotkey trades the lockup for the wave", overlay.brand_target() == 0.0)
+
+# The headline flow: dictate, the transcript flashes, then the strip settles
+# back onto the lockup rather than onto a bare wave.
+overlay.flash_text("open the config file")
+check("a transcript keeps the lockup away while it shows",
+      overlay.brand_target() == 0.0)
+overlay.set_state("idle")                       # Ctrl+Shift+X / Enter stopped it
+check("stopping brings the lockup straight back", overlay.brand_target() == 1.0)
+
+overlay.flash_text("a late transcript")
+check("a flash over a resting strip hides the lockup",
+      overlay.brand_target() == 0.0 and overlay.caption_text() == "a late transcript")
+overlay._revert(overlay._revert_token)
+check("once the flash reverts, the lockup returns",
+      overlay.brand_target() == 1.0 and overlay.caption_text() == "")
+
+overlay.set_state("listening")
+overlay.set_partial("half a sentence")
+check("a partial never brings the lockup up mid-dictation",
+      overlay.brand_target() == 0.0)
+overlay.set_partial("")
+check("clearing a partial goes back to the wave, not the lockup",
+      overlay.brand_target() == 0.0)
+overlay.set_backlog(2)
+check("a backlog hint leaves the lockup alone", overlay.brand_target() == 0.0)
+overlay.set_state("loading")
+check("loading shows its caption, not the lockup", overlay.brand_target() == 0.0)
+
+# The lockup has to fit the centre area at the shipped chrome font, or
+# _paint_brand drops the wordmark and shows the mark alone. The strip is never
+# shown in this test, so run the layout by hand first -- otherwise the
+# waveform reports QWidget's default 100px and this measures nothing.
+import theme as _th
+
+overlay.layout().activate()
+
+_f = _th.chrome_font(8)
+_f.setWeight(QFont.DemiBold)
+_f.setLetterSpacing(QFont.AbsoluteSpacing, 0.4)
+_lockup = _MARK_PX + _MARK_GAP + QFontMetricsF(_f).horizontalAdvance(_WORDMARK)
+check(f"mark + wordmark fit the strip ({_lockup:.0f}px of {overlay._eq.width()}px)",
+      _lockup <= overlay._eq.width())
+
+# The mark is painted, not loaded: the packaged build excludes QtSvg and ships
+# only icon.ico, so this has to hold up with no asset on disk at all.
+_pm = QPixmap(64, 64)
+_pm.fill(Qt.transparent)
+_p = QPainter(_pm)
+_p.setRenderHint(QPainter.Antialiasing, True)
+_paint_mark(_p, 32.0, 32.0, 56.0)
+_p.end()
+_img = _pm.toImage()
+_seen = {_img.pixelColor(x, y).rgb()
+         for x in range(64) for y in range(64)
+         if _img.pixelColor(x, y).alpha() > 250}
+
+
+def _near(token, tol=26):
+    want = QColor(_th.color(token))
+    return any(abs(((rgb >> 16) & 255) - want.red()) <= tol
+               and abs(((rgb >> 8) & 255) - want.green()) <= tol
+               and abs((rgb & 255) - want.blue()) <= tol for rgb in _seen)
+
+
+check("the mark draws with no asset file", len(_seen) > 20)
+check("the mark carries the scheme's accent (the chevron)", _near("accent"))
+check("the mark carries the cursor block", _near("activity"))
+
+
+def _render(widget):
+    pm = QPixmap(widget.size())
+    pm.fill(Qt.transparent)
+    widget.render(pm)
+    return pm.toImage()
+
+
+overlay.set_state("idle")
+overlay._eq.capAlpha = 0.0
+overlay._eq.brandAlpha = 0.0
+_bars = _render(overlay._eq)
+overlay._eq.brandAlpha = 1.0
+_brand = _render(overlay._eq)
+check("the strip really repaints into the lockup", _bars != _brand)
+overlay._eq.brandAlpha = 0.0
+
+
+# ---------------------------------------------------------------------------
+print("[3f] the strip shrinks to the lockup and grows back for the wave")
+overlay.layout().activate()
+rest = overlay._rest_width()
+check(f"resting width hugs the lockup ({rest}px vs {_W}px wide)", rest < _W)
+check("resting width still holds the mic and the whole lockup",
+      rest >= overlay._mic.width() + _lockup_width())
+
+overlay.set_state("idle")
+check("idle asks for the resting width", overlay.width_target() == rest)
+check("hidden strips resize with no animation to wait on", overlay.width() == rest)
+overlay.set_state("listening")
+check("the wave asks for the full width", overlay.width_target() == _W)
+overlay.set_state("idle")
+overlay.flash_text("a transcript that wants room")
+check("a caption at rest widens the strip too", overlay.width_target() == _W)
+overlay._revert(overlay._revert_token)
+check("and it shrinks back once the caption goes",
+      overlay.width_target() == rest)
+
+# Which edge stays put. The panel auto-places the strip in the terminal area's
+# bottom-right corner, so a chip parked there must not creep inward every time
+# it resizes; one dragged into open space keeps its left edge (and the mic)
+# where the user put it.
+overlay.set_bounds(QRect(0, 0, 900, 600))
+overlay.move(900 - overlay.width() - 12, 600 - overlay.height() - 12)
+_right = overlay.x() + overlay.width()
+overlay.stripWidth = _W
+check("a corner chip grows from its right edge",
+      overlay.x() + overlay.width() == _right)
+overlay.stripWidth = rest
+check("...and shrinks back to the same corner",
+      overlay.x() + overlay.width() == _right)
+
+overlay.move(QPoint(40, 40))
+_left = overlay.x()
+overlay.stripWidth = _W
+check("a chip in open space keeps its left edge", overlay.x() == _left)
+overlay.stripWidth = rest
+check("...both ways", overlay.x() == _left)
+
+overlay.move(QPoint(880, 40))          # hard against the right bound
+overlay.stripWidth = _W
+check("a grow that would overflow is clamped back inside",
+      overlay.x() + overlay.width() <= 900)
+
+# A right-anchored resize moves the widget, and the panel stores a left edge,
+# so the strip has to report where it landed -- once, on settle, not per frame.
+_settles = []
+overlay.moved.connect(_settles.append)
+overlay.move(900 - overlay.width() - 12, 40)
+overlay.stripWidth = _W                     # anchored right -> shifts x
+check("a shifting resize is remembered", overlay._width_shifted is True)
+overlay._on_width_settled()
+check("settling reports the new position once", len(_settles) == 1)
+overlay._on_width_settled()
+check("and does not report it again", len(_settles) == 1)
+overlay.set_state("idle")
 
 
 # ---------------------------------------------------------------------------

@@ -118,10 +118,21 @@ console — hence the crash-to-MessageBox handler in `main.py`).
    `Ctrl+B` toggle sidebar, `Ctrl+Shift+PgUp/PgDn` switch.
 
 5. **Voice-to-text overlay** (2026-08-28) — `voice_overlay.py` (draggable
-   floating widget: mic button + level-reactive equaliser + fading transcript
-   preview) + `voice_engine.py` (Qt bridge that reuses `voice_capture`'s
-   capture/VAD/whisper.cpp pipeline on worker threads). Visible-but-idle on
-   startup; `Ctrl+Shift+X` toggles listening (`Ctrl+X` too, but only while the
+   floating widget: mic button + a centre area that shows the **AgentDeck
+   lockup at rest**, a level-reactive equaliser while listening, and a fading
+   transcript preview over either) + `voice_engine.py` (Qt bridge that reuses
+   `voice_capture`'s capture/VAD/whisper.cpp pipeline on worker threads).
+   The lockup is painted (`_paint_mark`, `assets/icon-small.svg`'s geometry
+   re-coloured from `theme`) rather than loaded — the packaged build excludes
+   `PySide6.QtSvg` and ships only `icon.ico`, so an SVG/PNG would work in a dev
+   checkout and vanish from a release; it owns the area only while `idle` with
+   no caption up, so a finished transcript flashes and *then* the strip settles
+   back onto it, and the bar animation parks while it is fully up rather than
+   repainting 28 ms over live terminal output. **The strip resizes with it**
+   (`stripWidth` property + `_rest_width()`): ~156px of mic + lockup at rest,
+   animating out to the full 230px for the wave or a caption, anchored to
+   whichever edge the chip is parked against and re-emitting `moved` on settle
+   so the saved position (a left edge) keeps up. Visible-but-idle on startup; `Ctrl+Shift+X` toggles listening (`Ctrl+X` too, but only while the
    widget has focus, so the shell keeps its own `Ctrl+X`). Each utterance is
    `insert_text()`'d at the active pane's prompt — **no Enter**, same as a file
    drop. Model auto-downloads on first use: `voice_model` defaults to `"auto"`
