@@ -43,7 +43,19 @@ def check(name, cond):
 WAIT_SECONDS = float(os.environ.get("ADK_PTY_TEST_WAIT", "20"))
 
 #: What every round trip below asks the shell to echo.
-_PROBE = "echo LLP=$LD_LIBRARY_PATH=END\n"
+#:
+#: The ``E''ND`` is deliberate, not a typo. A pty echoes the command line
+#: back before the shell has run anything, so a sentinel spelled plainly
+#: appears in that echo -- and ``wait_for(out, "END")`` then returns on the
+#: echo alone, with the answer still in flight. Under CI load that is
+#: exactly what happened: "the shell answered the probe" passed against
+#: nothing but the echo, the ``"_internal" not in joined`` checks passed
+#: *falsely* (an unexpanded ``$LD_LIBRARY_PATH`` cannot contain it either),
+#: and only the one check that reads the resolved value failed.
+#:
+#: The shell concatenates ``E`` + ``''`` + ``ND`` into ``END``, so the
+#: marker exists in the shell's *output* and nowhere in the echoed text.
+_PROBE = "echo LLP=$LD_LIBRARY_PATH=E''ND\n"
 
 
 def wait_for(chunks, needle, *, seconds=WAIT_SECONDS):
