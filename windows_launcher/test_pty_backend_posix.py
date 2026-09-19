@@ -36,6 +36,38 @@ def check(name, cond):
         print(f"  FAIL {name}")
 
 
+#: How long to wait for a real shell to answer. Generous on purpose: the loop
+#: exits the moment the text arrives, so a bigger number costs nothing on a
+#: healthy machine and only buys patience on a loaded CI runner. Overridable
+#: for anyone debugging a genuinely stuck spawn.
+WAIT_SECONDS = float(os.environ.get("ADK_PTY_TEST_WAIT", "20"))
+
+#: What every round trip below asks the shell to echo.
+_PROBE = "echo LLP=$LD_LIBRARY_PATH=END\n"
+
+
+def wait_for(chunks, needle, *, seconds=WAIT_SECONDS):
+    """Pump the event loop until ``needle`` appears in the *joined* output.
+
+    Two things here are load-bearing, and both were bugs:
+
+    * It joins first. The old predicate asked for the whole marker inside a
+      **single** chunk, but a pty hands back whatever happened to be in the
+      buffer -- so a line split across two reads spun the full timeout even
+      though every byte had arrived.
+    * It returns whether the text turned up, so the caller can assert *that*
+      before asserting anything about its content. A timeout used to surface as
+      "LD_LIBRARY_PATH is poisoned" -- a failure message about the wrong thing
+      entirely, which is what made this file flake in CI under two different
+      names on the same commit.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline and needle not in "".join(chunks):
+        app.processEvents()
+        time.sleep(0.05)
+    return needle in "".join(chunks)
+
+
 # ---------------------------------------------------------------------------
 print("[1] available_shells / resolve_shell")
 
@@ -114,11 +146,7 @@ collected = []
 session.output.connect(collected.append)
 
 session.write("echo hello-agentdeck\n")
-deadline = time.time() + 5
-while time.time() < deadline and not any("hello-agentdeck" in chunk for chunk in collected):
-    app.processEvents()
-    time.sleep(0.05)
-check("echoed output arrives", any("hello-agentdeck" in chunk for chunk in collected))
+check("echoed output arrives", wait_for(collected, "hello-agentdeck"))
 
 session.resize(30, 100)
 check("resize updates rows/cols", (session.rows, session.cols) == (30, 100))
@@ -126,7 +154,7 @@ check("resize updates rows/cols", (session.rows, session.cols) == (30, 100))
 exited = []
 session.exited.connect(exited.append)
 session.write("exit 7\n")
-deadline = time.time() + 5
+deadline = time.time() + WAIT_SECONDS
 while time.time() < deadline and not exited:
     app.processEvents()
     time.sleep(0.05)
@@ -148,16 +176,14 @@ with patch.object(pb.os, "environ", {
     restored = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
     out = []
     restored.output.connect(out.append)
-    restored.write("echo LLP=$LD_LIBRARY_PATH=END\n")
-    deadline = time.time() + 5
-    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out):
-        app.processEvents()
-        time.sleep(0.05)
+    restored.write(_PROBE)
+    answered = wait_for(out, "END")
     joined = "".join(out)
+    check("the shell answered the probe", answered)
     check("bundled LD_LIBRARY_PATH is not inherited",
-          "_internal" not in joined)
+          answered and "_internal" not in joined)
     check("original LD_LIBRARY_PATH (from _ORIG) is restored",
-          "LLP=/usr/lib/custom-real-path=END" in joined)
+          answered and "LLP=/usr/lib/custom-real-path=END" in joined)
     restored.close()
 
 env_no_orig = {**os.environ, "LD_LIBRARY_PATH": "/tmp/.mount_AgentDeckXXXXXX/usr/bin/_internal"}
@@ -166,14 +192,12 @@ with patch.object(pb.os, "environ", env_no_orig):
     dropped = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
     out2 = []
     dropped.output.connect(out2.append)
-    dropped.write("echo LLP=$LD_LIBRARY_PATH=END\n")
-    deadline = time.time() + 5
-    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out2):
-        app.processEvents()
-        time.sleep(0.05)
+    dropped.write(_PROBE)
+    answered2 = wait_for(out2, "END")
     joined2 = "".join(out2)
+    check("the shell answered the probe (no _ORIG)", answered2)
     check("no _ORIG to restore -> LD_LIBRARY_PATH is dropped entirely, not left poisoned",
-          "LLP==END" in joined2)
+          answered2 and "LLP==END" in joined2)
     dropped.close()
 
 # When AgentDeck itself runs from inside a *mounted AppImage*, the AppImage's
@@ -195,16 +219,14 @@ with patch.object(pb.os, "environ", env_nested):
     nested = pb.PtySession(shell="sh", rows=24, cols=80, cwd="/tmp")
     out3 = []
     nested.output.connect(out3.append)
-    nested.write("echo LLP=$LD_LIBRARY_PATH=END\n")
-    deadline = time.time() + 5
-    while time.time() < deadline and not any("LLP=" in c and "END" in c for c in out3):
-        app.processEvents()
-        time.sleep(0.05)
+    nested.write(_PROBE)
+    answered3 = wait_for(out3, "END")
     joined3 = "".join(out3)
+    check("the shell answered the probe (nested AppImage)", answered3)
     check("AppImage-mount entries in _ORIG itself are also stripped",
-          "_internal" not in joined3 and appdir not in joined3)
+          answered3 and "_internal" not in joined3 and appdir not in joined3)
     check("a genuine non-bundle entry alongside them is still kept",
-          "LLP=/usr/lib/custom-real-path=END" in joined3)
+          answered3 and "LLP=/usr/lib/custom-real-path=END" in joined3)
     nested.close()
 
 
