@@ -97,10 +97,10 @@ class BoomTranscriber(StubTranscriber):
         raise RuntimeError("no network")
 
 
-def install_stubs(transcriber=StubTranscriber):
+def install_stubs(transcriber=StubTranscriber, capture=None):
     voice_engine.VADProcessor = StubVAD
     voice_engine.TranscriptionEngine = transcriber
-    voice_engine.AudioCapture = StubCapture
+    voice_engine.AudioCapture = capture or StubCapture
     voice_engine.AudioDeviceManager = type(
         "D", (), {"resolve_device": staticmethod(lambda spec: None)}
     )
@@ -228,6 +228,56 @@ check("mic released", StubCapture.instances[-1].stopped is True)
 check("not listening", eng3b.is_listening is False)
 check("a user stop discards the pending utterance",
       getattr(StubCapture.instances[-1], "discard_pending", None) is True)
+
+
+# ---------------------------------------------------------------------------
+print("[4b1] a stop that lands while the mic is opening still wins (REGRESSION)")
+# [4] covers this too, but only if the scheduler happens to interleave the two
+# worker threads the wrong way -- which is exactly why it used to fail on CI
+# roughly one run in three. Here the capture stub *holds the door open* so the
+# stop is guaranteed to land in the one window that used to lose: after
+# cap.start() has released the build lock, before the start worker publishes
+# "listening". The bug was that the start worker then overwrote the stop's
+# "idle" and cleared the _busy the stop still owned -- the overlay stayed lit
+# over a microphone that had already been torn down.
+import threading as _threading
+
+_opened = _threading.Event()
+
+
+class SlowStartCapture(StubCapture):
+    def start(self):
+        self.started = True
+        _opened.set()
+        time.sleep(0.30)          # the window the stop has to land in
+
+
+install_stubs(capture=SlowStartCapture)
+StubCapture.instances.clear()
+eng3d = VoiceEngine({})
+st3d = []
+eng3d.state.connect(st3d.append)
+eng3d.start()
+check("the mic got as far as opening", _opened.wait(5))
+eng3d.stop()                      # lands inside the window
+check("settles", pump(lambda: not eng3d._busy and eng3d.current_state == "idle"))
+check("ends idle, not listening (REGRESSION)", eng3d.current_state == "idle")
+check("...and never announces listening after the stop (REGRESSION)",
+      "listening" not in st3d[st3d.index("idle"):] if "idle" in st3d else False)
+check("the superseded start left _busy alone", eng3d._busy is False)
+check("not listening", eng3d.is_listening is False)
+check("mic released", StubCapture.instances[-1].stopped is True)
+
+# ...and the mirror image: a start that supersedes a stop keeps its state.
+install_stubs()
+StubCapture.instances.clear()
+eng3e = VoiceEngine({})
+eng3e.start()
+check("listening", pump(lambda: eng3e.current_state == "listening"))
+eng3e.stop()
+eng3e.start()                     # user hits the hotkey again immediately
+check("the newer start wins", pump(lambda: eng3e.current_state == "listening"))
+check("...and is really listening", eng3e.is_listening is True)
 
 
 # ---------------------------------------------------------------------------

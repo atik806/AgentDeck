@@ -109,6 +109,19 @@ class VoiceEngine(QObject):
         self._busy = False
         self._busy_since = 0.0   # monotonic time _busy last went True
 
+        #: Bumped by every start/stop/mic-loss. start and stop each run on their
+        #: own thread, so a stop() can land *between* a start's last check and
+        #: its final emit -- which left the UI reading "listening" over a
+        #: microphone that had already been torn down, and cleared the _busy
+        #: flag the stop still owned. A worker carries the generation it was
+        #: spawned with and goes quiet once a newer one has taken over.
+        self._op = 0
+        #: `_op += 1` is a read-modify-write, and _on_capture_lost bumps it from
+        #: the *audio* thread while start/stop bump it from the GUI thread. Two
+        #: colliding increments would hand two workers the same generation and
+        #: let both publish -- the very thing the counter exists to stop.
+        self._op_lock = threading.Lock()
+
         #: If a start/stop worker thread wedges (e.g. whisper.cpp or PortAudio
         #: hangs), _busy would stay True forever and every later toggle() would
         #: silently no-op -- "the hotkey stopped working". After this long a
@@ -137,6 +150,24 @@ class VoiceEngine(QObject):
         return self._listening
 
     # -- control -----------------------------------------------------------
+
+    def _begin_op(self) -> int:
+        """Claim the engine for a new start/stop; returns its generation."""
+        with self._op_lock:
+            self._op += 1
+            return self._op
+
+    def _superseded(self, op: int) -> bool:
+        """True once a newer start/stop has taken over from ``op``."""
+        return self._op != op
+
+    def _settle(self, op: int, state: str) -> None:
+        """Publish a worker's final state -- unless it has been superseded, in
+        which case the newer operation owns both ``_busy`` and the state."""
+        if self._superseded(op):
+            return
+        self._busy = False
+        self._bridge.state.emit(state)
 
     def _busy_is_stale(self) -> bool:
         return (
@@ -173,7 +204,9 @@ class VoiceEngine(QObject):
         self._busy_since = _time.monotonic()
         if not _keep_retry_flag:
             self._mic_retry_done = False
-        threading.Thread(target=self._start_pipeline, name="voice-start", daemon=True).start()
+        op = self._begin_op()
+        threading.Thread(target=self._start_pipeline, args=(op,),
+                         name="voice-start", daemon=True).start()
 
     def stop(self, discard_pending: bool = True) -> None:
         if not self._listening and not self._busy:
@@ -182,8 +215,9 @@ class VoiceEngine(QObject):
         self._listening = False
         self._busy = True
         self._busy_since = _time.monotonic()
+        op = self._begin_op()
         threading.Thread(
-            target=self._stop_pipeline, args=(discard_pending,),
+            target=self._stop_pipeline, args=(discard_pending, op),
             name="voice-stop", daemon=True,
         ).start()
 
@@ -374,6 +408,9 @@ class VoiceEngine(QObject):
         self._busy = True
         self._busy_since = _time.monotonic()
         self._mic_retry_done = True
+        # Losing the mic supersedes whatever start/stop was in flight, and the
+        # teardown below must in turn yield to anything the user does next.
+        op = self._begin_op()
 
         def teardown_then(next_state: str) -> None:
             cap = self._capture
@@ -389,6 +426,8 @@ class VoiceEngine(QObject):
                     pass
             with self._build_lock:  # never null the refs from under a builder
                 self._capture = self._engine = self._vad = None
+            if self._superseded(op):
+                return
             self._busy = False
             if next_state == "retry":
                 cfg = dict(self._config)
@@ -497,14 +536,16 @@ class VoiceEngine(QObject):
                 pass
             raise
 
-    def _start_pipeline(self) -> None:
+    def _start_pipeline(self, op: int = 0) -> None:
         # Show "loading" up front: _ensure_built() can block for seconds behind a
         # background prewarm that's still loading the model.
+        if self._superseded(op):
+            return
         self._bridge.state.emit("loading")
         try:
             self._ensure_built()
         except Exception as exc:  # noqa: BLE001
-            self._fail(f"voice setup failed: {exc}")
+            self._fail(f"voice setup failed: {exc}", op)
             return
 
         try:
@@ -513,40 +554,42 @@ class VoiceEngine(QObject):
             # then ensure_loaded() just maps the file.
             self._prefetch_model()
         except Exception as exc:  # noqa: BLE001
-            self._fail(f"model download failed: {exc}")
+            self._fail(f"model download failed: {exc}", op)
             return
         if not self._listening or self._aborting:  # stopped / quitting during the download
-            self._busy = False
-            self._bridge.state.emit("idle")
+            self._settle(op, "idle")
             return
         try:
             self._engine.ensure_loaded()
         except Exception as exc:  # noqa: BLE001
-            self._fail(f"model load failed: {exc}")
+            self._fail(f"model load failed: {exc}", op)
             return
 
         # Re-check under the build lock: a stop() / shutdown() that lands here
         # must win the race against the mic actually opening.
         with self._build_lock:
             if not self._listening or self._aborting:  # user hit stop during the load
-                self._busy = False
-                self._bridge.state.emit("idle")
+                self._settle(op, "idle")
                 return
             cap = self._capture
             if cap is None:
-                self._busy = False
-                self._bridge.state.emit("idle")
+                self._settle(op, "idle")
                 return
             try:
                 cap.start()
             except Exception as exc:  # noqa: BLE001
-                self._fail(f"microphone failed: {exc}")
+                self._fail(f"microphone failed: {exc}", op)
                 return
 
-        self._busy = False
-        self._bridge.state.emit("listening")
+        # NOT a plain emit: cap.start() releases the build lock above, so a
+        # stop() can land in the gap and tear the microphone down again. Without
+        # the generation check this published "listening" *after* that stop had
+        # published "idle" -- the overlay stayed up over a closed mic.
+        self._settle(op, "listening")
 
-    def _stop_pipeline(self, discard: bool = True) -> None:
+    def _stop_pipeline(self, discard: bool = True, op: int = 0) -> None:
+        # The teardown itself is unconditional: whatever superseded this stop,
+        # the capture it captured a reference to still has to be closed.
         cap = self._capture
         if cap is not None:
             try:
@@ -558,10 +601,13 @@ class VoiceEngine(QObject):
                     pass
             except Exception:  # noqa: BLE001
                 pass
-        self._busy = False
-        self._bridge.state.emit("idle")
+        self._settle(op, "idle")
 
-    def _fail(self, message: str) -> None:
+    def _fail(self, message: str, op: int = 0) -> None:
+        # A failure from an abandoned start is not this session's problem: it
+        # must not flip a newer start back to "error" or clear its _busy.
+        if self._superseded(op):
+            return
         self._listening = False
         self._busy = False
         self._bridge.error.emit(message)
