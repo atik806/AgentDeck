@@ -5,8 +5,11 @@
 
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
+import linkedin_store
 from linkedin_store import STATUSES, LinkedInStore
 
 _passed = 0
@@ -111,7 +114,9 @@ with tempfile.TemporaryDirectory() as tmp:
     reopened = _store(tmp)
     check("a second store reads the same file", len(reopened.all()) == 4)
     check("forget removes one", reopened.forget("1003") and len(reopened.all()) == 3)
-    check("forget of an unknown id is fine", reopened.forget("nope"))
+    check("forget of an unknown id reports that it removed nothing",
+          reopened.forget("nope") is False)
+    check("...and leaves the pipeline alone", len(reopened.all()) == 3)
     reopened.clear()
     check("clear empties it", reopened.all() == [])
 
@@ -125,6 +130,84 @@ with tempfile.TemporaryDirectory() as tmp:
     missing = LinkedInStore(Path(tmp) / "nested" / "deep" / "jobs.json")
     check("a missing file -> empty", missing.all() == [])
     check("...and writing creates the tree", missing.mark_seen(_POSTINGS) != [])
+
+
+# ---------------------------------------------------------------------------
+print("[8] the id a caller passes is the id the store files it under")
+with tempfile.TemporaryDirectory() as tmp:
+    s = LinkedInStore(Path(tmp) / "jobs.json")
+    long_id = "Z" * 90
+    fresh = s.mark_seen([{"id": long_id, "title": "Long Id Role"}])
+    check("a long id is normalised once, in the store (REGRESSION)",
+          len(fresh) == 1 and fresh[0]["id"] == linkedin_store.normalise_id(long_id))
+    check("...and the same id finds it again", s.get(long_id) is not None)
+    check("...including through set_status",
+          s.set_status(long_id, "shortlisted") is not None)
+    check("...and shortlist", s.shortlist(long_id, 80, "good") is not None)
+    check("...and forget", s.forget(long_id) is True)
+
+    check("whitespace around an id doesn't make a second row",
+          len(s.mark_seen([{"id": " 4242 "}])) == 1
+          and s.mark_seen([{"id": "4242"}]) == []
+          and len(s.all()) == 1)
+
+
+# ---------------------------------------------------------------------------
+print("[9] writes only happen when something changed")
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "jobs.json"
+    s = LinkedInStore(path)
+    s.mark_seen(_POSTINGS)
+    stamp = path.stat().st_mtime_ns
+    check("an empty result set doesn't rewrite the file (REGRESSION)",
+          s.mark_seen([]) == [] and path.stat().st_mtime_ns == stamp)
+    check("...nor does a set of junk", s.mark_seen([None, {"no": "id"}]) == []
+          and path.stat().st_mtime_ns == stamp)
+
+
+# ---------------------------------------------------------------------------
+print("[10] re-scoring a job counts as activity")
+with tempfile.TemporaryDirectory() as tmp:
+    s = LinkedInStore(Path(tmp) / "jobs.json")
+    s.mark_seen([{"id": "6001", "title": "A"}, {"id": "6002", "title": "B"}])
+    for status in ("shortlisted", "drafted", "applied"):
+        s.set_status("6001", status)
+    s.set_status("6002", "shortlisted")
+    before = s.get("6001")["updated"]
+    time.sleep(0.01)
+    row = s.shortlist("6001", 95, "still the best match")
+    check("the score lands even though the status can't move backwards",
+          row["score"] == 95 and row["status"] == "applied")
+    check("...and the row is marked as touched (REGRESSION)",
+          s.get("6001")["updated"] > before)
+    check("...so it leads the newest-first listing", s.all()[0].id == "6001")
+
+
+# ---------------------------------------------------------------------------
+print("[11] the lock keeps a concurrent read-modify-write from losing a row")
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "jobs.json"
+    LinkedInStore(path).mark_seen([{"id": "7100", "title": "Seed"}])
+
+    errors = []
+
+    def hammer(prefix):
+        try:
+            store = LinkedInStore(path)
+            for n in range(20):
+                store.mark_seen([{"id": f"{prefix}{n}", "title": "Row"}])
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(p,)) for p in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("no writer raised", not errors)
+    check("every row survived concurrent writers (REGRESSION)",
+          len(LinkedInStore(path).all()) == 61)
+    check("the lock file is cleaned up", not (path.with_name(path.name + ".lock")).exists())
 
 
 print()

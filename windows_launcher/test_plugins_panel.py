@@ -905,6 +905,7 @@ class FakeLinkedIn(QObject):
     busy_changed = Signal(bool)
     error = Signal(str)
     tiers_changed = Signal()
+    profile_updated = Signal()
 
     def __init__(self, connected=False, tiers=("official",)):
         super().__init__()
@@ -967,11 +968,14 @@ class FakeLinkedIn(QObject):
         self._tiers = [t for t in self._tiers if t != "jobs"]
         self.tiers_changed.emit()
 
-    def set_session_cookie(self, li_at):
+    def set_session_cookie(self, li_at, jsession=""):
         if not (li_at or "").strip():
             self.error.emit("Paste the li_at cookie value.")
             return False
-        self.cookie_set = li_at
+        if not (jsession or "").strip():
+            self.error.emit("Paste the JSESSIONID cookie too.")
+            return False
+        self.cookie_set = (li_at, jsession)
         self.has_session_cookie = True
         if "session" not in self._tiers:
             self._tiers.append("session")
@@ -987,6 +991,7 @@ class FakeLinkedIn(QObject):
     def set_resume_path(self, path):
         self.resume_path = path
         self.tiers_changed.emit()
+        return True
 
     def ensure_wired(self, folder=None, agent_command=None, **kw):
         self.rewired = True
@@ -1065,9 +1070,17 @@ def _yes(title, body):
 
 lid._confirm = _yes
 lid._on_enable_session()
-check("accepting turns the tier on", fli.tier_on("session"))
-check("the cookie reached the controller", fli.cookie_set == "AQEDA-cookie")
-check("the cookie box is cleared afterwards", lid._cookie_field.text() == "")
+check("li_at alone is refused -- LinkedIn needs the JSESSIONID pair (REGRESSION)",
+      not fli.tier_on("session"))
+check("...and the card says why", "JSESSIONID" in lid._sub.text())
+lid._cookie_field.setText("AQEDA-cookie")
+lid._jsession_field.setText("ajax:4242")
+lid._on_enable_session()
+check("accepting with both cookies turns the tier on", fli.tier_on("session"))
+check("both cookies reached the controller",
+      fli.cookie_set == ("AQEDA-cookie", "ajax:4242"))
+check("the cookie boxes are cleared afterwards",
+      lid._cookie_field.text() == "" and lid._jsession_field.text() == "")
 check("the warning names the User Agreement", "User Agreement" in _asked["body"])
 check("...and the actual consequence", "restricted" in _asked["body"])
 lid._on_disable_session()
@@ -1107,6 +1120,49 @@ lip_free = PluginsPanel(github=FakeGitHub(), linkedin=FakeLinkedIn(),
 check("Free plan labels Connect (Pro) and disables it",
       "Pro" in lip_free._linkedin_detail._primary.text()
       and not lip_free._linkedin_detail._primary.isEnabled())
+
+# A plan that lapses has to stop a plugin that is already connected, not just
+# the first connect -- otherwise a downgrade leaves the whole feature running.
+lip_down = PluginsPanel(github=FakeGitHub(),
+                        linkedin=FakeLinkedIn(connected=True,
+                                              tiers=("official", "jobs")),
+                        account=_FreeAccount(), config={})
+_down = lip_down._linkedin_detail
+check("a connected plugin on Free freezes its tier controls (REGRESSION)",
+      not _down._jobs_box.isEnabled() and not _down._session_box.isEnabled()
+      and not _down._routine_btn.isEnabled())
+check("...and says so", "Pro" in _down._sub.text())
+
+
+# ---------------------------------------------------------------------------
+print("[11b] a failed LinkedIn sign-in stays on screen")
+fli2 = FakeLinkedIn()
+lip2 = PluginsPanel(github=FakeGitHub(), linkedin=fli2, config={})
+lip2._open_detail("linkedin")
+lid2 = lip2._linkedin_detail
+fli2.error.emit("Port 8977 is already in use.")
+check("the failure is shown", "Port 8977" in lid2._sub.text())
+# This is the sequence that used to erase it: error, then the busy flag
+# dropping, whose refresh rewrote the label.
+fli2.busy_changed.emit(False)
+check("...and survives the refresh that follows (REGRESSION)",
+      "Port 8977" in lid2._sub.text())
+fli2.tiers_changed.emit()
+check("...and a tier refresh too", "Port 8977" in lid2._sub.text())
+lid2._id_field.setText("client-abc")
+lid2._secret_field.setText("s3cret")
+lid2._on_primary()
+check("trying again clears it", "Port 8977" not in lid2._sub.text())
+
+# An expired token turns Save into the reconnect the status line asks for.
+fli3 = FakeLinkedIn(connected=True)
+fli3.token_expired = True
+lip3 = PluginsPanel(github=FakeGitHub(), linkedin=fli3, config={})
+lip3._open_detail("linkedin")
+check("the Save button becomes Reconnect when the token lapses (REGRESSION)",
+      lip3._linkedin_detail._save_btn.text() == "Reconnect")
+check("...and the status line promises the setup is kept",
+      "kept" in lip3._linkedin_detail._sub.text())
 
 
 

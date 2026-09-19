@@ -45,6 +45,12 @@ SERVER_NAME = "linkedin"
 #: Spoken back to a client that asks for something we don't recognise.
 _DEFAULT_PROTOCOL = "2024-11-05"
 
+#: The MCP revisions this server actually implements. Echoing back whatever a
+#: client asked for -- as this used to -- is a promise to speak a version we
+#: may never have seen; the spec says to answer with one we support and let the
+#: client decide.
+_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
+
 #: A résumé longer than this is truncated before it goes to the agent -- a
 #: tailoring prompt doesn't need a book, and a 200-page PDF-dump would blow the
 #: pane's context window.
@@ -258,15 +264,45 @@ def _store():
     return LinkedInStore()
 
 
-def _resume_text(conn) -> str:
+#: What a CV may be. Everything here is text an agent can actually read; a
+#: .pdf or .docx is a zip or a binary stream, and ``errors="replace"`` turns it
+#: into pages of U+FFFD that read as a corrupted CV rather than as a wrong file.
+RESUME_SUFFIXES = (".md", ".markdown", ".txt", ".text", ".rst", ".json", "")
+
+
+def _resume(conn) -> tuple:
+    """``(text, problem)`` for the configured CV -- at most one is non-empty.
+
+    ``problem`` is a sentence for the agent to relay: a CV that is silently
+    empty is how an application gets drafted from nothing.
+    """
     path = str((conn.settings.get("resume_path") if conn else "") or "").strip()
     if not path:
-        return ""
+        return "", ""
+    target = Path(path)
+    if target.suffix.lower() not in RESUME_SUFFIXES:
+        return "", (
+            f"The CV at {path} is a {target.suffix} file, which AgentDeck "
+            "can't read as text. Export it to Markdown or plain text and point "
+            "the LinkedIn card at that instead."
+        )
     try:
-        raw = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    return raw[:_RESUME_LIMIT]
+        raw = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return "", f"The CV at {path} couldn't be read: {exc.strerror or exc}."
+    # chr(0xFFFD), not a literal: this is the replacement character
+    # ``errors="replace"`` produces, and a literal one in the source is exactly
+    # the kind of byte an editor or a re-encode silently mangles -- at which
+    # point the check stops matching and binary CVs sail through again.
+    if chr(0xFFFD) in raw[:4000]:
+        return "", (
+            f"The CV at {path} doesn't look like text (it decoded to "
+            "replacement characters). Point the LinkedIn card at a Markdown or "
+            "plain-text copy."
+        )
+    if not raw.strip():
+        return "", f"The CV at {path} is empty."
+    return raw[:_RESUME_LIMIT], ""
 
 
 def _t_me(args: dict, conn, vault: dict) -> dict:
@@ -289,15 +325,25 @@ def _t_post(args: dict, conn, vault: dict) -> dict:
 
 def _t_search(args: dict, conn, vault: dict) -> dict:
     import linkedin_jobs
+    import linkedin_store
 
     _require("jobs", conn)
+    keywords = str(args.get("keywords") or "").strip()
+    location = str(args.get("location") or "").strip()
+    if not keywords and not location:
+        raise ToolError(
+            "linkedin_search_jobs needs keywords (or at least a location) -- "
+            "searching for nothing in particular would just spend the user's "
+            "provider quota."
+        )
     settings = conn.settings if conn else {}
+    provider = settings.get("provider", linkedin_jobs.DEFAULT_PROVIDER)
     postings = linkedin_jobs.search_jobs(
-        provider=settings.get("provider", linkedin_jobs.DEFAULT_PROVIDER),
+        provider=provider,
         api_key=vault.get("provider_key", ""),
         actor=settings.get("actor", ""),
-        keywords=str(args.get("keywords") or ""),
-        location=str(args.get("location") or ""),
+        keywords=keywords,
+        location=location,
         remote=bool(args.get("remote")),
         posted_within=str(args.get("posted_within") or ""),
         experience=str(args.get("experience") or ""),
@@ -305,14 +351,46 @@ def _t_search(args: dict, conn, vault: dict) -> dict:
         limit=args.get("limit", 25),
     )
     fresh = _store().mark_seen(postings)
+    # Match on the id the *store* filed the row under, not the raw one: they
+    # differ whenever a provider's id needs normalising, and comparing the two
+    # meant a genuinely new posting could never appear in `new`. Counting
+    # unique ids likewise keeps a provider that returns a duplicate from being
+    # reported as two finds and one skip.
     fresh_ids = {job["id"] for job in fresh}
-    return {
-        "found": len(postings),
-        "new": [p for p in postings if p["id"] in fresh_ids],
-        "already_seen": len(postings) - len(fresh_ids),
+    seen: set = set()
+    unique: List[dict] = []
+    for posting in postings:
+        key = linkedin_store.normalise_id(posting.get("id"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(posting)
+    out = {
+        "found": len(unique),
+        "new": [p for p in unique
+                if linkedin_store.normalise_id(p.get("id")) in fresh_ids],
+        "already_seen": len(seen - fresh_ids),
         "note": "Only 'new' postings are worth reporting -- the rest were "
                 "returned by an earlier run.",
     }
+    if len(postings) != len(unique):
+        out["duplicates_dropped"] = len(postings) - len(unique)
+    ignored = linkedin_jobs.unsupported_filters(
+        provider,
+        remote=bool(args.get("remote")),
+        posted_within=str(args.get("posted_within") or ""),
+        experience=str(args.get("experience") or ""),
+        easy_apply=bool(args.get("easy_apply")),
+    )
+    if ignored:
+        # Saying so beats letting the agent report a filtered hunt it didn't get.
+        out["ignored_filters"] = ignored
+        out["note"] += (
+            f" The configured provider ({linkedin_jobs.provider_label(provider)}) "
+            f"cannot filter on {', '.join(ignored)}, so those results are "
+            "unfiltered -- check them yourself before shortlisting."
+        )
+    return out
 
 
 def _t_details(args: dict, conn, vault: dict) -> dict:
@@ -344,8 +422,15 @@ def _t_track(args: dict, conn, vault: dict) -> dict:
 
 
 def _t_list(args: dict, conn, vault: dict) -> dict:
+    import linkedin_store
+
     store = _store()
     status = str(args.get("status") or "").strip().lower()
+    if status and status not in linkedin_store.STATUSES:
+        raise ToolError(
+            f"'{status}' isn't a pipeline status. Use one of: "
+            + ", ".join(linkedin_store.STATUSES) + "."
+        )
     rows = store.by_status(status) if status else store.all()
     try:
         limit = max(1, min(200, int(args.get("limit") or 50)))
@@ -358,16 +443,19 @@ def _t_draft(args: dict, conn, vault: dict) -> dict:
     job = _store().get(str(args.get("job_id") or ""))
     if job is None:
         raise ToolError("No such job in the pipeline -- search first.")
-    resume = _resume_text(conn)
+    resume, problem = _resume(conn)
     return {
         "job": dict(job),
         "resume": resume,
         "resume_configured": bool(resume),
+        "resume_problem": problem,
         "instructions": (
             "Write the application from the job and the résumé above. Do not "
             "claim experience the résumé doesn't show. AgentDeck cannot submit "
             "the application and will not: give the draft to the human, then "
             "call linkedin_track_application with status 'drafted'."
+            + (f" NOTE: {problem} Say so rather than drafting from nothing."
+               if problem else "")
         ),
     }
 
@@ -379,7 +467,9 @@ def _session_call(fn, args: dict, conn, vault: dict) -> dict:
         limit = int(args.get("limit") or 20)
     except (TypeError, ValueError):
         limit = 20
-    return {"items": fn(cookie, limit=limit),
+    # Both cookies: LinkedIn's internal API checks Csrf-Token against the real
+    # JSESSIONID, so li_at on its own is refused.
+    return {"items": fn(cookie, limit=limit, jsession=vault.get("li_jsession", "")),
             "note": "Read from your own LinkedIn session. Read-only, rate-limited."}
 
 
@@ -470,7 +560,7 @@ def handle(message: dict) -> Optional[dict]:
     if method == "initialize":
         asked = params.get("protocolVersion")
         return _rpc_result(msg_id, {
-            "protocolVersion": asked if isinstance(asked, str) and asked else _DEFAULT_PROTOCOL,
+            "protocolVersion": asked if asked in _PROTOCOLS else _DEFAULT_PROTOCOL,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": _version()},
         })

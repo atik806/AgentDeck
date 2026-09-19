@@ -69,10 +69,23 @@ def pump(until, ms=5000):
     return hit["v"]
 
 
+#: Every controller this run has built. A LinkedInController owns its worker
+#: QThreads (they are parented to it), so letting one be garbage-collected
+#: while a worker is still running tears a live QThread down under Qt and the
+#: interpreter segfaults. Real callers get this right by calling shutdown() --
+#: terminal_panel does, on close -- so the harness does the same and then holds
+#: the reference anyway.
+_controllers = []
+
+
 def _fresh():
+    for old in _controllers:
+        old.shutdown()
     PluginStore().remove(LINKEDIN)
     LinkedInSecretStore().clear()
-    return linkedin_controller.LinkedInController()
+    ctrl = linkedin_controller.LinkedInController()
+    _controllers.append(ctrl)
+    return ctrl
 
 
 # Stub the two network calls for the whole run.
@@ -160,22 +173,36 @@ check("a warning exists for the UI to show", "User Agreement" in linkedin_contro
 check("...and names the real consequence", "restricted" in linkedin_controller.SESSION_WARNING)
 check("an empty cookie is refused", ctrl.set_session_cookie("  ") is False)
 check("still off", not ctrl.tier_on("session"))
-check("a cookie turns it on", ctrl.set_session_cookie("AQEDA-fake-cookie") is True)
+# LinkedIn checks Csrf-Token against the real JSESSIONID, so li_at alone is
+# refused here rather than stored and rejected later by LinkedIn.
+check("li_at without a JSESSIONID is refused (REGRESSION)",
+      ctrl.set_session_cookie("AQEDA-fake-cookie") is False)
+check("still off after a half-filled pair", not ctrl.tier_on("session"))
+check("both cookies turn it on",
+      ctrl.set_session_cookie("AQEDA-fake-cookie", "ajax:12345") is True)
 check("the tier is on", ctrl.tier_on("session"))
 check("the cookie is in the vault", ctrl.has_session_cookie)
 raw = (Path(_SANDBOX) / "plugins.json").read_text(encoding="utf-8")
-check("NO cookie in plugins.json (REGRESSION)", "AQEDA-fake-cookie" not in raw)
+check("NO cookie in plugins.json (REGRESSION)",
+      "AQEDA-fake-cookie" not in raw and "ajax:12345" not in raw)
 ctrl.clear_session_cookie()
 check("turning it off forgets the cookie", not ctrl.has_session_cookie)
 check("...and drops the tier", not ctrl.tier_on("session"))
 
 
 # ---------------------------------------------------------------------------
-print("[6] the CV path is plain settings")
+print("[6] the CV path is plain settings -- but only for a CV we can read")
 cv = Path(_SANDBOX) / "cv.md"
 cv.write_text("# Jane", encoding="utf-8")
-ctrl.set_resume_path(str(cv))
+check("a markdown CV is accepted", ctrl.set_resume_path(str(cv)) is True)
 check("stored", ctrl.resume_path == str(cv))
+pdf = Path(_SANDBOX) / "cv.pdf"
+pdf.write_bytes(b"%PDF-1.7 binary")
+check("a PDF is refused rather than fed to the agent as mojibake (REGRESSION)",
+      ctrl.set_resume_path(str(pdf)) is False)
+check("...and the readable CV is still the one configured", ctrl.resume_path == str(cv))
+check("a path that isn't there is refused",
+      ctrl.set_resume_path(str(Path(_SANDBOX) / "nope.md")) is False)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +215,7 @@ check("...and clears again", not ctrl.token_expired)
 
 # ---------------------------------------------------------------------------
 print("[8] disconnect clears every credential")
-ctrl.set_session_cookie("AQEDA-again")
+ctrl.set_session_cookie("AQEDA-again", "ajax:67890")
 ctrl.set_provider("jsearch", "rapid-key-2")
 check("all three are stored", ctrl.has_secret and ctrl.has_provider_key
       and ctrl.has_session_cookie)
@@ -224,6 +251,98 @@ ctrl2.shutdown()
 check("shutdown on a disconnected controller is a no-op", True)
 check("unwire_all never raises", ctrl.unwire_all() is None)
 
+
+# ---------------------------------------------------------------------------
+print("[10] reconnecting keeps the setup -- it is the path an expiring token forces")
+ctrl = _fresh()
+check("connects", ctrl.start_connect("client-abc", "s3cret") is True
+      and pump(lambda: ctrl.is_connected))
+cv2 = Path(_SANDBOX) / "cv2.md"
+cv2.write_text("# Jane", encoding="utf-8")
+ctrl.set_provider("jsearch", "rapid-key-3", "")
+ctrl.set_session_cookie("AQEDA-keep", "ajax:keep")
+ctrl.set_resume_path(str(cv2))
+check("everything is on", set(ctrl.tiers) == {"official", "jobs", "session"}
+      and ctrl.provider == "jsearch" and ctrl.resume_path == str(cv2))
+
+# The token lapses; the card says "reconnect", which runs start_connect again.
+LinkedInSecretStore().save(token_expires="1")
+check("the card can see it has expired", ctrl.token_expired)
+before_id = ctrl.client_id
+check("reconnect starts", ctrl.start_connect("client-abc", "") is True)
+check("...and finishes", pump(lambda: not ctrl.token_expired))
+
+check("the tiers are NOT reset to official-only (REGRESSION)",
+      set(ctrl.tiers) == {"official", "jobs", "session"})
+check("the provider is NOT reset to apify (REGRESSION)", ctrl.provider == "jsearch")
+check("the CV path survives (REGRESSION)", ctrl.resume_path == str(cv2))
+check("the client id is still there", ctrl.client_id == before_id)
+check("...and the credentials were never orphaned",
+      ctrl.has_provider_key and ctrl.has_session_cookie)
+
+
+# ---------------------------------------------------------------------------
+print("[11] a rejected secret isn't left in the vault")
+ctrl = _fresh()
+_real_sign_in = linkedin_auth.sign_in
+
+
+def _refuse(cid, secret, **kw):
+    raise linkedin_auth.AuthError("LinkedIn declined the sign-in: bad client secret")
+
+
+linkedin_auth.sign_in = _refuse
+failures = []
+ctrl.error.connect(failures.append)
+try:
+    check("the attempt starts", ctrl.start_connect("client-abc", "wrong-secret") is True)
+    check("...and fails", pump(lambda: bool(failures)))
+    check("the failure is a sentence", "declined" in failures[-1])
+    check("nothing was connected", not ctrl.is_connected)
+    check("the rejected secret was NOT stored (REGRESSION)", not ctrl.has_secret)
+finally:
+    linkedin_auth.sign_in = _real_sign_in
+
+
+# ---------------------------------------------------------------------------
+print("[12] the display name is not a second connection")
+ctrl = _fresh()
+connects2, profiles = [], []
+ctrl.connected.connect(connects2.append)
+ctrl.profile_updated.connect(lambda: profiles.append(True))
+ctrl.start_connect("client-abc", "s3cret")
+check("connected", pump(lambda: ctrl.is_connected))
+check("the name arrives", pump(lambda: bool(profiles)))
+pump(lambda: False, 250)
+check("`connected` fired exactly once (REGRESSION)", len(connects2) == 1)
+check("...and the name came through its own signal", len(profiles) == 1)
+check("...and is on the card", ctrl.login == "Jane Dev")
+
+
+# ---------------------------------------------------------------------------
+print("[13] a provider key that can't be stored doesn't half-configure the card")
+ctrl = _fresh()
+ctrl.start_connect("client-abc", "s3cret")
+pump(lambda: ctrl.is_connected)
+ctrl.set_provider("apify", "", "user~first-actor")
+_real_save = ctrl._vault.save
+
+
+def _refuse_save(**fields):
+    return False if "provider_key" in fields else _real_save(**fields)
+
+
+ctrl._vault.save = _refuse_save
+try:
+    check("a failed key write reports failure", ctrl.set_provider("jsearch", "k", "") is False)
+    check("...and the provider was NOT switched anyway (REGRESSION)",
+          ctrl.provider == "apify" and ctrl.actor == "user~first-actor")
+finally:
+    ctrl._vault.save = _real_save
+
+
+for _ctrl in _controllers:
+    _ctrl.shutdown()
 
 print()
 print(f"{_passed} passed, {_failed} failed")

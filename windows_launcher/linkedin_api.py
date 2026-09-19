@@ -116,6 +116,19 @@ def _post_json(url: str, token: str, payload: dict, what: str) -> "requests.Resp
 # The two calls
 # ---------------------------------------------------------------------------
 
+def _locale(value: object) -> str:
+    """OIDC lets ``locale`` be a BCP-47 string; LinkedIn sends
+    ``{"country": "US", "language": "en"}`` instead. Read both rather than
+    discarding the one that actually arrives."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        language = str(value.get("language") or "").strip()
+        country = str(value.get("country") or "").strip()
+        return "_".join(x for x in (language, country) if x)
+    return ""
+
+
 def me(token: str) -> dict:
     """The signed-in member, from the OIDC ``userinfo`` endpoint.
 
@@ -141,7 +154,7 @@ def me(token: str) -> dict:
         "email": str(data.get("email") or ""),
         "email_verified": bool(data.get("email_verified")),
         "picture": str(data.get("picture") or ""),
-        "locale": str(data.get("locale") or "") if isinstance(data.get("locale"), str) else "",
+        "locale": _locale(data.get("locale")),
     }
 
 

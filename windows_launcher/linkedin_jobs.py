@@ -33,7 +33,9 @@ import requests
 __all__ = [
     "ProviderError",
     "PROVIDERS",
+    "FILTERS",
     "DEFAULT_PROVIDER",
+    "unsupported_filters",
     "provider_label",
     "needs_actor",
     "search_jobs",
@@ -51,6 +53,17 @@ PROVIDERS: Dict[str, str] = {
     "jsearch": "JSearch (RapidAPI)",
 }
 
+#: Which optional filters each adapter can really pass through. A filter this
+#: table doesn't list is *reported* (see :func:`unsupported_filters`) rather
+#: than dropped in silence -- an agent that asked for remote-only work and got
+#: an unfiltered list should be told, not left to infer it.
+FILTERS: Dict[str, frozenset] = {
+    "apify": frozenset({"remote", "posted_within", "experience", "easy_apply"}),
+    # JSearch has no easy-apply concept: it aggregates several boards and only
+    # LinkedIn has the feature.
+    "jsearch": frozenset({"remote", "posted_within", "experience"}),
+}
+
 DEFAULT_PROVIDER = "apify"
 
 _TIMEOUT = 60          # an Apify run-sync can legitimately take a while
@@ -59,6 +72,14 @@ _MAX_LIMIT = 100
 
 def provider_label(key: str) -> str:
     return PROVIDERS.get((key or "").strip().lower(), key or "")
+
+
+def unsupported_filters(provider: str, **asked: object) -> List[str]:
+    """The names of the truthy ``asked`` filters this provider can't honour."""
+    known = FILTERS.get((provider or "").strip().lower())
+    if known is None:
+        return []
+    return sorted(name for name, value in asked.items() if value and name not in known)
 
 
 def needs_actor(provider: str) -> bool:
@@ -168,8 +189,10 @@ def _apify_search(key: str, actor: str, query: dict, limit: int) -> List[dict]:
     if query.get("easy_apply"):
         payload["easyApply"] = True
 
+    # Bearer rather than ``?token=``: a key in a URL ends up in proxy, CDN and
+    # server logs, and Apify accepts the header on every v2 endpoint.
     data = _http("POST", url, what="search for jobs",
-                 params={"token": key}, json=payload)
+                 headers={"Authorization": f"Bearer {key}"}, json=payload)
     rows = data if isinstance(data, list) else data.get("items") or []
     return [p for p in (_normalise(r, "apify") for r in rows) if p][:limit]
 
@@ -187,7 +210,14 @@ def _jsearch_headers(key: str) -> dict:
 
 def _jsearch_search(key: str, query: dict, limit: int) -> List[dict]:
     terms = " ".join(x for x in (query.get("keywords", ""), query.get("location", "")) if x)
-    params = {"query": terms or "software engineer", "page": "1",
+    if not terms:
+        # Substituting a default here would spend the user's quota on a search
+        # nobody asked for and report the results as if they were theirs.
+        raise ProviderError(
+            "No keywords given, so there is nothing to search for. Say what "
+            "kind of role to look for."
+        )
+    params = {"query": terms, "page": "1",
               "num_pages": "1", "date_posted": query.get("posted_within") or "all"}
     if query.get("remote"):
         params["remote_jobs_only"] = "true"
@@ -254,9 +284,16 @@ def search_jobs(
     except (TypeError, ValueError):
         count = 25
 
+    terms = _text(keywords, 200)
+    where = _text(location, 120)
+    if not terms and not where:
+        raise ProviderError(
+            "No keywords and no location, so there is nothing to search for. "
+            "Say what kind of role to look for."
+        )
     query = {
-        "keywords": _text(keywords, 200),
-        "location": _text(location, 120),
+        "keywords": terms,
+        "location": where,
         "remote": bool(remote),
         "posted_within": _text(posted_within, 40),
         "experience": _text(experience, 40),

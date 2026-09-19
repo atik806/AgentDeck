@@ -37,8 +37,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 
 __all__ = [
     "STATUSES",
@@ -46,6 +47,7 @@ __all__ = [
     "Job",
     "LinkedInStore",
     "default_store_path",
+    "normalise_id",
 ]
 
 #: Bumped only if the on-disk shape changes meaning.
@@ -98,6 +100,20 @@ class Job(dict):
         return str(self.get("status", "seen"))
 
 
+#: How long a job id may be. Providers hand back everything from a 10-digit
+#: LinkedIn posting id to a base64 blob, so there is a ceiling -- but it has to
+#: be applied in *one* place, because a caller that matches its own raw id
+#: against a stored, truncated one silently never matches.
+ID_LIMIT = 64
+
+
+def normalise_id(value: object) -> str:
+    """The key a posting is filed under. Public so a caller can ask "which id
+    did you actually store?" instead of guessing (see
+    ``linkedin_server._t_search``)."""
+    return _clean(value, ID_LIMIT)
+
+
 def _clean(value: object, limit: int = 400) -> str:
     text = "" if value is None else str(value)
     text = " ".join(text.split())
@@ -107,8 +123,63 @@ def _clean(value: object, limit: int = 400) -> str:
 class LinkedInStore:
     """Read/write ``linkedin_jobs.json``. Best-effort; never raises."""
 
+    #: How long to wait for another process's lock before going ahead anyway,
+    #: and how old a lock file has to be before it is assumed abandoned. A
+    #: crashed MCP server must not freeze the pipeline for ever.
+    LOCK_WAIT = 2.0
+    LOCK_STALE = 10.0
+
     def __init__(self, path: Optional[Path | str] = None):
         self.path = Path(path) if path is not None else default_store_path()
+
+    # -- locking -----------------------------------------------------------
+
+    @contextmanager
+    def _locked(self) -> "Iterator[None]":
+        """Hold an exclusive lock across a read-modify-write.
+
+        The MCP server is a *separate process* from the GUI (that is the whole
+        shape of this plugin), and both mutate this file: an agent marking a job
+        applied while the user edits the same pipeline in the panel would
+        otherwise lose one of the two writes -- ``os.replace`` makes each write
+        atomic, but nothing made the read-then-write pair atomic.
+
+        Best-effort like everything else here: if the lock can't be taken it
+        gives up after :attr:`LOCK_WAIT` and does the write anyway, because a
+        stuck lock must never be worse than the race it prevents.
+        """
+        lock = self.path.with_name(self.path.name + ".lock")
+        handle = None
+        deadline = time.monotonic() + self.LOCK_WAIT
+        while True:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                handle = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > self.LOCK_STALE:
+                        lock.unlink()          # the holder died; take it over
+                        continue
+                except OSError:
+                    pass
+                if time.monotonic() >= deadline:
+                    break                      # go ahead unlocked
+                time.sleep(0.02)
+            except OSError:
+                break                          # a read-only dir: nothing to lock
+        try:
+            yield
+        finally:
+            if handle is not None:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
 
     # -- raw ---------------------------------------------------------------
 
@@ -151,7 +222,7 @@ class LinkedInStore:
         return rows
 
     def get(self, job_id: str) -> Optional[Job]:
-        row = self._read().get(str(job_id))
+        row = self._read().get(normalise_id(job_id))
         return Job(row) if isinstance(row, dict) else None
 
     def by_status(self, status: str) -> List[Job]:
@@ -177,58 +248,74 @@ class LinkedInStore:
         is refreshed (title/company/url can change) but is not returned, so a
         daily routine reports what actually appeared since yesterday.
         """
-        jobs = self._read()
-        now = time.time()
-        fresh: List[Job] = []
-        for posting in postings or []:
-            if not isinstance(posting, dict):
-                continue
-            job_id = _clean(posting.get("id") or posting.get("job_id"), 64)
-            if not job_id:
-                continue
-            row = jobs.get(job_id)
-            if isinstance(row, dict):
-                # Known: refresh the descriptive fields, leave the pipeline alone.
-                for key in ("title", "company", "location", "url", "posted", "source"):
-                    if posting.get(key):
-                        row[key] = _clean(posting.get(key))
-                row["updated"] = now
+        with self._locked():
+            jobs = self._read()
+            now = time.time()
+            fresh: List[Job] = []
+            touched = False
+            for posting in postings or []:
+                if not isinstance(posting, dict):
+                    continue
+                job_id = normalise_id(posting.get("id") or posting.get("job_id"))
+                if not job_id:
+                    continue
+                row = jobs.get(job_id)
+                if isinstance(row, dict):
+                    # Known: refresh the descriptive fields, leave the pipeline
+                    # alone.
+                    for key in ("title", "company", "location", "url", "posted",
+                                "source"):
+                        if posting.get(key):
+                            row[key] = _clean(posting.get(key))
+                    row["updated"] = now
+                    jobs[job_id] = row
+                    touched = True
+                    continue
+                row = {
+                    "id": job_id,
+                    "title": _clean(posting.get("title")),
+                    "company": _clean(posting.get("company")),
+                    "location": _clean(posting.get("location")),
+                    "url": _clean(posting.get("url"), 600),
+                    "posted": _clean(posting.get("posted"), 40),
+                    "source": _clean(posting.get("source"), 40),
+                    "status": "seen",
+                    "score": 0,
+                    "why": "",
+                    "first_seen": now,
+                    "updated": now,
+                    "history": [["seen", now]],
+                }
                 jobs[job_id] = row
-                continue
-            row = {
-                "id": job_id,
-                "title": _clean(posting.get("title")),
-                "company": _clean(posting.get("company")),
-                "location": _clean(posting.get("location")),
-                "url": _clean(posting.get("url"), 600),
-                "posted": _clean(posting.get("posted"), 40),
-                "source": _clean(posting.get("source"), 40),
-                "status": "seen",
-                "score": 0,
-                "why": "",
-                "first_seen": now,
-                "updated": now,
-                "history": [["seen", now]],
-            }
-            jobs[job_id] = row
-            fresh.append(Job(row))
-        self._write(jobs)
+                fresh.append(Job(row))
+                touched = True
+            # An empty result set is the normal case for a routine that runs
+            # every morning; rewriting the file to say so is pure churn.
+            if touched:
+                self._write(jobs)
         return fresh
 
     def shortlist(self, job_id: str, score: object = 0, why: str = "") -> Optional[Job]:
         """Score a job and move it to ``shortlisted``."""
-        jobs = self._read()
-        row = jobs.get(str(job_id))
-        if not isinstance(row, dict):
-            return None
-        try:
-            row["score"] = max(0, min(100, int(float(score))))
-        except (TypeError, ValueError):
-            row["score"] = 0
-        row["why"] = _clean(why, 600)
-        self._advance(row, "shortlisted")
-        jobs[str(job_id)] = row
-        self._write(jobs)
+        key = normalise_id(job_id)
+        with self._locked():
+            jobs = self._read()
+            row = jobs.get(key)
+            if not isinstance(row, dict):
+                return None
+            try:
+                row["score"] = max(0, min(100, int(float(score))))
+            except (TypeError, ValueError):
+                row["score"] = 0
+            row["why"] = _clean(why, 600)
+            # Re-scoring a job that is already past `shortlisted` is not a
+            # pipeline move, but it *is* activity: without this the row keeps
+            # its old `updated` and sinks in the newest-first listing even
+            # though the agent just touched it.
+            row["updated"] = time.time()
+            self._advance(row, "shortlisted")
+            jobs[key] = row
+            self._write(jobs)
         return Job(row)
 
     def set_status(self, job_id: str, status: str) -> Optional[Job]:
@@ -239,13 +326,15 @@ class LinkedInStore:
         want = (status or "").strip().lower()
         if want not in STATUSES:
             return None
-        jobs = self._read()
-        row = jobs.get(str(job_id))
-        if not isinstance(row, dict):
-            return None
-        self._advance(row, want)
-        jobs[str(job_id)] = row
-        self._write(jobs)
+        key = normalise_id(job_id)
+        with self._locked():
+            jobs = self._read()
+            row = jobs.get(key)
+            if not isinstance(row, dict):
+                return None
+            self._advance(row, want)
+            jobs[key] = row
+            self._write(jobs)
         return Job(row)
 
     @staticmethod
@@ -269,11 +358,15 @@ class LinkedInStore:
         row["history"] = history[-20:]
 
     def forget(self, job_id: str) -> bool:
-        jobs = self._read()
-        if str(job_id) in jobs:
-            del jobs[str(job_id)]
+        """True only when a row was really removed -- an unknown id is False,
+        not a cheerful no-op that reads as "deleted"."""
+        key = normalise_id(job_id)
+        with self._locked():
+            jobs = self._read()
+            if key not in jobs:
+                return False
+            del jobs[key]
             return self._write(jobs)
-        return True
 
     def clear(self) -> None:
         self._write({})

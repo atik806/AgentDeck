@@ -61,6 +61,11 @@ MAX_PER_HOUR = 60
 
 _TIMEOUT = 20
 
+#: What ``_headers`` falls back to when no JSESSIONID was stored. It will not
+#: work -- see :func:`_headers` -- and :func:`_get` turns the resulting 401 into
+#: "paste the JSESSIONID cookie too".
+_PLACEHOLDER_CSRF = "ajax:0000000000000000000"
+
 #: ``[monotonic timestamps]`` of requests made this process.
 _calls: List[float] = []
 
@@ -82,10 +87,14 @@ def _throttle() -> None:
     _calls.append(time.monotonic())
 
 
-def _headers(li_at: str) -> Dict[str, str]:
-    # csrf-token must equal the JSESSIONID cookie value; LinkedIn accepts any
-    # matched pair, which is why both are set from one value here.
-    csrf = "ajax:0000000000000000000"
+def _headers(li_at: str, jsession: str = "") -> Dict[str, str]:
+    # ``Csrf-Token`` must equal the *real* JSESSIONID cookie of the same
+    # session: LinkedIn validates the pair against the session behind li_at, so
+    # a synthetic value is rejected (401, or a 999 bot flag). The card asks for
+    # both cookies for exactly this reason. The placeholder below is only a
+    # last resort for a vault written by an older build -- expect it to fail,
+    # and say so rather than pretending the read is broken some other way.
+    csrf = (jsession or "").strip().strip('"') or _PLACEHOLDER_CSRF
     return {
         "Cookie": f"li_at={li_at}; JSESSIONID=\"{csrf}\"",
         "Csrf-Token": csrf,
@@ -96,7 +105,8 @@ def _headers(li_at: str) -> Dict[str, str]:
 
 
 def _get(li_at: str, path: str, params: dict,
-         fetch: Optional[Callable[..., object]] = None) -> dict:
+         fetch: Optional[Callable[..., object]] = None,
+         jsession: str = "") -> dict:
     cookie = (li_at or "").strip()
     if not cookie:
         raise SessionError(
@@ -106,17 +116,24 @@ def _get(li_at: str, path: str, params: dict,
     _throttle()
     call = fetch or requests.get
     try:
-        resp = call(f"{_BASE}{path}", headers=_headers(cookie), params=params,
-                    timeout=_TIMEOUT, allow_redirects=False)
+        resp = call(f"{_BASE}{path}", headers=_headers(cookie, jsession),
+                    params=params, timeout=_TIMEOUT, allow_redirects=False)
     except requests.RequestException as exc:
         raise SessionError(f"Couldn't reach LinkedIn: {exc}") from exc
 
     status = getattr(resp, "status_code", 0)
     if status in (401, 403) or status in (301, 302, 303, 307, 308):
+        if not (jsession or "").strip():
+            raise SessionError(
+                "LinkedIn didn't accept the stored session, and no JSESSIONID "
+                "cookie was stored -- its internal API checks that against "
+                "li_at and rejects the request without it. Copy both cookies "
+                "onto the LinkedIn card, or switch session reading off."
+            )
         raise SessionError(
             "LinkedIn didn't accept the stored session -- it has expired or been "
-            "invalidated. Copy a fresh li_at cookie from your browser, or switch "
-            "session reading off."
+            "invalidated. Copy a fresh li_at and JSESSIONID from your browser, "
+            "or switch session reading off."
         )
     if status == 999:
         # LinkedIn's "we think you're a bot" status.
@@ -139,15 +156,33 @@ def _get(li_at: str, path: str, params: dict,
     return data if isinstance(data, dict) else {}
 
 
-def _walk(value: object, out: List[dict], depth: int = 0) -> None:
-    """Collect every dict that looks like a job/message card.
+#: A job card is a title plus something that places it. Both halves are needed:
+#: "title" on its own matches half of LinkedIn's UI metadata.
+_JOB_TITLE_KEYS = frozenset({"title", "jobPostingTitle"})
+_JOB_CONTEXT_KEYS = frozenset({
+    "companyName", "primaryDescription", "secondaryDescription", "entityUrn",
+    "jobPostingUrn", "formattedLocation",
+})
+
+#: A conversation, on the other hand, has no title at all on the current
+#: messenger surface -- it is participants plus messages. Requiring a title here
+#: (as this once did) meant ``unread_messages`` could never match anything, so
+#: conversations get their own arm rather than sharing the job one's.
+_MESSAGE_KEYS = frozenset({
+    "conversationUrn", "participants", "messages", "subject", "snippet",
+    "lastActivityAt", "unreadCount",
+})
+
+
+def _walk(value: object, out: List[tuple], depth: int = 0) -> None:
+    """Collect every dict that looks like a job or conversation card.
 
     LinkedIn nests its ``elements`` differently per surface and rearranges them
     without notice, so this looks for the *content* rather than a fixed path --
     the difference between a plugin that survives a redesign and one that
-    doesn't.
+    doesn't. Two independent shapes are recognised; see the key sets above.
     """
-    if depth > 6 or len(out) >= 200:
+    if depth > 8 or len(out) >= 200:
         return
     if isinstance(value, list):
         for item in value:
@@ -156,11 +191,11 @@ def _walk(value: object, out: List[dict], depth: int = 0) -> None:
     if not isinstance(value, dict):
         return
     keys = set(value.keys())
-    if keys & {"title", "jobPostingTitle", "subject"} and keys & {
-        "companyName", "primaryDescription", "secondaryDescription", "entityUrn",
-        "participants", "conversationUrn",
-    }:
-        out.append(value)
+    if keys & _JOB_TITLE_KEYS and keys & _JOB_CONTEXT_KEYS:
+        out.append(("job", value))
+        return
+    if len(keys & _MESSAGE_KEYS) >= 2:
+        out.append(("message", value))
         return
     for item in value.values():
         _walk(item, out, depth + 1)
@@ -193,43 +228,123 @@ def _job_card(row: dict) -> dict:
     }
 
 
-def _cards(data: dict) -> List[dict]:
-    found: List[dict] = []
-    _walk(data.get("elements", data), found)
-    return found
+def _cards(data: dict, want: str = "job") -> List[dict]:
+    """Every card of one kind, anywhere in the response.
+
+    Deliberately walks the *whole* document rather than ``data["elements"]``.
+    The ``Accept`` header above asks for ``normalized+json``, whose shape is
+    ``{"data": {"elements": [urn strings]}, "included": [...the real entities]}``
+    -- so keying on ``elements`` found a list of URNs and never reached the
+    cards in ``included``, which is to say it found nothing at all.
+    """
+    found: List[tuple] = []
+    _walk(data, found)
+    return [row for kind, row in found if kind == want]
 
 
 # ---------------------------------------------------------------------------
 # The three reads
 # ---------------------------------------------------------------------------
 
-def saved_jobs(li_at: str, *, limit: int = 20, fetch=None) -> List[dict]:
+def _name_of(value: object, depth: int = 0) -> str:
+    """The first human name inside a participant blob.
+
+    Participants are wrapped differently on every messenger revision
+    (``{"name": ...}``, ``{"participantType": {"member": {"firstName": ...}}}``),
+    so this digs rather than indexes.
+    """
+    if depth > 4:
+        return ""
+    if isinstance(value, str):
+        return _text(value, 80)
+    if isinstance(value, list):
+        for item in value:
+            found = _name_of(item, depth + 1)
+            if found:
+                return found
+        return ""
+    if not isinstance(value, dict):
+        return ""
+    # First/last before the single-key lookup: "firstName" is present on the
+    # member shape too, and taking it alone would drop the surname.
+    first = _text(value.get("firstName"), 40)
+    last = _text(value.get("lastName"), 40)
+    if first or last:
+        return " ".join(x for x in (first, last) if x)
+    for key in ("name", "fullName", "title"):
+        if value.get(key):
+            return _text(value.get(key), 80)
+    for item in value.values():
+        found = _name_of(item, depth + 1)
+        if found:
+            return found
+    return ""
+
+
+def _preview_of(row: dict) -> str:
+    """The last message's text, wherever this revision keeps it."""
+    for key in ("snippet", "preview", "primaryDescription"):
+        text = _text(row.get(key), 200)
+        if text:
+            return text
+    found: List[str] = []
+
+    def dig(value: object, depth: int = 0) -> None:
+        if found or depth > 5:
+            return
+        if isinstance(value, list):
+            for item in value:
+                dig(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        body = value.get("body")
+        if body:
+            text = _text(body, 200)
+            if text:
+                found.append(text)
+                return
+        for item in value.values():
+            dig(item, depth + 1)
+
+    dig(row.get("messages") or row.get("events") or {})
+    return found[0] if found else ""
+
+
+def saved_jobs(li_at: str, *, limit: int = 20, fetch=None,
+               jsession: str = "") -> List[dict]:
     """Jobs the member saved on LinkedIn, newest first."""
     count = max(1, min(50, int(limit or 20)))
     data = _get(li_at, ENDPOINTS["saved_jobs"],
-                {"q": "savedJobs", "start": 0, "count": count}, fetch)
-    return [_job_card(row) for row in _cards(data)][:count]
+                {"q": "savedJobs", "start": 0, "count": count}, fetch,
+                jsession=jsession)
+    return [_job_card(row) for row in _cards(data, "job")][:count]
 
 
-def my_applications(li_at: str, *, limit: int = 20, fetch=None) -> List[dict]:
+def my_applications(li_at: str, *, limit: int = 20, fetch=None,
+                    jsession: str = "") -> List[dict]:
     """Applications LinkedIn has a record of for this member."""
     count = max(1, min(50, int(limit or 20)))
     data = _get(li_at, ENDPOINTS["applications"],
-                {"q": "appliedJobs", "start": 0, "count": count}, fetch)
-    return [_job_card(row) for row in _cards(data)][:count]
+                {"q": "appliedJobs", "start": 0, "count": count}, fetch,
+                jsession=jsession)
+    return [_job_card(row) for row in _cards(data, "job")][:count]
 
 
-def unread_messages(li_at: str, *, limit: int = 20, fetch=None) -> List[dict]:
+def unread_messages(li_at: str, *, limit: int = 20, fetch=None,
+                    jsession: str = "") -> List[dict]:
     """Unread conversations -- a recruiter reply is the one LinkedIn signal a
     job hunt actually turns on."""
     count = max(1, min(50, int(limit or 20)))
     data = _get(li_at, ENDPOINTS["conversations"],
-                {"q": "unread", "count": count}, fetch)
+                {"q": "unread", "start": 0, "count": count}, fetch,
+                jsession=jsession)
     out = []
-    for row in _cards(data):
+    for row in _cards(data, "message"):
         out.append({
+            "from": _name_of(row.get("participants")),
             "subject": _text(row.get("subject") or row.get("title")),
-            "preview": _text(row.get("snippet") or row.get("primaryDescription"), 200),
+            "preview": _preview_of(row),
             "url": f"{_BASE}/messaging/",
             "source": "session",
         })

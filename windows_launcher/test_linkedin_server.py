@@ -307,6 +307,135 @@ check("no real vault was created", not (real / "linkedin.bin").exists())
 check("no real pipeline was created", not (real / "linkedin_jobs.json").exists())
 
 
+# ---------------------------------------------------------------------------
+print("[11] search accounting -- the numbers the digest is built from")
+_connect("official,jobs")
+linkedin_server._store().clear()
+
+
+def _dupes(**_kwargs):
+    # A provider that returns the same posting twice, plus one with an id
+    # longer than the store's key limit.
+    long_id = "L" * 90
+    row = {"id": "8001", "title": "Staff Engineer", "company": "Globex",
+           "url": "https://www.linkedin.com/jobs/view/8001/", "source": "apify"}
+    return [row, dict(row), {"id": long_id, "title": "Long Id Role",
+                             "company": "Initech", "source": "apify"}]
+
+
+linkedin_jobs.search_jobs = _dupes
+try:
+    body = _payload(linkedin_server.call_tool("linkedin_search_jobs", {"keywords": "python"}))
+    check("a duplicate row is counted once", body["found"] == 2)
+    check("...and reported as dropped", body.get("duplicates_dropped") == 1)
+    check("a long provider id is still reported as new (REGRESSION)",
+          len(body["new"]) == 2)
+    check("nothing was skipped on a first run (REGRESSION)", body["already_seen"] == 0)
+    body = _payload(linkedin_server.call_tool("linkedin_search_jobs", {"keywords": "python"}))
+    check("the second run skips both", body["already_seen"] == 2 and body["new"] == [])
+finally:
+    linkedin_jobs.search_jobs = _real_search
+
+res = linkedin_server.call_tool("linkedin_search_jobs", {"keywords": "   "})
+check("a search with nothing to search for is an error, not a wasted call",
+      res["isError"] is True and "keywords" in _text(res))
+
+
+# ---------------------------------------------------------------------------
+print("[12] a filter the provider can't honour is reported, not dropped")
+_connect("official,jobs", provider="jsearch")
+
+
+def _plain(**_kwargs):
+    return [{"id": "8100", "title": "Remote Role", "company": "Acme", "source": "jsearch"}]
+
+
+linkedin_jobs.search_jobs = _plain
+try:
+    body = _payload(linkedin_server.call_tool(
+        "linkedin_search_jobs", {"keywords": "python", "easy_apply": True}))
+    check("jsearch says it can't do easy-apply", body.get("ignored_filters") == ["easy_apply"])
+    check("...in words the agent will relay", "cannot filter on" in body["note"])
+    body = _payload(linkedin_server.call_tool(
+        "linkedin_search_jobs", {"keywords": "python", "remote": True}))
+    check("a filter it *can* do isn't flagged", "ignored_filters" not in body)
+finally:
+    linkedin_jobs.search_jobs = _real_search
+
+
+# ---------------------------------------------------------------------------
+print("[13] a CV it can't read is said so, not fed to the agent as mojibake")
+_connect("official")
+linkedin_server._store().mark_seen([{"id": "8200", "title": "Role", "company": "Acme"}])
+
+pdf = Path(_SANDBOX) / "cv.pdf"
+pdf.write_bytes(b"%PDF-1.7\x00\x01binary")
+_connect("official", resume_path=str(pdf))
+body = _payload(linkedin_server.call_tool("linkedin_draft_application", {"job_id": "8200"}))
+check("a PDF CV is refused (REGRESSION)", body["resume"] == "")
+check("...and not claimed as configured", body["resume_configured"] is False)
+check("...with the reason spelled out", "can't read as text" in body["resume_problem"])
+check("...carried into the drafting instructions",
+      "Say so rather than drafting from nothing" in body["instructions"])
+
+md = Path(_SANDBOX) / "cv.md"
+md.write_text("# Jane Doe\nPython, Postgres.", encoding="utf-8")
+_connect("official", resume_path=str(md))
+body = _payload(linkedin_server.call_tool("linkedin_draft_application", {"job_id": "8200"}))
+check("a markdown CV is read", "Jane Doe" in body["resume"])
+check("...with no complaint", body["resume_problem"] == "")
+
+md.write_text("   \n", encoding="utf-8")
+body = _payload(linkedin_server.call_tool("linkedin_draft_application", {"job_id": "8200"}))
+check("an empty CV is called empty", "is empty" in body["resume_problem"])
+
+
+# ---------------------------------------------------------------------------
+print("[14] a bogus pipeline status is a mistake, not an empty pipeline")
+_connect("official")
+res = linkedin_server.call_tool("linkedin_list_applications", {"status": "interviewing"})
+check("marked as an error (REGRESSION)", res["isError"] is True)
+check("...and lists the real ones", "shortlisted" in _text(res))
+res = linkedin_server.call_tool("linkedin_list_applications", {"status": "seen"})
+check("a real status still works", res["isError"] is False)
+
+
+# ---------------------------------------------------------------------------
+print("[15] protocol negotiation answers with a version we implement")
+reply = linkedin_server.handle({"jsonrpc": "2.0", "id": 9, "method": "initialize",
+                                "params": {"protocolVersion": "2099-01-01"}})
+check("an unknown version is NOT echoed back (REGRESSION)",
+      reply["result"]["protocolVersion"] == linkedin_server._DEFAULT_PROTOCOL)
+check("...while a known one still is",
+      linkedin_server.handle({"jsonrpc": "2.0", "id": 9, "method": "initialize",
+                              "params": {"protocolVersion": "2025-03-26"}}
+                             )["result"]["protocolVersion"] == "2025-03-26")
+
+
+# ---------------------------------------------------------------------------
+print("[16] session reads carry both cookies")
+_connect("official,session")
+LinkedInSecretStore().save(li_at="cookie-value", li_jsession="ajax:4242")
+import linkedin_session
+
+_seen = {}
+
+
+def _spy(li_at, *, limit=20, jsession=""):
+    _seen.update(li_at=li_at, jsession=jsession, limit=limit)
+    return []
+
+
+_real_saved = linkedin_session.saved_jobs
+linkedin_session.saved_jobs = _spy
+try:
+    linkedin_server.call_tool("linkedin_saved_jobs", {"limit": 5})
+    check("the li_at reaches the read", _seen.get("li_at") == "cookie-value")
+    check("the JSESSIONID does too (REGRESSION)", _seen.get("jsession") == "ajax:4242")
+finally:
+    linkedin_session.saved_jobs = _real_saved
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

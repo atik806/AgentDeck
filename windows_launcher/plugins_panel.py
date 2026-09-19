@@ -1954,6 +1954,13 @@ class _LinkedInDetail(QWidget):
         self._agents_provider = agents_provider
         #: Replaced by the test suite; a real modal would hang it headless.
         self._confirm = self._default_confirm
+        #: The last failure, shown in place of the status line until the user
+        #: tries something else. It has to live here rather than being written
+        #: straight into ``_sub``: a failed connect emits ``error`` and then
+        #: ``busy_changed``, and the refresh that follows used to overwrite the
+        #: message before anyone could read it -- so a busy port or a rejected
+        #: sign-in looked like nothing had happened at all.
+        self._error_text = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2122,9 +2129,11 @@ class _LinkedInDetail(QWidget):
         sb.addWidget(st)
         self._session_hint = QLabel(
             "Reads your saved jobs, your applications and unread messages with "
-            "your own LinkedIn login cookie. <b>LinkedIn's User Agreement "
+            "your own LinkedIn login cookies. <b>LinkedIn's User Agreement "
             "prohibits automated access, and accounts have been restricted for "
             "it.</b> Read-only and rate-limited; off unless you switch it on."
+            "<br>Both <code>li_at</code> and <code>JSESSIONID</code> are needed "
+            "— copy them from your browser's cookies for linkedin.com."
         )
         self._session_hint.setObjectName("pluginsBody")
         self._session_hint.setWordWrap(True)
@@ -2136,6 +2145,14 @@ class _LinkedInDetail(QWidget):
         self._cookie_field.setEchoMode(QLineEdit.Password)
         self._cookie_field.setPlaceholderText("li_at cookie value")
         srow.addWidget(self._cookie_field, 2)
+        # Both halves: LinkedIn's internal API checks the Csrf-Token header
+        # against the real JSESSIONID of the same session, so li_at on its own
+        # is refused. Asking for it here is the difference between the tier
+        # working and every read coming back 401.
+        self._jsession_field = QLineEdit()
+        self._jsession_field.setEchoMode(QLineEdit.Password)
+        self._jsession_field.setPlaceholderText("JSESSIONID cookie value")
+        srow.addWidget(self._jsession_field, 2)
         self._cookie_on = QPushButton("Turn on")
         self._cookie_on.setCursor(Qt.PointingHandCursor)
         self._cookie_on.clicked.connect(self._on_enable_session)
@@ -2191,13 +2208,18 @@ class _LinkedInDetail(QWidget):
         root.addStretch(1)
 
         if self._linkedin is not None:
-            self._linkedin.connected.connect(lambda _i: self.refresh())
-            self._linkedin.disconnected.connect(self.refresh)
+            self._linkedin.connected.connect(lambda _i: self._on_connected())
+            self._linkedin.disconnected.connect(self._on_connected)
             self._linkedin.error.connect(self._on_error)
             self._linkedin.busy_changed.connect(lambda _b: self.refresh())
             tiers_changed = getattr(self._linkedin, "tiers_changed", None)
             if tiers_changed is not None:
                 tiers_changed.connect(self.refresh)
+            # The display name arriving is not a second connection; it has its
+            # own signal so the app doesn't re-toast and re-wire on every one.
+            profile_updated = getattr(self._linkedin, "profile_updated", None)
+            if profile_updated is not None:
+                profile_updated.connect(self.refresh)
 
         self.refresh()
 
@@ -2226,6 +2248,8 @@ class _LinkedInDetail(QWidget):
         busy = bool(li and li.is_busy)
         pro = self._plan_ok()
 
+        expired = bool(connected and li.token_expired)
+
         self._primary.setVisible(not connected)
         self._primary.setEnabled(pro and not busy)
         self._primary.setText("Connect" if pro else "Connect  (Pro)")
@@ -2233,18 +2257,29 @@ class _LinkedInDetail(QWidget):
         self._secret_field.setEnabled(pro and not busy)
         self._save_btn.setVisible(connected)
         self._save_btn.setEnabled(pro and not busy)
+        # It runs the whole sign-in again, so when the token has lapsed it is
+        # the reconnect the status line is asking for -- calling it "Save" left
+        # the one button that fixes the problem looking like it did something
+        # else entirely.
+        self._save_btn.setText("Reconnect" if expired else "Save")
         self._hint.setVisible(not connected)
         self._portal_btn.setVisible(not connected)
         for widget in (self._info, self._jobs_box, self._cv_box,
                        self._session_box, self._routine_btn, self._skill_btn,
                        self._resync_btn, self._disconnect_btn):
             widget.setVisible(connected)
+        # Everything a connected plugin can do is Pro, not just the first
+        # connect: a plan that lapses has to stop the tiers too, or a downgrade
+        # leaves the whole feature running.
+        for widget in (self._jobs_box, self._cv_box, self._session_box,
+                       self._routine_btn, self._skill_btn, self._resync_btn):
+            widget.setEnabled(pro and not busy)
 
         if not connected:
-            self._sub.setText(
+            self._sub.setText(self._error_text or (
                 "Find jobs, score them against your CV and track every "
                 "application \u2014 on a schedule. Needs a LinkedIn app of your own."
-            )
+            ))
             return
 
         self._id_field.setText(li.client_id)
@@ -2269,6 +2304,7 @@ class _LinkedInDetail(QWidget):
 
         session_on = li.tier_on("session")
         self._cookie_field.setVisible(not session_on)
+        self._jsession_field.setVisible(not session_on)
         self._cookie_on.setVisible(not session_on)
         self._cookie_off.setVisible(session_on)
 
@@ -2283,10 +2319,20 @@ class _LinkedInDetail(QWidget):
         who = li.login or "Connected"
         if busy:
             self._sub.setText("Talking to LinkedIn\u2026")
-        elif li.token_expired:
+        elif self._error_text:
+            # Shown here rather than written straight into the label, so the
+            # refresh that follows a failure can't wipe it before it is read.
+            self._sub.setText(self._error_text)
+        elif expired:
             self._sub.setText(
                 "LinkedIn's access token has expired \u2014 reconnect for a new one "
-                "(self-serve apps get no refresh token)."
+                "(self-serve apps get no refresh token). Your job-data, CV and "
+                "session settings are kept."
+            )
+        elif not pro:
+            self._sub.setText(
+                f"{who} \u00b7 tiers on: {tiers} \u2014 plugins need Pro, so the "
+                "controls below are read-only until you upgrade."
             )
         else:
             self._sub.setText(f"{who} \u00b7 tiers on: {tiers}")
@@ -2294,6 +2340,7 @@ class _LinkedInDetail(QWidget):
     # -- actions --------------------------------------------------------------
 
     def _on_primary(self) -> None:
+        self._error_text = ""
         if self._linkedin is not None:
             self._linkedin.start_connect(self._id_field.text(), self._secret_field.text())
 
@@ -2306,6 +2353,7 @@ class _LinkedInDetail(QWidget):
         )
 
     def _on_save_provider(self) -> None:
+        self._error_text = ""
         if self._linkedin is None:
             return
         self._linkedin.set_provider(
@@ -2316,26 +2364,31 @@ class _LinkedInDetail(QWidget):
         self.refresh()
 
     def _on_clear_provider(self) -> None:
+        self._error_text = ""
         if self._linkedin is not None:
             self._linkedin.clear_provider_key()
         self.refresh()
 
     def _on_save_cv(self) -> None:
+        self._error_text = ""
         if self._linkedin is not None:
             self._linkedin.set_resume_path(self._cv_field.text())
         self.refresh()
 
     def _on_enable_session(self) -> None:
+        self._error_text = ""
         li = self._linkedin
         if li is None:
             return
         if not self._confirm("Turn on session reading?", _linkedin_session_warning()):
             return
-        li.set_session_cookie(self._cookie_field.text())
+        li.set_session_cookie(self._cookie_field.text(), self._jsession_field.text())
         self._cookie_field.clear()
+        self._jsession_field.clear()
         self.refresh()
 
     def _on_disable_session(self) -> None:
+        self._error_text = ""
         if self._linkedin is not None:
             self._linkedin.clear_session_cookie()
         self.refresh()
@@ -2358,6 +2411,7 @@ class _LinkedInDetail(QWidget):
             self._linkedin.disconnect()
 
     def _on_resync(self) -> None:
+        self._error_text = ""
         if self._linkedin is None:
             return
         try:
@@ -2366,8 +2420,14 @@ class _LinkedInDetail(QWidget):
             pass
         self.refresh()
 
+    def _on_connected(self) -> None:
+        """A connect or disconnect landed, so the last failure is history."""
+        self._error_text = ""
+        self.refresh()
+
     def _on_error(self, message: str) -> None:
-        self._sub.setText(message)
+        self._error_text = message or ""
+        self.refresh()
 
     def apply_theme(self) -> None:
         pass

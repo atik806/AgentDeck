@@ -1087,7 +1087,7 @@ One card, three independent switches, because they carry very different risk.
 |---|---|---|---|
 | **1 — Official** | LinkedIn OAuth, BYO app | `linkedin_me`, `linkedin_post` | None; fully sanctioned |
 | **2 — Job data** | BYO provider key (Apify actor / JSearch) | `search_jobs`, `job_details` | None to AgentDeck; user pays per call |
-| **3 — Session** *(off by default)* | the member's own `li_at` | `saved_jobs`, `my_applications`, `unread_messages` | LinkedIn UA §8.2 — account restriction |
+| **3 — Session** *(off by default)* | the member's own `li_at` **+ `JSESSIONID`** | `saved_jobs`, `my_applications`, `unread_messages` | LinkedIn UA §8.2 — account restriction |
 
 Tier 1 is implied by connecting. Tier 2 turns on when a provider key is stored.
 **Tier 3 is opt-in behind a confirm dialog that names the risk in plain words**,
@@ -1156,7 +1156,7 @@ Claude's rendered stdio entry is byte-identical to before (regression-tested in
 
 `linkedin_secret.LinkedInSecretStore` — one DPAPI/keyring blob at
 `%APPDATA%\multi-terminal\linkedin.bin`, holding `client_secret`,
-`provider_key`, `li_at`, `access_token` and `token_expires`. Unlike Drive
+`provider_key`, `li_at`, `li_jsession`, `access_token` and `token_expires`. Unlike Drive
 (§18) **nothing is handed to an agent out-of-band**: there is no `claude mcp
 add`, no second plaintext copy, no subprocess. `plugins.json` carries only
 non-secrets (`client_id`, `tiers`, `provider`, `actor`, `resume_path`), and the
@@ -1175,6 +1175,14 @@ Refresh tokens are a partner-program feature. A self-serve app gets a ~60-day
 access token and nothing to renew it with, so the controller exposes
 `token_expired` and the card says "reconnect" rather than silently failing on
 the next call.
+
+**Which makes `start_connect` a path every user takes, not an edge case — so it
+has to be non-destructive.** It merges into the stored `PluginConnection`
+(defaults apply only to keys that aren't there yet). The first cut built a fresh
+one, so every reconnect reset `tiers` to official-only, `provider` to apify and
+wiped `resume_path` — switching off job search and session reading while their
+credentials sat in the vault, once per token lifetime. Regression-tested in
+`test_linkedin_controller.py` §10.
 
 ### Two traps worth knowing
 
@@ -1217,9 +1225,9 @@ exist, which is the argument for a plugin rather than a bespoke "Jobs" panel:
 | `linkedin_secret.py` | The one vault (above). Merge semantics: `None` leaves a field alone, `""` forgets it — so switching a tier off never wipes another tier's credential. |
 | `linkedin_auth.py` | OAuth authorization-code + loopback on **:8977** (fixed; LinkedIn pre-registers redirect URLs). No PKCE is available, so `state` is the whole CSRF defence and a *missing* state is rejected, unlike the Supabase flow. |
 | `linkedin_api.py` | The sanctioned surface only: OIDC `userinfo` + `/rest/posts`. `REST_VERSION` is a maintenance item — a 426 means bump it. |
-| `linkedin_jobs.py` | Tier-2 provider adapters (`apify`, `jsearch`) + a forgiving normaliser: providers disagree about field names far more than about content. Apify has no default actor on purpose — pointing someone's API budget at a guessed slug would be worse than asking. |
-| `linkedin_session.py` | Tier 3. Read-only, throttled, endpoints in one dict, and **unverified against live LinkedIn** — treat a parse failure as "LinkedIn moved it". |
-| `linkedin_store.py` | The pipeline: `mark_seen` returns only genuinely new postings (the dedupe the automation rests on), and statuses move forward only, with `closed` reachable from anywhere. |
+| `linkedin_jobs.py` | Tier-2 provider adapters (`apify`, `jsearch`) + a forgiving normaliser: providers disagree about field names far more than about content. Apify has no default actor on purpose — pointing someone's API budget at a guessed slug would be worse than asking, and for the same reason an empty search raises rather than substituting a default query. Keys travel as `Authorization: Bearer`, never in a URL. `FILTERS` / `unsupported_filters()` say which filters an adapter can really honour, so the server can report the rest instead of dropping them silently. |
+| `linkedin_session.py` | Tier 3. Read-only, throttled, endpoints in one dict, and **unverified against live LinkedIn** — treat a parse failure as "LinkedIn moved it". Sends the *real* `JSESSIONID` as both the cookie and `Csrf-Token`: LinkedIn validates the pair, so the synthetic value this started with could only ever have produced a 401. The parser walks the whole document (normalized+json puts URNs in `elements` and the cards in `included`) and matches jobs and conversations on **separate** arms, tagged by kind — requiring a title of both meant `unread_messages` could never return anything. |
+| `linkedin_store.py` | The pipeline: `mark_seen` returns only genuinely new postings (the dedupe the automation rests on), and statuses move forward only, with `closed` reachable from anywhere. `normalise_id()` is public because it is the *only* place an id is normalised — a caller matching its own raw id against a stored one silently never matches. Every read-modify-write holds a lock file: the MCP server is a separate process from the GUI and both mutate this file, so `os.replace` made each write atomic but nothing made the pair atomic. |
 | `linkedin_controller.py` | Qt bridge, cloned from `gdrive_controller`. Three switches rather than one connection; `SESSION_WARNING` and `JOB_HUNT_SKILL` live here. |
 | `mcp_targets.py` | The stdio branch + `mcp_stdio` capability (above). |
 | `plugin_store.py` | `LINKEDIN = "linkedin"`; `settings` carries `client_id` / `tiers` / `provider` / `actor` / `resume_path`, never a secret. Plus the `ADK_PLUGIN_STORE` test redirect. |
@@ -1241,25 +1249,104 @@ administers) → **Products** tab → request *Sign In with LinkedIn using OpenI
 Connect* and *Share on LinkedIn*, both granted without review → **Auth** tab →
 add `http://localhost:8977/callback` as a redirect URL → paste the client id and
 secret into the card. Tier 2 additionally wants a provider API key (and, for
-Apify, an actor id). Then restart the agent in a pane — there is nothing to
+Apify, an actor id). Tier 3 wants **both** the `li_at` and `JSESSIONID` cookies
+for linkedin.com — LinkedIn checks one against the other, so `li_at` alone is
+refused at the card rather than failing later as an opaque 401. Then restart the agent in a pane — there is nothing to
 authorise, the server is local.
 
 ### Tests
 
-`test_linkedin_store.py` (44), `test_linkedin_mcp.py` (46),
-`test_linkedin_jobs.py` (39 — providers *and* session, stubbed transport),
-`test_linkedin_server.py` (58, including a real subprocess over a real pipe),
-`test_linkedin_controller.py` (57); plus `test_plugin_store.py` §12,
-`test_plugins_panel.py` §11 (`FakeLinkedIn`) and `test_mcp_targets.py` §5.
-All offline. 244 new checks; the full plugin-related suite is green, as is
+`test_linkedin_store.py` (59), `test_linkedin_mcp.py` (46),
+`test_linkedin_jobs.py` (47 — providers *and* session, stubbed transport),
+`test_linkedin_server.py` (81, including a real subprocess over a real pipe),
+`test_linkedin_controller.py` (85); plus `test_plugin_store.py` §12,
+`test_plugins_panel.py` §11/§11b (`FakeLinkedIn`) and `test_mcp_targets.py` §5.
+All offline. 318 checks; the full plugin-related suite is green, as is
 `test_panel.py`.
+
+`test_linkedin_controller.py` shuts each controller down before building the
+next: a `LinkedInController` parents its worker `QThread`s, so letting one be
+collected mid-run tears a live thread down under Qt and segfaults the
+interpreter. Real callers get this right — `terminal_panel` calls `shutdown()`
+on close.
+
+### Review pass — 2026-09-19
+
+A read of the whole plugin after it was built, with probes rather than eyeballs.
+The suites were green throughout; everything below was a gap they didn't cover.
+Grouped by what it would have cost a user.
+
+**Silent data loss**
+
+* *Reconnect wiped the setup.* See "No refresh token" above — the single worst
+  one, because the card tells you to take that path.
+* *Concurrent writes lost rows.* GUI and MCP server are separate processes doing
+  read-modify-write on `linkedin_jobs.json`. A three-writer probe kept 2 of 61
+  rows without a lock; `LinkedInStore._locked()` fixes it (best-effort: it gives
+  up after 2 s and writes anyway, and steals a lock older than 10 s, because a
+  stuck lock must never be worse than the race).
+
+**Things that could never have worked**
+
+* *`unread_messages` always returned `[]`.* The card matcher demanded a
+  title/subject key and conversations have neither.
+* *Session reads dropped the payload.* `_cards` keyed on `elements`, which in
+  normalized+json holds URNs — the entities are in `included`.
+* *The CSRF token was forged.* `Csrf-Token` was a hardcoded placeholder; LinkedIn
+  checks it against the session's real `JSESSIONID`. The card now asks for both
+  cookies, and a 401 with no JSESSIONID stored says exactly that.
+
+**Silence where there should have been a sentence**
+
+* *Sign-in failures were invisible.* `_on_error` wrote the message into the
+  status label and the `busy_changed` refresh that followed overwrote it — a
+  busy port, a rejected sign-in and a 180 s timeout all looked like nothing had
+  happened. The detail page now keeps `_error_text` and renders it in
+  `refresh()`, clearing it when the user tries something else.
+* *A PDF CV was accepted and read as mojibake.* Both the controller (refuses the
+  path) and the server (`_resume` returns a `resume_problem` the agent relays)
+  now check.
+* *An unknown pipeline status listed nothing* rather than saying it wasn't a
+  status; *a filter the provider can't honour* was dropped rather than reported
+  (`ignored_filters` in the search result).
+
+**Arithmetic the digest was built on**
+
+`_t_search` compared raw provider ids against normalised stored ones (so a long
+id could never be reported as new), counted duplicates as finds, and derived
+`already_seen` by subtracting a set length from a list length. All three are
+fixed and pinned in `test_linkedin_server.py` §11.
+
+**Smaller**
+
+Apify key moved out of the query string into a Bearer header; `set_provider`
+writes the vault before `plugins.json` (a failed key write no longer leaves the
+card claiming a provider); the client secret is stored only once LinkedIn has
+accepted it; `profile_updated` replaced a second `connected` emit that
+double-toasted and re-wired; `initialize` answers with a version it implements
+instead of echoing anything; `forget()` returns False for an unknown id;
+re-scoring a job bumps `updated`; `mark_seen([])` no longer rewrites the file;
+`me()["locale"]` reads LinkedIn's dict shape; Pro gating covers the tier
+controls, not just Connect; "Save" reads "Reconnect" once the token has lapsed.
+
+**Left alone, deliberately**
+
+`REDIRECT_URI` is still `http://localhost:8977/callback`. Whether LinkedIn's
+portal accepts a plain-http localhost redirect is the one thing that can't be
+settled without the live portal — and if it doesn't, nothing else in tier 1
+matters. Verify it first.
 
 ### Known caveats
 
+* **The redirect URL is the first thing to verify.** `http://localhost:8977/callback`
+  has to be accepted by LinkedIn's portal; if plain-http localhost is refused,
+  no part of tier 1 works and `CALLBACK_PORT` / `REDIRECT_URI` need revisiting.
 * **Tier 3 is unverified against live LinkedIn.** The voyager endpoints are
   undocumented and this was written without a live session to test against, so
   treat the first real run as the verification step; failures are reported as
-  "LinkedIn changed its internal API" rather than as a crash.
+  "LinkedIn changed its internal API" rather than as a crash. The review pass
+  fixed three things that guaranteed it returned nothing (above), so the first
+  live run is now a real test rather than a foregone failure.
 * **Tier 1 and tier 2 have not been exercised against real credentials** — that
   needs the user's own LinkedIn app and provider key. Every failure path is
   covered offline, the happy path is not.

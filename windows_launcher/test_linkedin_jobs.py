@@ -97,7 +97,10 @@ try:
     check("source is tagged", all(p["source"] == "apify" for p in out))
     args, kwargs = rec.calls[-1]
     check("the actor slug is normalised to ~", "user~actor" in args[1])
-    check("the key goes in the query, not the body", kwargs["params"]["token"] == "tok")
+    check("the key travels as a Bearer header, never in the URL (REGRESSION)",
+          kwargs["headers"]["Authorization"] == "Bearer tok"
+          and "token" not in (kwargs.get("params") or {})
+          and "tok" not in args[1])
     check("remote is passed through", kwargs["json"]["remote"] is True)
     check("the limit is passed through", kwargs["json"]["maxItems"] == 10)
 finally:
@@ -202,10 +205,61 @@ except linkedin_session.SessionError as exc:
 for status, fragment in ((302, "expired"), (401, "expired"), (999, "flagged"),
                          (429, "rate-limiting")):
     try:
-        linkedin_session.saved_jobs("cookie", fetch=_Recorder(_Resp({}, status=status)))
+        linkedin_session.saved_jobs("cookie", jsession="ajax:123",
+                                    fetch=_Recorder(_Resp({}, status=status)))
         check(f"{status} raises", False)
     except linkedin_session.SessionError as exc:
         check(f"{status} -> \"{fragment}\"", fragment in str(exc))
+
+# A rejected read with no JSESSIONID stored names the real cause: LinkedIn
+# validates Csrf-Token against that cookie, so a li_at on its own cannot work.
+try:
+    linkedin_session.saved_jobs("cookie", fetch=_Recorder(_Resp({}, status=401)))
+    check("401 without a JSESSIONID raises", False)
+except linkedin_session.SessionError as exc:
+    check("...and blames the missing JSESSIONID, not the li_at (REGRESSION)",
+          "JSESSIONID" in str(exc))
+
+rec = _Recorder(_Resp({"elements": []}))
+linkedin_session.saved_jobs("li_at_value", jsession="ajax:9876", fetch=rec)
+_, kwargs = rec.calls[-1]
+check("a stored JSESSIONID is sent as the cookie AND the csrf token (REGRESSION)",
+      kwargs["headers"]["Csrf-Token"] == "ajax:9876"
+      and 'JSESSIONID="ajax:9876"' in kwargs["headers"]["Cookie"])
+
+# normalized+json puts URNs in `elements` and the real cards in `included`.
+rec = _Recorder(_Resp({"data": {"elements": ["urn:li:fsd_jobPosting:7777"]},
+                       "included": [{"entityUrn": "urn:li:fsd_jobPosting:7777",
+                                     "title": "Staff Engineer",
+                                     "companyName": "Initech"}]}))
+out = linkedin_session.saved_jobs("cookie", jsession="ajax:1", fetch=rec)
+check("cards in `included` are found, not just `elements` (REGRESSION)",
+      len(out) == 1 and out[0]["id"] == "7777")
+
+# A conversation has no title at all -- requiring one found nothing, ever.
+rec = _Recorder(_Resp({"elements": [
+    {"conversationUrn": "urn:li:msg_conversation:2-abc",
+     "unreadCount": 1,
+     "participants": [{"firstName": "Dana", "lastName": "Recruiter"}],
+     "messages": {"elements": [{"body": {"text": "Are you open to a chat?"}}]}}]}))
+msgs = linkedin_session.unread_messages("cookie", jsession="ajax:1", fetch=rec)
+check("a titleless conversation is still found (REGRESSION)", len(msgs) == 1)
+check("...with who it is from", msgs[0]["from"] == "Dana Recruiter")
+check("...and what they said", "open to a chat" in msgs[0]["preview"])
+
+# ...and the two kinds don't bleed into each other.
+rec = _Recorder(_Resp({"elements": [
+    {"title": "Senior Python Engineer", "companyName": "Acme",
+     "entityUrn": "urn:li:fsd_jobPosting:4011"},
+    {"conversationUrn": "urn:li:msg_conversation:2-abc", "participants": []}]}))
+check("a job read ignores conversations in the same envelope",
+      len(linkedin_session.saved_jobs("c", jsession="a", fetch=rec)) == 1)
+rec = _Recorder(_Resp({"elements": [
+    {"title": "Senior Python Engineer", "companyName": "Acme",
+     "entityUrn": "urn:li:fsd_jobPosting:4011"},
+    {"conversationUrn": "urn:li:msg_conversation:2-abc", "participants": []}]}))
+check("...and a message read ignores jobs",
+      len(linkedin_session.unread_messages("c", jsession="a", fetch=rec)) == 1)
 
 try:
     linkedin_session.saved_jobs("cookie", fetch=_Recorder(_Resp(ValueError("html"), status=200)))

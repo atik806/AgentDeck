@@ -9,10 +9,12 @@ account mirror:
   the user's, and the secret only ever leaves this process to hit LinkedIn's
   own token endpoint.
 * ``provider_key`` -- the tier-2 job-data provider's API key.
-* ``li_at`` -- the member's own LinkedIn session cookie, used only when the
-  user explicitly switches tier 3 on. The most sensitive value AgentDeck ever
-  stores: it *is* the session. It never leaves the machine except in a request
-  to linkedin.com, and ``disconnect`` clears it.
+* ``li_at`` / ``li_jsession`` -- the member's own LinkedIn session cookies,
+  used only when the user explicitly switches tier 3 on. The most sensitive
+  values AgentDeck ever stores: together they *are* the session. LinkedIn's
+  internal API validates ``Csrf-Token`` against the real ``JSESSIONID`` cookie,
+  so both have to be pasted -- a synthetic pair is rejected. Neither leaves the
+  machine except in a request to linkedin.com, and ``disconnect`` clears them.
 * ``access_token`` / ``token_expires`` -- what the tier-1 OAuth flow came back
   with. LinkedIn issues 60-day access tokens and hands out refresh tokens only
   to approved partners, so there is nothing to refresh: when the token expires
@@ -44,7 +46,7 @@ __all__ = ["LinkedInSecretStore", "FIELDS"]
 #: Every key this store understands. Anything else handed to :meth:`save` is
 #: dropped rather than persisted -- a typo must not quietly create a second,
 #: unreadable credential.
-FIELDS = ("client_secret", "provider_key", "li_at",
+FIELDS = ("client_secret", "provider_key", "li_at", "li_jsession",
           "access_token", "token_expires")
 
 

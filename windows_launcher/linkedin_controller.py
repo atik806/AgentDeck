@@ -23,6 +23,7 @@ stay Qt-free. See docs/PLUGINS.md 19.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
@@ -119,6 +120,11 @@ class LinkedInController(QObject):
     error = Signal(str)
     #: A tier was switched on or off; the detail page re-reads state.
     tiers_changed = Signal()
+    #: The member's display name arrived. Its own signal rather than a second
+    #: ``connected``: that one means "a connection just happened", and firing it
+    #: twice per sign-in showed the status-bar toast twice and re-ran the MCP
+    #: wiring for nothing.
+    profile_updated = Signal()
 
     def __init__(self, account=None, config: Optional[dict] = None,
                  parent: Optional[QObject] = None):
@@ -196,7 +202,7 @@ class LinkedInController(QObject):
 
     @property
     def has_session_cookie(self) -> bool:
-        return self._vault.has("li_at")
+        return self._vault.has("li_at") and self._vault.has("li_jsession")
 
     @property
     def token_expires_at(self) -> float:
@@ -214,23 +220,28 @@ class LinkedInController(QObject):
 
     # -- connect / disconnect --------------------------------------------
 
+    #: What a brand-new connection starts with. Only ever applied to keys the
+    #: stored connection doesn't already have -- see :meth:`start_connect`.
+    _DEFAULT_SETTINGS = {"tiers": "official", "provider": "apify",
+                         "actor": "", "resume_path": ""}
+
     def start_connect(self, client_id: str, client_secret: str) -> bool:
         """Run the LinkedIn OAuth sign-in and connect. Returns False (and emits
-        ``error``) without connecting when a field is missing."""
+        ``error``) without connecting when a field is missing.
+
+        This is also the *reconnect* path -- LinkedIn's self-serve tokens last
+        ~60 days and cannot be refreshed, so every user comes back through here
+        eventually. It therefore has to be non-destructive: see ``_done``.
+        """
         if self._busy:
             return False
         cid = (client_id or "").strip()
-        secret = (client_secret or "").strip() or (self._vault.get("client_secret") or "")
+        typed = (client_secret or "").strip()
+        secret = typed or (self._vault.get("client_secret") or "")
         if not cid or not secret:
             self.error.emit(
                 "Paste both the Client ID and the Client Secret from your "
                 "LinkedIn app before connecting."
-            )
-            return False
-        if not self._vault.save(client_secret=secret):
-            self.error.emit(
-                "Couldn't store the client secret securely on this machine, so "
-                "nothing was connected."
             )
             return False
 
@@ -245,15 +256,24 @@ class LinkedInController(QObject):
                 self.error.emit("LinkedIn didn't return an access token.")
                 return
             expires = float((result or {}).get("expires_at") or 0)
-            if not self._vault.save(access_token=token,
+            # The secret is only worth keeping now that LinkedIn has accepted
+            # it: storing it up front left a rejected secret in the vault with
+            # no way to clear it (Disconnect is hidden while disconnected).
+            if not self._vault.save(client_secret=secret, access_token=token,
                                     token_expires=str(expires or "")):
                 self.error.emit("Couldn't store the LinkedIn token securely.")
                 return
-            conn = PluginConnection(
-                LINKEDIN,
-                settings={"client_id": cid, "tiers": "official",
-                          "provider": "apify", "actor": "", "resume_path": ""},
-            )
+            # Reconnecting must not undo the user's setup. Building a fresh
+            # PluginConnection here reset `tiers` to official-only, `provider`
+            # to apify and wiped the CV path -- silently switching off job
+            # search and session reading while their credentials sat in the
+            # vault, every time a token lapsed.
+            conn = self.connection
+            if conn is None:
+                conn = PluginConnection(LINKEDIN, settings={})
+            for key, value in self._DEFAULT_SETTINGS.items():
+                conn.settings.setdefault(key, value)
+            conn.settings["client_id"] = cid
             self._store.put(conn)
             self.ensure_wired()
             self._refresh_login()
@@ -300,14 +320,16 @@ class LinkedInController(QObject):
         if conn is None:
             return False
         name = (provider or "apify").strip().lower()
-        conn.settings["provider"] = name
-        conn.settings["actor"] = (actor or "").strip()
-        self._store.put(conn)
-
         key = (api_key or "").strip()
+        # The credential first: writing the provider and actor to plugins.json
+        # and *then* failing to store the key left the card claiming a provider
+        # the key never reached.
         if key and not self._vault.save(provider_key=key):
             self.error.emit("Couldn't store the provider key securely on this machine.")
             return False
+        conn.settings["provider"] = name
+        conn.settings["actor"] = (actor or "").strip()
+        self._store.put(conn)
 
         tiers = set(self.tiers)
         if key or self.has_provider_key:
@@ -323,8 +345,12 @@ class LinkedInController(QObject):
         tiers.discard("jobs")
         self._set_tiers(tiers)
 
-    def set_session_cookie(self, li_at: str) -> bool:
-        """Switch the session tier on with the member's own ``li_at``.
+    def set_session_cookie(self, li_at: str, jsession: str = "") -> bool:
+        """Switch the session tier on with the member's own session cookies.
+
+        Both halves are needed: LinkedIn's internal API validates the
+        ``Csrf-Token`` header against the real ``JSESSIONID`` cookie of the same
+        session, so ``li_at`` alone is refused.
 
         The caller must have shown :data:`SESSION_WARNING` and got a yes --
         this method does not ask, because the confirm belongs in the UI layer
@@ -334,10 +360,18 @@ class LinkedInController(QObject):
         if conn is None:
             return False
         cookie = (li_at or "").strip().strip('"')
+        csrf = (jsession or "").strip().strip('"')
         if not cookie:
             self.error.emit("Paste the li_at cookie value, or leave the tier off.")
             return False
-        if not self._vault.save(li_at=cookie):
+        if not csrf:
+            self.error.emit(
+                "Paste the JSESSIONID cookie too — LinkedIn checks it against "
+                "li_at and rejects the read without it. Both are in your "
+                "browser's cookies for linkedin.com."
+            )
+            return False
+        if not self._vault.save(li_at=cookie, li_jsession=csrf):
             self.error.emit("Couldn't store the session cookie securely on this machine.")
             return False
         tiers = set(self.tiers)
@@ -346,19 +380,38 @@ class LinkedInController(QObject):
         return True
 
     def clear_session_cookie(self) -> None:
-        """Switch the session tier off and forget the cookie."""
-        self._vault.save(li_at="")
+        """Switch the session tier off and forget both cookies."""
+        self._vault.save(li_at="", li_jsession="")
         tiers = set(self.tiers)
         tiers.discard("session")
         self._set_tiers(tiers)
 
-    def set_resume_path(self, path: str) -> None:
+    def set_resume_path(self, path: str) -> bool:
+        """Point the drafting tool at a CV. Returns False (and emits ``error``)
+        for a file the agent could only read as mojibake -- a .pdf or .docx is
+        a binary, and the old behaviour was to accept it and hand the agent
+        pages of replacement characters."""
         conn = self.connection
         if conn is None:
-            return
-        conn.settings["resume_path"] = (path or "").strip()
+            return False
+        text = (path or "").strip().strip('"')
+        if text:
+            import linkedin_server
+
+            target = Path(text)
+            if target.suffix.lower() not in linkedin_server.RESUME_SUFFIXES:
+                self.error.emit(
+                    f"A {target.suffix} CV can't be read as text. Export it to "
+                    "Markdown or plain text and pick that file instead."
+                )
+                return False
+            if not target.exists():
+                self.error.emit(f"There's no file at {text}.")
+                return False
+        conn.settings["resume_path"] = text
         self._store.put(conn)
         self.tiers_changed.emit()
+        return True
 
     # -- identity ---------------------------------------------------------
 
@@ -380,7 +433,7 @@ class LinkedInController(QObject):
                 return
             conn.login = str((profile or {}).get("name") or "")
             self._store.put(conn)
-            self.connected.emit({})
+            self.profile_updated.emit()
 
         self._run(_do, _done, on_fail=lambda _m: None)
 
