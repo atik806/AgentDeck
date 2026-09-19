@@ -233,7 +233,7 @@ from agentdeck_splash import show_splash  # noqa: E402
 from agents import pretrust_folder, resolve_agent  # noqa: E402
 from config import load_config, save_config  # noqa: E402
 from terminal_panel import TerminalPanel  # noqa: E402
-from version import __version__  # noqa: E402
+from version import APP_ID, __version__  # noqa: E402
 
 #: App mark, shipped beside this file (see assets/).
 _ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
@@ -244,18 +244,33 @@ def _load_icon() -> QIcon:
     return QIcon(str(_ICON)) if _ICON.exists() else QIcon()
 
 
-def _set_app_user_model_id() -> None:
-    """Give Windows an explicit AppUserModelID.
+#: The AppUserModelID this process declares to Windows.
+#:
+#: It must be the id Velopack stamps on the Start-menu / desktop shortcuts it
+#: creates, which is ``"velopack." + <packId>`` -- and the packId is
+#: :data:`version.APP_ID` (see ``packaging/build.py``'s ``vpk pack``).
+#:
+#: Getting this *wrong* is worse than not setting one at all: Windows resolves
+#: the taskbar button's icon through the AppUserModelID, and an id that matches
+#: no shortcut resolves to nothing, so the button falls back to the generic
+#: "application" icon -- the window icon is never consulted. Up to v0.28.0 this
+#: was the invented ``"AgentDeck.Panel"``, which is why an installed AgentDeck
+#: showed a blank white window icon on the taskbar while the very same .exe's
+#: shortcut showed the real mark.
+APP_USER_MODEL_ID = f"velopack.{APP_ID}"
 
-    Without one, a ``pythonw.exe`` process is grouped on the taskbar under the
-    interpreter and shows its generic icon rather than the window's. Harmless
-    everywhere else.
+
+def _set_app_user_model_id() -> None:
+    """Give Windows an explicit AppUserModelID (see :data:`APP_USER_MODEL_ID`).
+
+    Must run before the first window exists. Windows-only -- ``shell32`` has no
+    equivalent elsewhere, and the ``except`` swallows that.
     """
     try:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "AgentDeck.Panel"
+            APP_USER_MODEL_ID
         )
     except Exception:
         pass

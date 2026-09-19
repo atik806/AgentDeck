@@ -64,6 +64,22 @@ def read_version() -> str:
     return m.group(1)
 
 
+def read_app_id() -> str:
+    """The Velopack pack id, from version.APP_ID (same regex trick as above).
+
+    Read rather than hard-coded because the app derives its AppUserModelID from
+    the very same constant (``main.APP_USER_MODEL_ID``). Velopack stamps
+    ``"velopack." + packId`` on every shortcut it creates, and a running window
+    whose id doesn't match one of those shortcuts gets the generic Windows
+    application icon on the taskbar -- so the two must never drift apart.
+    """
+    src = (LAUNCHER / "version.py").read_text(encoding="utf-8")
+    m = re.search(r'APP_ID\s*=\s*"([^"]+)"', src)
+    if not m:
+        fail("could not parse APP_ID from windows_launcher/version.py")
+    return m.group(1)
+
+
 def clean() -> None:
     for d in (REPO / "build", REPO / "dist"):
         if d.exists():
@@ -171,7 +187,7 @@ def vpk_pack(version: str) -> None:
     RELEASES.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["vpk", "pack",
-         "--packId", "AgentDeck",
+         "--packId", read_app_id(),
          "--packVersion", version,
          "--packDir", str(DIST_APP),
          "--mainExe", "AgentDeck.exe",

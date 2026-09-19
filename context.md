@@ -1594,7 +1594,7 @@ Mocha palette, blue→sky primary shape + green accents):
   prompt chevron + green cursor. `logo.svg` is that mark + an "Agent" (light) /
   "Deck" (blue) split wordmark. Wired in `main.py` (`_load_icon` /
   `app.setWindowIcon` / `panel.setWindowIcon`, plus AppUserModelID
-  `AgentDeck.Panel`), shown in-window by `terminal_panel._build_toolbar`
+  `main.APP_USER_MODEL_ID`), shown in-window by `terminal_panel._build_toolbar`
   (mark + wordmark at the far left) and on the setup-wizard start page, and
   painted into the launch splash. `create-desktop-shortcut.bat` points the
   `.lnk` (now `AgentDeck.lnk`) at `assets/icon.ico`.
@@ -1614,6 +1614,31 @@ windows_launcher\.venv\Scripts\python.exe assets\build_icons.py ^
 
 The `.ico` is hand-assembled with 16/24/32/48/64/128/256 PNG frames (Qt's writer
 only emits one frame).
+
+### The taskbar button's icon is the AppUserModelID's, not the window's
+
+Windows 11 paints a taskbar button from the *application identity* it resolves
+from the window's AppUserModelID — the shortcut's / exe's icon. `setWindowIcon`
+does **not** feed it. An id that matches no known shortcut resolves to nothing
+and the button falls back to the generic white "application" icon, no matter how
+correct the window icon and the exe's embedded icon are.
+
+That is the v0.28.0 bug: `main.py` declared an invented `"AgentDeck.Panel"`, so
+an installed AgentDeck showed a blank window glyph on the taskbar while its own
+Start-menu shortcut showed the real mark. Measured on a live install:
+
+| process AppUserModelID | taskbar button shows |
+|---|---|
+| `AgentDeck.Panel` (matches nothing) | generic application icon |
+| `velopack.AgentDeck` (Velopack's shortcut id) | the app's own icon |
+| none at all | the *interpreter's* icon under `pythonw.exe` |
+
+Velopack stamps `"velopack." + <packId>` on every shortcut it creates, so
+`main.APP_USER_MODEL_ID` is `f"velopack.{version.APP_ID}"` and
+`packaging/build.py` reads `--packId` out of the same `version.APP_ID`
+(`read_app_id()`) — the two can no longer drift. `test_app_user_model_id.py`
+pins both ends. Read a shortcut's real id back with its `IPropertyStore`,
+`PKEY_AppUserModel_ID` = `{9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3}, 5`.
 
 ## Packaging / releases (2026-08-29)
 

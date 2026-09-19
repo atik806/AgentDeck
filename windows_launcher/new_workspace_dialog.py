@@ -89,7 +89,8 @@ class NewWorkspaceDialog(QDialog):
             QComboBox:focus, QLineEdit:focus, QSpinBox:focus {{
                 border-color: {_BLUE()};
             }}
-            QComboBox::drop-down {{ border: none; width: 18px; }}
+            /* No ::drop-down / ::down-arrow rules -- styling either suppresses Qt's
+               native chevron. See docs/THEMING.md, "QSS traps". */
             QComboBox QAbstractItemView {{
                 background: {theme.color('menu_bg')}; color: {_TEXT()};
                 border: 1px solid {theme.color('menu_border')};

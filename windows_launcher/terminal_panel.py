@@ -431,12 +431,8 @@ class TerminalPanel(QMainWindow):
             border-radius: 6px; padding: 4px 8px; font-size: 11px; min-height: 15px;
         }}
         QToolBar QComboBox:hover {{ border-color: {t('border_hover')}; }}
-        QToolBar QComboBox::drop-down {{ border: none; width: 16px; }}
-        QToolBar QComboBox::down-arrow {{
-            image: none; width: 0; height: 0; margin-right: 7px;
-            border-left: 4px solid transparent; border-right: 4px solid transparent;
-            border-top: 5px solid {t('text_muted')};
-        }}
+        /* No ::drop-down / ::down-arrow rules -- styling either suppresses Qt's
+           native chevron. See docs/THEMING.md, "QSS traps". */
         QComboBox QAbstractItemView {{
             color: {t('text')}; background: {t('menu_bg')}; border: 1px solid {t('menu_border')};
             border-radius: 6px; padding: 3px; outline: none;
@@ -595,8 +591,34 @@ class TerminalPanel(QMainWindow):
         )
 
     def _apply_window_chrome(self) -> None:
+        """The window ground, plus the app's message boxes.
+
+        Every ``QMessageBox`` in the app is parented to this window or to a
+        panel inside it, and a stylesheet cascades down the widget tree -- so
+        these rules reach all of them without touching a single call site.
+        Without them Qt draws the raw platform dialog: a white box sitting in a
+        dark app, with flat buttons whose labels wash out to near-invisible
+        grey. Re-applied on every theme and scheme change (see
+        ``_on_theme_changed``).
+        """
+        t = theme.color
         self.setStyleSheet(
             f"QMainWindow {{ background: {theme.surface('window_bg')}; }}"
+            f"""
+            QMessageBox {{ background: {t('card_bg')}; }}
+            QMessageBox QLabel {{ color: {t('dialog_text')}; font-size: 12px; }}
+            QMessageBox QPushButton {{
+                background: {t('card_raised')}; color: {t('dialog_text')};
+                border: 1px solid {t('card_border')}; border-radius: 7px;
+                padding: 7px 20px; font-size: 12px; min-width: 76px;
+            }}
+            QMessageBox QPushButton:hover {{ border-color: {t('accent')}; }}
+            QMessageBox QPushButton:focus {{ outline: none; border-color: {t('accent')}; }}
+            QMessageBox QPushButton:default {{
+                background: {t('accent')}; color: {t('on_accent')};
+                border-color: {t('accent')}; font-weight: 700;
+            }}
+            """
         )
 
     def _apply_glass(self) -> None:

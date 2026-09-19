@@ -185,6 +185,31 @@ dissolving into the same flat sheet.
 
 ---
 
+## QSS traps
+
+**Never style `QComboBox::drop-down` or `::down-arrow`.** Touching either
+subcontrol makes Qt stop painting the native chevron, and a combo with no
+arrow reads as a text field — which is exactly what every picker in Settings,
+the handoff dialog, the new-workspace dialog, Routines, Skills and the toolbar
+looked like until 2026-09-19. The usual web workaround (a zero-sized box with
+transparent left/right borders and a coloured top border) does **not** port:
+Qt draws borders as plain rectangles rather than mitring them, so it paints a
+short bar. Style the `QComboBox` itself — background, border, radius, padding,
+`:hover`, `:focus`, `:disabled` — and leave the arrow to the platform style,
+which already follows the palette in both modes.
+
+**A `QSlider` under a stylesheet ignores `setTickPosition`.** Ticks are drawn
+by the base style, and `QStyleSheetStyle` does not forward them, so the call
+is silently inert — don't add one expecting marks to appear.
+
+**A styled slider handle needs vertical room.** QSS sizes the handle from the
+groove height plus the handle's negative margins, but the slider's own
+`sizeHint` is shorter than that sum, so the handle renders as a clipped pill.
+Give the widget a `min-height` (the Settings panel uses 20px) if you want a
+round one.
+
+---
+
 ## What is deliberately not themed
 
 The **front door** stays amber, by design — `setup_wizard.py`,
