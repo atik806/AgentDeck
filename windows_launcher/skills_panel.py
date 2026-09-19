@@ -148,7 +148,8 @@ QComboBox#improveAgent {{
     border: 1px solid {t('border')}; border-radius: 7px; padding: 6px 8px; font-size: 12px;
 }}
 QComboBox#improveAgent:focus {{ border-color: {t('accent')}; }}
-QComboBox#improveAgent::drop-down {{ border: none; width: 18px; }}
+/* No ::drop-down / ::down-arrow rules -- styling either suppresses Qt's
+   native chevron. See docs/THEMING.md, "QSS traps". */
 QComboBox QAbstractItemView {{
     background: {t('menu_bg')}; color: {t('text')};
     border: 1px solid {t('menu_border')};

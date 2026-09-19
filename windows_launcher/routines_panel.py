@@ -162,7 +162,8 @@ QComboBox, QLineEdit#customAgent, QTimeEdit {{
     padding: 6px 8px; font-size: 12px;
 }}
 QComboBox:focus, QLineEdit:focus, QTimeEdit:focus {{ border-color: {t('accent')}; }}
-QComboBox::drop-down {{ border: none; width: 18px; }}
+/* No ::drop-down / ::down-arrow rules -- styling either suppresses Qt's
+   native chevron. See docs/THEMING.md, "QSS traps". */
 QComboBox QAbstractItemView {{
     background: {t('menu_bg')}; color: {t('text')};
     border: 1px solid {t('menu_border')};

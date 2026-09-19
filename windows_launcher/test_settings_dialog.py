@@ -6,6 +6,7 @@ now hosts the "Check for updates" button (moved off the toolbar). Run:
 
 import os
 import sys
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,6 +19,17 @@ from settings_dialog import SettingsDialog
 
 app = QApplication(sys.argv)
 theme.init({})
+
+
+def spin(ms):
+    """Run the event loop for ``ms`` -- a debounced commit is a QTimer, and a
+    script that never returns to the loop would never see it fire."""
+    end = time.monotonic() + ms / 1000.0
+    while time.monotonic() < end:
+        app.processEvents()
+        time.sleep(0.005)
+    app.processEvents()
+
 
 _passed = 0
 _failed = 0
@@ -221,7 +233,9 @@ check("style combo lists every glass style",
 check("starts on the stored style", d._style_combo.currentData() == "solid")
 check("opacity + terminal controls are disabled in the solid style",
       not d._opacity_row.isEnabled() and not d._term_glass.isEnabled())
-check("no hint while solid", d._style_hint.isHidden())
+check("solid says where opacity applies rather than going blank",
+      not d._style_hint.isHidden()
+      and "Glass" in d._style_hint.text())
 
 d._style_combo.setCurrentIndex(d._style_combo.findData("acrylic"))
 check("picking a style writes config", c["window_style"] == "acrylic")
@@ -245,9 +259,20 @@ d._term_glass.setChecked(True)
 check("the terminal checkbox writes config", c["terminal_translucent"] is True)
 check("the terminal checkbox emits", len(seen_glass) == 3)
 
+# A keyboard, wheel or groove-click change never reaches sliderReleased -- it
+# used to move the label and save nothing at all.
+before = len(seen_glass)
+d._opacity.setValue(77)
+check("a release-less change holds off writing", c["window_opacity"] != 77)
+spin(300)
+check("...and commits once the quiet period is up", c["window_opacity"] == 77)
+check("...emitting exactly once", len(seen_glass) == before + 1)
+
 d._style_combo.setCurrentIndex(d._style_combo.findData("solid"))
 check("back to solid disables the controls again",
       not d._opacity_row.isEnabled() and not d._term_glass.isEnabled())
+check("back to solid restores the solid hint",
+      "Glass" in d._style_hint.text())
 
 # Building a panel from a stored glass config must not fire a spurious change.
 c2 = new_cfg()

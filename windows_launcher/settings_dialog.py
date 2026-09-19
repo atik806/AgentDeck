@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -69,6 +69,11 @@ _CATEGORIES = [
     ("Agents", "_build_agents_page"),
     ("Voice input", "_build_voice_page"),
 ]
+
+#: Every picker on a settings page is capped to this rather than stretching to
+#: the page's full width -- a three-item enum spanning the whole panel reads as
+#: a text field someone forgot to fill in, not as a choice.
+_COMBO_WIDTH = 280
 
 
 class SettingsPanel(QWidget):
@@ -246,6 +251,7 @@ class SettingsPanel(QWidget):
         # Connect after the initial index is set, so building the panel doesn't
         # fire a spurious change (writing config, emitting scheme_changed).
         self._scheme_combo.currentIndexChanged.connect(self._on_scheme_pick)
+        self._scheme_combo.setMaximumWidth(_COMBO_WIDTH)
         outer.addWidget(self._scheme_combo)
         self._scheme_hint = QLabel("")
         self._scheme_hint.setObjectName("hint")
@@ -263,10 +269,16 @@ class SettingsPanel(QWidget):
         cur_style = str(self._config.get("window_style", "solid") or "solid").lower()
         wi = self._style_combo.findData(cur_style)
         self._style_combo.setCurrentIndex(wi if wi >= 0 else 0)
+        self._style_combo.setMaximumWidth(_COMBO_WIDTH)
         outer.addWidget(self._style_combo)
         self._style_hint = QLabel("")
         self._style_hint.setObjectName("hint")
         self._style_hint.setWordWrap(True)
+        # Always on screen -- every style has something to say, so the label
+        # never collapses and the controls below it never jump. It is sized to
+        # its text, with no reserved height: padding out to the tallest
+        # possible hint left a band of dead space under the one-line ones.
+        self._style_hint.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         outer.addWidget(self._style_hint)
 
         self._opacity_lo, self._opacity_hi = CONFIG_RANGES.get("window_opacity", (60, 100))
@@ -274,20 +286,32 @@ class SettingsPanel(QWidget):
         op_row = QHBoxLayout(self._opacity_row)
         op_row.setContentsMargins(0, 6, 0, 0)
         op_row.setSpacing(8)
-        op_row.addWidget(QLabel("Opacity"))
+        op_label = QLabel("Opacity")
+        op_row.addWidget(op_label)
         self._opacity = QSlider(Qt.Horizontal)
         self._opacity.setRange(self._opacity_lo, self._opacity_hi)
         self._opacity.setValue(max(self._opacity_lo, min(
             self._opacity_hi,
             int(self._config.get("window_opacity", theme.DEFAULT_OPACITY) or theme.DEFAULT_OPACITY),
         )))
+        # Bounded, not stretched: across the full page width a single percent
+        # was a 20px drag, which is far finer control than a 60-100 range wants.
         self._opacity.setMinimumWidth(160)
-        op_row.addWidget(self._opacity, 1)
+        self._opacity.setMaximumWidth(200)
+        self._opacity.setSingleStep(1)
+        self._opacity.setPageStep(5)
+        # The only label it has is the QLabel beside it -- say so, so a screen
+        # reader announces more than "slider, 85".
+        self._opacity.setAccessibleName("Window opacity")
+        self._opacity.setToolTip("How much of the desktop shows through the window.")
+        op_label.setBuddy(self._opacity)
+        op_row.addWidget(self._opacity)
         self._opacity_value = QLabel()
         self._opacity_value.setObjectName("fontValue")
         self._opacity_value.setMinimumWidth(42)
         self._opacity_value.setAlignment(Qt.AlignCenter)
         op_row.addWidget(self._opacity_value)
+        op_row.addStretch(1)
         outer.addWidget(self._opacity_row)
 
         self._term_glass = self._check(
@@ -300,7 +324,14 @@ class SettingsPanel(QWidget):
         self._style_combo.currentIndexChanged.connect(self._on_style_pick)
         # valueChanged tracks the drag for the live label; the config write and
         # the repaint wait for the release, so dragging is not a write storm.
-        self._opacity.valueChanged.connect(self._sync_opacity_label)
+        # A keyboard, wheel or groove-click change has no release to wait for,
+        # so it commits after a short quiet period instead -- see
+        # _on_opacity_change.
+        self._opacity_debounce = QTimer(self)
+        self._opacity_debounce.setSingleShot(True)
+        self._opacity_debounce.setInterval(140)
+        self._opacity_debounce.timeout.connect(self._on_opacity_commit)
+        self._opacity.valueChanged.connect(self._on_opacity_change)
         self._opacity.sliderReleased.connect(self._on_opacity_commit)
         self._term_glass.toggled.connect(self._on_term_glass_toggle)
         self._sync_opacity_label()
@@ -322,6 +353,7 @@ class SettingsPanel(QWidget):
             fi = self._font_combo.findData(cur_fam)
         self._font_combo.setCurrentIndex(fi if fi >= 0 else 0)
         self._font_combo.currentIndexChanged.connect(self._on_font_family_pick)
+        self._font_combo.setMaximumWidth(_COMBO_WIDTH)
         outer.addWidget(self._font_combo)
         ffhint = QLabel("Monospace fonts only — a variable-width face misaligns every column.")
         ffhint.setObjectName("hint")
@@ -905,20 +937,25 @@ class SettingsPanel(QWidget):
     def _sync_style_controls(self) -> None:
         """Enable/disable the opacity + terminal controls and set the hint.
 
-        The hint is the honest bit: on anything but Windows 11 22H2+ there is
-        no DWM backdrop, and the fallback fades the whole window (text and
-        all), which is a different look. Saying so beats the user deciding the
-        feature is broken.
+        Every style gets a hint, Solid included. Solid disables the opacity
+        slider and the terminal opt-in, and a greyed slider still reading
+        "85%" with nothing to explain it just looks broken, so the hint says
+        which styles those two controls belong to.
+
+        For the glass styles the hint is the honest bit: on anything but
+        Windows 11 22H2+ there is no DWM backdrop, and the fallback fades the
+        whole window (text and all), which is a different look. Saying so beats
+        the user deciding the feature is broken.
         """
         key = self._style_combo.currentData() or "solid"
         glass = key != "solid"
         self._opacity_row.setEnabled(glass)
         self._term_glass.setEnabled(glass)
         if not glass:
-            self._style_hint.setText("")
-            self._style_hint.setVisible(False)
-            return
-        if window_glass.supported():
+            self._style_hint.setText(
+                "Opacity and translucent panes apply to Glass and Mica."
+            )
+        elif window_glass.supported():
             self._style_hint.setText(
                 "The desktop blurs behind AgentDeck."
                 if key == "acrylic" else
@@ -937,7 +974,22 @@ class SettingsPanel(QWidget):
         self._sync_style_controls()
         self.glass_changed.emit()
 
+    def _on_opacity_change(self, _value: int) -> None:
+        """The slider moved -- by drag, arrow key, wheel or a groove click.
+
+        The label follows every step. The config write and the app-wide
+        repaint do not: a drag waits for ``sliderReleased``, and every other
+        way of moving it (which has no release to wait for, and used to move
+        the label while saving nothing at all) waits out a short quiet period
+        instead, so holding an arrow key down costs one repaint rather than
+        one per auto-repeat tick.
+        """
+        self._sync_opacity_label()
+        if not self._opacity.isSliderDown():
+            self._opacity_debounce.start()
+
     def _on_opacity_commit(self) -> None:
+        self._opacity_debounce.stop()
         self._set("window_opacity", int(self._opacity.value()))
         self.glass_changed.emit()
 
@@ -1012,13 +1064,53 @@ class SettingsPanel(QWidget):
             QPushButton#stepper:disabled {{ color: {t('text_muted')}; border-color: {t('card_border')}; }}
             QCheckBox, QRadioButton {{ color: {t('dialog_text')}; font-size: 12px; spacing: 8px; }}
             QCheckBox::indicator, QRadioButton::indicator {{ width: 15px; height: 15px; }}
+            QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled {{
+                color: {t('text_muted')};
+            }}
+            /* Only this one state: the native indicator paints a disabled
+               unchecked box so faintly that it vanishes on a light card,
+               leaving a label with nothing beside it. Every other state keeps
+               native rendering -- styling the checked ones would replace the
+               tick with an empty box. */
+            QCheckBox::indicator:disabled:unchecked {{
+                border: 1px solid {t('card_border')}; border-radius: 3px;
+                background: transparent;
+            }}
+            /* Tall enough that the handle is a circle rather than a
+               clipped pill -- QSS sizes the handle off the groove plus its
+               negative margins, and the slider's own sizeHint was shorter. */
+            QSlider:horizontal {{ min-height: 20px; }}
+            QSlider::groove:horizontal {{
+                background: {t('card_raised')}; border: 1px solid {t('card_border')};
+                height: 5px; border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {blue}; border: 1px solid {blue};
+                height: 5px; border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {t('card_bg')}; border: 2px solid {blue};
+                width: 13px; height: 13px; margin: -5px 0; border-radius: 9px;
+            }}
+            QSlider::handle:horizontal:hover {{ background: {blue}; }}
+            QSlider::sub-page:horizontal:disabled {{
+                background: {t('card_border')}; border-color: {t('card_border')};
+            }}
+            QSlider::handle:horizontal:disabled {{
+                background: {t('card_raised')}; border-color: {t('card_border')};
+            }}
             QComboBox {{
                 background: {t('card_raised')}; color: {t('dialog_text')};
                 border: 1px solid {t('card_border')}; border-radius: 7px;
                 padding: 6px 10px; font-size: 12px;
             }}
+            QComboBox:hover {{ border-color: {t('border_hover')}; }}
             QComboBox:focus {{ border-color: {blue}; }}
-            QComboBox::drop-down {{ border: none; width: 18px; }}
+            QComboBox:disabled {{
+                color: {t('text_muted')}; border-color: {t('card_border')};
+            }}
+            /* No ::drop-down / ::down-arrow rules -- styling either suppresses Qt's
+               native chevron. See docs/THEMING.md, "QSS traps". */
             QComboBox QAbstractItemView {{
                 background: {t('menu_bg')}; color: {t('dialog_text')};
                 border: 1px solid {t('menu_border')};
