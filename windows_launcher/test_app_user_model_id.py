@@ -40,16 +40,26 @@ check(
     main.APP_USER_MODEL_ID not in ("AgentDeck.Panel", "multi-terminal.panel"),
 )
 
-print("[2] the packer reads the same constant")
-build_src = (Path(__file__).resolve().parent.parent / "packaging" / "build.py").read_text(
-    encoding="utf-8"
-)
-check('--packId is not hard-coded', '"--packId", "' not in build_src)
-check('--packId comes from read_app_id()', '"--packId", read_app_id()' in build_src)
-check(
-    "read_app_id() parses version.APP_ID",
-    re.search(r"def read_app_id\(\).*?re\.search\(.*?APP_ID", build_src, re.S) is not None,
-)
+print("[2] every packer reads the same constant")
+_REPO = Path(__file__).resolve().parent.parent
+
+# Both channels are packed under this one id: it is the update-feed identity
+# shared by releases.win.json and releases.linux.json, and on Windows it is
+# also what the AppUserModelID above is built from. Neither packer may spell
+# it out -- a hard-coded copy is how the two come apart at the next rename.
+for _label, _rel in (
+    ("windows", Path("packaging") / "build.py"),
+    ("linux", Path("linux-v4") / "packaging" / "build_linux.py"),
+):
+    _src = (_REPO / _rel).read_text(encoding="utf-8")
+    check(f"{_label}: --packId is not hard-coded",
+          '"--packId", "' not in _src)
+    check(f"{_label}: --packId comes from read_app_id()",
+          '"--packId", read_app_id()' in _src)
+    check(
+        f"{_label}: read_app_id() parses version.APP_ID",
+        re.search(r"def read_app_id\(\).*?re\.search\(.*?APP_ID", _src, re.S) is not None,
+    )
 
 print("[3] the icon the window falls back to is really shipped")
 check("assets/icon.ico exists", main._ICON.exists())
