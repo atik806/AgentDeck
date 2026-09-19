@@ -14,6 +14,7 @@ from plugin_store import (
     GITLAB,
     LINEAR,
     SUPABASE,
+    LINKEDIN,
     PluginConnection,
     PluginStore,
     normalise_capabilities,
@@ -238,6 +239,39 @@ with tempfile.TemporaryDirectory() as d:
           not store.is_connected(GDRIVE)
           and all(store.is_connected(p) for p in
                   (GITHUB, VERCEL, JIRA, GITLAB, LINEAR, SUPABASE)))
+
+
+# ---------------------------------------------------------------------------
+print("[12] LinkedIn -- provider key + the three-tier settings row")
+with tempfile.TemporaryDirectory() as d:
+    store = PluginStore(Path(d) / "plugins.json")
+    conn = PluginConnection(
+        LINKEDIN,
+        settings={"client_id": "client-abc", "tiers": "official,jobs",
+                  "provider": "apify", "actor": "user~actor",
+                  "resume_path": r"C:\cv.md"},
+    )
+    store.put(conn)
+
+    back = store.get(LINKEDIN)
+    check("round-trips", back is not None)
+    check("client id survives", back.settings["client_id"] == "client-abc")
+    check("tiers survive as a csv string", back.settings["tiers"] == "official,jobs")
+    check("provider + actor survive",
+          back.settings["provider"] == "apify" and back.settings["actor"] == "user~actor")
+
+    raw = (Path(d) / "plugins.json").read_text(encoding="utf-8")
+    check("no secret-shaped field is persisted (REGRESSION)",
+          not any(word in raw for word in ("client_secret", "provider_key",
+                                           "li_at", "access_token")))
+
+    store.update(LINKEDIN, settings={**back.settings, "tiers": "official"})
+    check("a tier can be switched off in place",
+          store.get(LINKEDIN).settings["tiers"] == "official")
+
+    store.remove(LINKEDIN)
+    check("removed", store.get(LINKEDIN) is None)
+
 
 
 print()

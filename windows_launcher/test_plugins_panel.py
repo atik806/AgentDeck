@@ -893,6 +893,223 @@ check("Free plan labels Connect (Pro) and disables it",
       and not gdp_free._gdrive_detail._primary.isEnabled())
 
 
+# ---------------------------------------------------------------------------
+print("[11] LinkedIn card + detail (three tiers, one of them risky)")
+
+from plugin_store import LINKEDIN
+
+
+class FakeLinkedIn(QObject):
+    connected = Signal(dict)
+    disconnected = Signal()
+    busy_changed = Signal(bool)
+    error = Signal(str)
+    tiers_changed = Signal()
+
+    def __init__(self, connected=False, tiers=("official",)):
+        super().__init__()
+        self._connected = connected
+        self._tiers = list(tiers)
+        self.is_busy = False
+        self.login = "Jane Dev" if connected else ""
+        self.client_id = "client-abc" if connected else ""
+        self.provider = "apify"
+        self.actor = ""
+        self.resume_path = ""
+        self.has_secret = connected
+        self.has_provider_key = False
+        self.has_session_cookie = False
+        self.token_expired = False
+        self.started_with = None
+        self.provider_set = None
+        self.cookie_set = None
+        self.cleared_cookie = False
+        self.rewired = False
+
+    @property
+    def is_connected(self):
+        return self._connected
+
+    @property
+    def tiers(self):
+        return list(self._tiers)
+
+    def tier_on(self, tier):
+        return tier in self._tiers
+
+    def start_connect(self, client_id, client_secret):
+        cid = (client_id or "").strip()
+        secret = (client_secret or "").strip()
+        if not cid or not secret:
+            self.error.emit("Paste both the Client ID and the Client Secret.")
+            return False
+        self.started_with = (cid, secret)
+        self.client_id = cid
+        self.has_secret = True
+        self._connected = True
+        self._tiers = ["official"]
+        self.connected.emit({})
+        return True
+
+    def set_provider(self, provider, api_key="", actor=""):
+        self.provider_set = (provider, api_key, actor)
+        self.provider = provider
+        self.actor = actor
+        if api_key:
+            self.has_provider_key = True
+            if "jobs" not in self._tiers:
+                self._tiers.append("jobs")
+        self.tiers_changed.emit()
+        return True
+
+    def clear_provider_key(self):
+        self.has_provider_key = False
+        self._tiers = [t for t in self._tiers if t != "jobs"]
+        self.tiers_changed.emit()
+
+    def set_session_cookie(self, li_at):
+        if not (li_at or "").strip():
+            self.error.emit("Paste the li_at cookie value.")
+            return False
+        self.cookie_set = li_at
+        self.has_session_cookie = True
+        if "session" not in self._tiers:
+            self._tiers.append("session")
+        self.tiers_changed.emit()
+        return True
+
+    def clear_session_cookie(self):
+        self.cleared_cookie = True
+        self.has_session_cookie = False
+        self._tiers = [t for t in self._tiers if t != "session"]
+        self.tiers_changed.emit()
+
+    def set_resume_path(self, path):
+        self.resume_path = path
+        self.tiers_changed.emit()
+
+    def ensure_wired(self, folder=None, agent_command=None, **kw):
+        self.rewired = True
+        return True
+
+    def disconnect(self):
+        self._connected = False
+        self._tiers = []
+        self.has_secret = False
+        self.disconnected.emit()
+
+
+# -- tolerates a missing controller
+check("panel tolerates linkedin=None",
+      PluginsPanel(github=FakeGitHub(), linkedin=None, config={}) is not None)
+
+fli = FakeLinkedIn()
+lip = PluginsPanel(github=FakeGitHub(), linkedin=fli, config={})
+li_card = [c for c in lip._cards if c.key == "linkedin"][0]
+check("LinkedIn card exists", li_card is not None)
+check("card is interactive (live)", li_card.property("interactive") == "true")
+check("card starts NOT ENABLED", "NOT ENABLED" in li_card._pill.text())
+
+lip._open_detail("linkedin")
+check("opens stack index 8", lip._stack.currentIndex() == 8)
+lid = lip._linkedin_detail
+
+# -- disconnected: the setup hint is what's on screen
+check("developer-portal link shows while disconnected", lid._portal_btn.isVisibleTo(lid))
+check("the redirect URL is spelled out", "8977" in lid._hint.text())
+check("job data is hidden until connected", not lid._jobs_box.isVisibleTo(lid))
+check("session box is hidden until connected", not lid._session_box.isVisibleTo(lid))
+
+# -- connect refuses a half-filled form
+lid._id_field.setText("")
+lid._secret_field.setText("nope")
+lid._on_primary()
+check("connect with no id is refused", not fli.is_connected)
+check("...and the card says why", "Client ID" in lid._sub.text())
+
+lid._id_field.setText("client-abc")
+lid._secret_field.setText("s3cret")
+lid._on_primary()
+check("connect with both fields works", fli.is_connected)
+check("the controller got both", fli.started_with == ("client-abc", "s3cret"))
+check("card flips to ENABLED", "ENABLED" in li_card._pill.text()
+      and "NOT" not in li_card._pill.text())
+check("the secret box never shows the stored secret (REGRESSION)",
+      lid._secret_field.text() == "" and "stored" in lid._secret_field.placeholderText())
+check("no OAuth-authorise instructions -- the server is local (REGRESSION)",
+      "authorise" not in lid._step.text() or "Nothing to authorise" in lid._step.text())
+check("...it says to restart the agent instead", "restart" in lid._step.text().lower())
+
+# -- job data
+check("job data shows once connected", lid._jobs_box.isVisibleTo(lid))
+check("the actor field shows for apify", lid._actor_field.isVisibleTo(lid))
+lid._key_field.setText("rapid-key")
+lid._on_save_provider()
+check("saving the key reaches the controller", fli.provider_set[1] == "rapid-key")
+check("the jobs tier is on", fli.tier_on("jobs"))
+check("the key box is cleared after saving (REGRESSION)", lid._key_field.text() == "")
+lid._on_clear_provider()
+check("turning it off drops the tier", not fli.tier_on("jobs"))
+
+# -- session: the confirm is mandatory
+lid._confirm = lambda title, body: False        # the user says no
+lid._cookie_field.setText("AQEDA-cookie")
+lid._on_enable_session()
+check("declining the warning leaves the tier OFF (REGRESSION)", not fli.tier_on("session"))
+check("...and the cookie is never handed over", fli.cookie_set is None)
+
+_asked = {}
+def _yes(title, body):
+    _asked["title"], _asked["body"] = title, body
+    return True
+
+lid._confirm = _yes
+lid._on_enable_session()
+check("accepting turns the tier on", fli.tier_on("session"))
+check("the cookie reached the controller", fli.cookie_set == "AQEDA-cookie")
+check("the cookie box is cleared afterwards", lid._cookie_field.text() == "")
+check("the warning names the User Agreement", "User Agreement" in _asked["body"])
+check("...and the actual consequence", "restricted" in _asked["body"])
+lid._on_disable_session()
+check("turning it off clears the cookie", fli.cleared_cookie and not fli.tier_on("session"))
+
+# -- the routine offer
+_routines = []
+lip.routine_requested.connect(_routines.append)
+lid._on_create_routine()
+check("the panel re-emits the routine request", len(_routines) == 1)
+check("it is a weekday-morning schedule",
+      _routines[0]["days"] == [0, 1, 2, 3, 4] and _routines[0]["time"] == "09:00")
+check("the prompt tells the agent NOT to apply (REGRESSION)",
+      "Do not apply" in _routines[0]["prompt"])
+
+_skills = []
+lip.skill_requested.connect(_skills.append)
+lid._on_create_skill()
+check("the panel re-emits the skill request", len(_skills) == 1)
+check("it is a SKILL.md with frontmatter", _skills[0].startswith("---")
+      and "name: job-hunt" in _skills[0])
+check("the skill repeats the no-apply rule (REGRESSION)",
+      "cannot submit applications" in _skills[0])
+
+# -- CV + re-sync + disconnect
+lid._cv_field.setText(r"C:\cv.md")
+lid._on_save_cv()
+check("the CV path reaches the controller", fli.resume_path == r"C:\cv.md")
+lid._on_resync()
+check("re-sync rewires", fli.rewired)
+lid._on_disconnect()
+check("disconnect flips the card back", "NOT ENABLED" in li_card._pill.text())
+
+# -- Free plan
+lip_free = PluginsPanel(github=FakeGitHub(), linkedin=FakeLinkedIn(),
+                        account=_FreeAccount(), config={})
+check("Free plan labels Connect (Pro) and disables it",
+      "Pro" in lip_free._linkedin_detail._primary.text()
+      and not lip_free._linkedin_detail._primary.isEnabled())
+
+
+
 print()
 print(f"{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)

@@ -29,6 +29,7 @@ __all__ = [
     "LINEAR",
     "SUPABASE",
     "GDRIVE",
+    "LINKEDIN",
     "CAPABILITIES",
     "CAPABILITY_LABELS",
     "DEFAULT_CAPABILITIES",
@@ -78,6 +79,16 @@ SUPABASE = "supabase"
 #: ``settings``, the secret in a DPAPI-encrypted vault (``gdrive_secret``) and
 #: never touches ``plugins.json``. Claude Code only -- see docs/PLUGINS.md 18.
 GDRIVE = "gdrive"
+
+#: LinkedIn -- job hunting. The only plugin whose MCP server is **ours**: there
+#: is no first-party LinkedIn MCP endpoint and no self-serve job-search API, so
+#: ``linkedin_server`` runs locally over stdio and this row records which of its
+#: three tiers the user switched on (``tiers`` in ``settings``: ``official`` =
+#: LinkedIn's own OAuth, ``jobs`` = a job-data provider key, ``session`` = the
+#: member's own ``li_at`` cookie, off by default). The client id lives in
+#: ``settings``; the client secret, provider key and cookie live in
+#: ``linkedin_secret`` and never touch ``plugins.json``. See docs/PLUGINS.md 19.
+LINKEDIN = "linkedin"
 
 #: Ordered capability keys. Each maps to one or more GitHub MCP toolsets and a
 #: tier of GitHub App permissions -- see docs/PLUGINS.md §5.
@@ -219,6 +230,14 @@ def _epoch(value: object) -> float:
 # ---------------------------------------------------------------------------
 
 def _default_path() -> Path:
+    # Tests redirect the whole store here -- same convention as
+    # ``mcp_targets.ADK_MCP_STATE``. It matters more than it looks: a plugin
+    # whose MCP server is a *separate process* (LinkedIn) can only be tested
+    # end-to-end if the child can be pointed at a sandbox, and ``config_dir()``
+    # resolves through platformdirs' known-folder API, which ignores %APPDATA%.
+    override = os.environ.get("ADK_PLUGIN_STORE")
+    if override:
+        return Path(override)
     try:
         from config import config_dir
 

@@ -2,16 +2,20 @@
 
 Two levels (see ``docs/PLUGINS.md`` §2):
 
-* **catalog** -- a vertical list of plugin cards, one per row. Seven live
+* **catalog** -- a vertical list of plugin cards, one per row. Eight live
   cards: **GitHub**, **Vercel**, **Jira**, **GitLab**, **Linear**,
-  **Supabase** and **Google Drive**; the rest render disabled as "Coming soon".
+  **Supabase**, **Google Drive** and **LinkedIn**; the rest render disabled as
+  "Coming soon".
 * **detail** -- click GitHub to connect it, pick which capabilities the agent
   gets, list your repos, and kick off a **GitHub review**; click Vercel, Jira,
   GitLab or Linear to enable its (thin, agent-owns-the-OAuth) MCP server; click
   Supabase to scope a project (required) and connect for read-only database
   review (see docs/PLUGINS.md §17); click Google Drive to paste a Desktop-app
   OAuth client -- the one plugin that needs a credential, because Google has no
-  dynamic client registration (docs/PLUGINS.md 18).
+  dynamic client registration (docs/PLUGINS.md 18); click LinkedIn to sign in
+  with your own LinkedIn app and switch on its job-data and (opt-in, risky)
+  session tiers -- the one plugin whose MCP server is ours, running locally
+  (docs/PLUGINS.md 19).
 
 Keep :func:`plugin_icon` -- the sidebar's "Plugins" nav button reuses it.
 """
@@ -84,6 +88,46 @@ def _oauth_auth_html(agents_provider, server: str, need: str = "mcp_oauth") -> s
         f"• <b>{agents.agent_label(k)}</b> — {mcp_targets.oauth_hint(k, server)}" for k in keys
     )
     return "Almost there. One-time authorisation, in each agent's pane:<br>" + rows
+
+
+def _linkedin_providers() -> dict:
+    """``{key: label}`` for the job-data dropdown. Lazy + forgiving so this
+    panel still imports on a machine where ``requests`` is missing."""
+    try:
+        import linkedin_jobs
+
+        return dict(linkedin_jobs.PROVIDERS)
+    except Exception:  # noqa: BLE001
+        return {"apify": "Apify actor", "jsearch": "JSearch (RapidAPI)"}
+
+
+def _linkedin_needs_actor(provider: object) -> bool:
+    try:
+        import linkedin_jobs
+
+        return linkedin_jobs.needs_actor(str(provider or ""))
+    except Exception:  # noqa: BLE001
+        return str(provider or "").strip().lower() == "apify"
+
+
+def _linkedin_job_hunt_skill() -> str:
+    try:
+        from linkedin_controller import JOB_HUNT_SKILL
+
+        return JOB_HUNT_SKILL
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _linkedin_session_warning() -> str:
+    try:
+        from linkedin_controller import SESSION_WARNING
+
+        return SESSION_WARNING
+    except Exception:  # noqa: BLE001
+        return ("Session reading uses your own LinkedIn login cookie. "
+                "LinkedIn's User Agreement prohibits automated access, and "
+                "accounts have been restricted for it. Turn it on anyway?")
 
 
 def plugin_icon(px: int = 18, color: Optional[str] = None) -> QIcon:
@@ -371,6 +415,41 @@ QLabel#code {{ color: {t('text')}; font-size: 22px; font-weight: 800; letter-spa
 """
 
 
+def _linkedin_icon(px: int = 40) -> QPixmap:
+    """The LinkedIn mark, drawn (no asset dependency): the rounded "in" tile.
+
+    Monochrome from the theme like every other card icon -- LinkedIn blue would
+    be the one full-colour logo in the catalog and would read as a foreign
+    object (same call as ``_gdrive_icon``).
+    """
+    px = max(12, int(px))
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    u = px / 16.0
+    text = QColor(theme.color("text"))
+
+    tile = QPainterPath()
+    tile.addRoundedRect(QRectF(1.5 * u, 1.5 * u, 13 * u, 13 * u), 3 * u, 3 * u)
+    p.setBrush(text)
+    p.drawPath(tile)
+
+    # Punch the glyph out so it reads on any tile colour.
+    p.setCompositionMode(QPainter.CompositionMode_Clear)
+    # "i": dot + stem
+    p.drawEllipse(QRectF(3.7 * u, 4.0 * u, 2.0 * u, 2.0 * u))
+    p.drawRoundedRect(QRectF(3.8 * u, 6.9 * u, 1.8 * u, 5.2 * u), 0.5 * u, 0.5 * u)
+    # "n": stem + shoulder + leg
+    p.drawRoundedRect(QRectF(7.0 * u, 6.9 * u, 1.8 * u, 5.2 * u), 0.5 * u, 0.5 * u)
+    shoulder = QPainterPath()
+    shoulder.addRoundedRect(QRectF(7.0 * u, 6.9 * u, 5.4 * u, 2.4 * u), 1.2 * u, 1.2 * u)
+    p.drawPath(shoulder)
+    p.drawRoundedRect(QRectF(10.6 * u, 8.2 * u, 1.8 * u, 3.9 * u), 0.5 * u, 0.5 * u)
+    p.end()
+    return pm
+
 # ---------------------------------------------------------------------------
 # Catalog card
 # ---------------------------------------------------------------------------
@@ -391,6 +470,8 @@ _CATALOG = [
      "Review your database schema, tables and RLS — read-only, scoped to one project.", True),
     ("gdrive", "Google Drive", "Files",
      "Search, read and create files in your Drive — your agent works Drive directly.", True),
+    ("linkedin", "LinkedIn", "Job hunt",
+     "Find jobs, score them against your CV and track every application — on a schedule.", True),
 ]
 
 
@@ -428,6 +509,8 @@ class _PluginCard(QFrame):
             icon.setPixmap(_supabase_icon(28))
         elif key == "gdrive":
             icon.setPixmap(_gdrive_icon(28))
+        elif key == "linkedin":
+            icon.setPixmap(_linkedin_icon(28))
         else:
             icon.setPixmap(plugin_icon(24, theme.color("text_faint")).pixmap(24, 24))
         row.addWidget(icon, 0, Qt.AlignVCenter)
@@ -1817,6 +1900,479 @@ class _GDriveDetail(QWidget):
         pass
 
 
+class _LinkedInDetail(QWidget):
+    """Detail page: connect LinkedIn, then switch its three tiers on.
+
+    The busiest page in this panel, because LinkedIn is the busiest plugin --
+    see docs/PLUGINS.md 19. Three sections, in risk order:
+
+    * **Sign in** -- the user's own LinkedIn app (client id + secret). Same
+      bring-your-own-app story as Google Drive, for the same reason: no dynamic
+      client registration -- and no PKCE either, so a secret is unavoidable.
+    * **Job data** -- a provider and its API key. Off until a key is stored.
+    * **Session reading** -- the member's own ``li_at`` cookie. Off by default
+      and guarded by a confirm that spells out the account risk. The confirm is
+      reachable as ``self._confirm`` so the offline suite can replace it: a
+      modal ``QMessageBox`` hangs a headless test forever (context.md's testing
+      notes).
+
+    Unlike every hosted plugin there is nothing to authorise in a pane -- the
+    MCP server is local -- so the "one-time authorisation" box other pages show
+    is replaced by a plain "restart the agent" line.
+    """
+
+    back = Signal()
+    #: A "Job hunt" routine the user asked for; ``PluginsPanel`` re-emits it.
+    create_routine = Signal(dict)
+    #: The job-hunt skill template, ditto. Markdown, for ``SkillsStore``.
+    create_skill = Signal(str)
+
+    _PORTAL_URL = "https://www.linkedin.com/developers/apps"
+
+    #: What the one-click routine schedules. Written as an instruction to the
+    #: agent rather than a script of tool calls: the tools are self-describing,
+    #: and a prompt that names them goes stale the moment one is renamed.
+    ROUTINE_PROMPT = (
+        "Run my LinkedIn job hunt.\n\n"
+        "1. Search for jobs matching my criteria (see the job-hunt skill if one "
+        "is installed; otherwise ask me once and write it into that skill).\n"
+        "2. Only consider postings the search reports as new.\n"
+        "3. Score each one 0-100 against my CV and shortlist anything above 70, "
+        "with a one-line reason.\n"
+        "4. For each shortlisted job, draft a tailored application, save it in "
+        "the workspace, and mark the job as drafted.\n"
+        "5. Finish with a short digest: what is new, what you shortlisted and "
+        "why, and what is waiting on me.\n\n"
+        "Do not apply to anything -- drafts only, I send them."
+    )
+
+    def __init__(self, linkedin, account, config, agents_provider=None, parent=None):
+        super().__init__(parent)
+        self._linkedin = linkedin
+        self._account = account
+        self._config = config or {}
+        self._agents_provider = agents_provider
+        #: Replaced by the test suite; a real modal would hang it headless.
+        self._confirm = self._default_confirm
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        back = QPushButton("‹  All plugins")
+        back.setObjectName("link")
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(self.back.emit)
+        root.addWidget(back, 0, Qt.AlignLeft)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setPixmap(_linkedin_icon(40))
+        head.addWidget(icon)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel("LinkedIn")
+        title.setObjectName("pluginsTitle")
+        self._sub = QLabel("")
+        self._sub.setObjectName("pluginsBody")
+        self._sub.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(self._sub)
+        head.addLayout(col, 1)
+        self._primary = QPushButton("Connect")
+        self._primary.setObjectName("primary")
+        self._primary.setCursor(Qt.PointingHandCursor)
+        self._primary.clicked.connect(self._on_primary)
+        head.addWidget(self._primary, 0, Qt.AlignTop)
+        root.addLayout(head)
+
+        # -- 1. the LinkedIn app ---------------------------------------------
+        creds = QHBoxLayout()
+        creds.setSpacing(8)
+        self._id_field = QLineEdit()
+        self._id_field.setPlaceholderText("Client ID from your LinkedIn app")
+        creds.addWidget(self._id_field, 2)
+        self._secret_field = QLineEdit()
+        self._secret_field.setEchoMode(QLineEdit.Password)
+        self._secret_field.setPlaceholderText("Client secret")
+        creds.addWidget(self._secret_field, 1)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setCursor(Qt.PointingHandCursor)
+        self._save_btn.clicked.connect(self._on_primary)
+        creds.addWidget(self._save_btn, 0)
+        root.addLayout(creds)
+
+        self._hint = QLabel(
+            "LinkedIn needs an app of your own \u2014 there is no one-click "
+            "option. At <b>linkedin.com/developers</b>: create an app, then on "
+            "its <b>Products</b> tab add <i>Sign In with LinkedIn using OpenID "
+            "Connect</i> and <i>Share on LinkedIn</i> (both granted without "
+            "review), and on the <b>Auth</b> tab add "
+            "<code>http://localhost:8977/callback</code> as a redirect URL."
+        )
+        self._hint.setObjectName("pluginsBody")
+        self._hint.setWordWrap(True)
+        self._hint.setTextFormat(Qt.RichText)
+        root.addWidget(self._hint)
+
+        self._portal_btn = QPushButton("Open LinkedIn developer portal \u2197")
+        self._portal_btn.setObjectName("link")
+        self._portal_btn.setCursor(Qt.PointingHandCursor)
+        self._portal_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self._PORTAL_URL))
+        )
+        root.addWidget(self._portal_btn, 0, Qt.AlignLeft)
+
+        # -- where it is wired ------------------------------------------------
+        self._info = QFrame()
+        self._info.setObjectName("codeBox")
+        ib = QVBoxLayout(self._info)
+        ib.setContentsMargins(14, 12, 14, 12)
+        ib.setSpacing(4)
+        self._step = QLabel("")
+        self._step.setWordWrap(True)
+        self._step.setTextFormat(Qt.RichText)
+        ib.addWidget(self._step)
+        self._info.setVisible(False)
+        root.addWidget(self._info)
+
+        # -- 2. job data -------------------------------------------------------
+        self._jobs_box = QFrame()
+        self._jobs_box.setObjectName("card")
+        jb = QVBoxLayout(self._jobs_box)
+        jb.setContentsMargins(16, 14, 16, 14)
+        jb.setSpacing(8)
+        jt = QLabel("Job data")
+        jt.setObjectName("cardName")
+        jb.addWidget(jt)
+        jhint = QLabel(
+            "LinkedIn's job-search API is partner-only, so listings come from a "
+            "provider you bring a key for. AgentDeck scrapes nothing itself."
+        )
+        jhint.setObjectName("pluginsBody")
+        jhint.setWordWrap(True)
+        jb.addWidget(jhint)
+        prow = QHBoxLayout()
+        prow.setSpacing(8)
+        self._provider_box = QComboBox()
+        for key, label in _linkedin_providers().items():
+            self._provider_box.addItem(label, key)
+        self._provider_box.currentIndexChanged.connect(self._on_provider_changed)
+        prow.addWidget(self._provider_box, 1)
+        self._actor_field = QLineEdit()
+        self._actor_field.setPlaceholderText("Apify actor id, e.g. user~linkedin-jobs")
+        prow.addWidget(self._actor_field, 2)
+        jb.addLayout(prow)
+        krow = QHBoxLayout()
+        krow.setSpacing(8)
+        self._key_field = QLineEdit()
+        self._key_field.setEchoMode(QLineEdit.Password)
+        self._key_field.setPlaceholderText("Provider API key")
+        krow.addWidget(self._key_field, 2)
+        self._key_save = QPushButton("Save")
+        self._key_save.setCursor(Qt.PointingHandCursor)
+        self._key_save.clicked.connect(self._on_save_provider)
+        krow.addWidget(self._key_save, 0)
+        self._key_off = QPushButton("Turn off")
+        self._key_off.setObjectName("link")
+        self._key_off.setCursor(Qt.PointingHandCursor)
+        self._key_off.clicked.connect(self._on_clear_provider)
+        krow.addWidget(self._key_off, 0)
+        jb.addLayout(krow)
+        root.addWidget(self._jobs_box)
+
+        # -- your CV ------------------------------------------------------------
+        self._cv_box = QFrame()
+        self._cv_box.setObjectName("card")
+        cb = QVBoxLayout(self._cv_box)
+        cb.setContentsMargins(16, 14, 16, 14)
+        cb.setSpacing(8)
+        ct = QLabel("Your CV")
+        ct.setObjectName("cardName")
+        cb.addWidget(ct)
+        chint = QLabel(
+            "A plain-text or Markdown CV. The agent reads it when drafting an "
+            "application \u2014 it never submits one."
+        )
+        chint.setObjectName("pluginsBody")
+        chint.setWordWrap(True)
+        cb.addWidget(chint)
+        crow = QHBoxLayout()
+        crow.setSpacing(8)
+        self._cv_field = QLineEdit()
+        self._cv_field.setPlaceholderText("Path to your CV, e.g. C:\\Users\\you\\cv.md")
+        crow.addWidget(self._cv_field, 1)
+        self._cv_save = QPushButton("Save")
+        self._cv_save.setCursor(Qt.PointingHandCursor)
+        self._cv_save.clicked.connect(self._on_save_cv)
+        crow.addWidget(self._cv_save, 0)
+        cb.addLayout(crow)
+        root.addWidget(self._cv_box)
+
+        # -- 3. session reading (the risky one) ---------------------------------
+        self._session_box = QFrame()
+        self._session_box.setObjectName("card")
+        sb = QVBoxLayout(self._session_box)
+        sb.setContentsMargins(16, 14, 16, 14)
+        sb.setSpacing(8)
+        st = QLabel("Session reading  \u2014  advanced")
+        st.setObjectName("cardName")
+        sb.addWidget(st)
+        self._session_hint = QLabel(
+            "Reads your saved jobs, your applications and unread messages with "
+            "your own LinkedIn login cookie. <b>LinkedIn's User Agreement "
+            "prohibits automated access, and accounts have been restricted for "
+            "it.</b> Read-only and rate-limited; off unless you switch it on."
+        )
+        self._session_hint.setObjectName("pluginsBody")
+        self._session_hint.setWordWrap(True)
+        self._session_hint.setTextFormat(Qt.RichText)
+        sb.addWidget(self._session_hint)
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
+        self._cookie_field = QLineEdit()
+        self._cookie_field.setEchoMode(QLineEdit.Password)
+        self._cookie_field.setPlaceholderText("li_at cookie value")
+        srow.addWidget(self._cookie_field, 2)
+        self._cookie_on = QPushButton("Turn on")
+        self._cookie_on.setCursor(Qt.PointingHandCursor)
+        self._cookie_on.clicked.connect(self._on_enable_session)
+        srow.addWidget(self._cookie_on, 0)
+        self._cookie_off = QPushButton("Turn off")
+        self._cookie_off.setObjectName("danger")
+        self._cookie_off.clicked.connect(self._on_disable_session)
+        srow.addWidget(self._cookie_off, 0)
+        sb.addLayout(srow)
+        root.addWidget(self._session_box)
+
+        # -- the automation ------------------------------------------------------
+        self._routine_btn = QPushButton("Create the daily job-hunt routine")
+        self._routine_btn.setObjectName("primary")
+        self._routine_btn.setCursor(Qt.PointingHandCursor)
+        self._routine_btn.setToolTip(
+            "Adds a Routine that runs the hunt on weekday mornings: search, "
+            "dedupe, score, draft, digest."
+        )
+        self._routine_btn.clicked.connect(self._on_create_routine)
+
+        self._skill_btn = QPushButton("Install the job-hunt skill")
+        self._skill_btn.setCursor(Qt.PointingHandCursor)
+        self._skill_btn.setToolTip(
+            "Adds a Skill holding your criteria, your bar for shortlisting and "
+            "the rule that the agent drafts but never applies."
+        )
+        self._skill_btn.clicked.connect(self._on_create_skill)
+
+        arow = QHBoxLayout()
+        arow.setSpacing(8)
+        arow.addWidget(self._routine_btn, 0)
+        arow.addWidget(self._skill_btn, 0)
+        arow.addStretch(1)
+        root.addLayout(arow)
+
+        drow = QHBoxLayout()
+        self._resync_btn = QPushButton("Re-sync to agents")
+        self._resync_btn.setObjectName("link")
+        self._resync_btn.setCursor(Qt.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Write the LinkedIn MCP server into your agents again. The entry "
+            "names this install's executable, so run it after an update moved it."
+        )
+        self._resync_btn.clicked.connect(self._on_resync)
+        drow.addWidget(self._resync_btn, 0, Qt.AlignLeft)
+        drow.addStretch(1)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.setObjectName("danger")
+        self._disconnect_btn.clicked.connect(self._on_disconnect)
+        drow.addWidget(self._disconnect_btn)
+        root.addLayout(drow)
+        root.addStretch(1)
+
+        if self._linkedin is not None:
+            self._linkedin.connected.connect(lambda _i: self.refresh())
+            self._linkedin.disconnected.connect(self.refresh)
+            self._linkedin.error.connect(self._on_error)
+            self._linkedin.busy_changed.connect(lambda _b: self.refresh())
+            tiers_changed = getattr(self._linkedin, "tiers_changed", None)
+            if tiers_changed is not None:
+                tiers_changed.connect(self.refresh)
+
+        self.refresh()
+
+    # -- helpers -------------------------------------------------------------
+
+    def _default_confirm(self, title: str, body: str) -> bool:
+        from PySide6.QtWidgets import QMessageBox
+
+        return QMessageBox.warning(
+            self, title, body, QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) == QMessageBox.Yes
+
+    def _plan_ok(self) -> bool:
+        if entitlements is None or self._account is None:
+            return True
+        try:
+            return entitlements.plugins_enabled(self._account.plan)
+        except Exception:  # noqa: BLE001
+            return True
+
+    # -- state ---------------------------------------------------------------
+
+    def refresh(self) -> None:
+        li = self._linkedin
+        connected = bool(li and li.is_connected)
+        busy = bool(li and li.is_busy)
+        pro = self._plan_ok()
+
+        self._primary.setVisible(not connected)
+        self._primary.setEnabled(pro and not busy)
+        self._primary.setText("Connect" if pro else "Connect  (Pro)")
+        self._id_field.setEnabled(pro and not busy)
+        self._secret_field.setEnabled(pro and not busy)
+        self._save_btn.setVisible(connected)
+        self._save_btn.setEnabled(pro and not busy)
+        self._hint.setVisible(not connected)
+        self._portal_btn.setVisible(not connected)
+        for widget in (self._info, self._jobs_box, self._cv_box,
+                       self._session_box, self._routine_btn, self._skill_btn,
+                       self._resync_btn, self._disconnect_btn):
+            widget.setVisible(connected)
+
+        if not connected:
+            self._sub.setText(
+                "Find jobs, score them against your CV and track every "
+                "application \u2014 on a schedule. Needs a LinkedIn app of your own."
+            )
+            return
+
+        self._id_field.setText(li.client_id)
+        self._secret_field.clear()
+        self._secret_field.setPlaceholderText(
+            "\u2022\u2022\u2022\u2022\u2022\u2022 stored \u2014 leave blank to keep"
+            if li.has_secret else "Client secret"
+        )
+
+        index = self._provider_box.findData(li.provider)
+        if index >= 0:
+            self._provider_box.setCurrentIndex(index)
+        self._actor_field.setText(li.actor)
+        self._actor_field.setVisible(_linkedin_needs_actor(li.provider))
+        self._key_field.clear()
+        self._key_field.setPlaceholderText(
+            "\u2022\u2022\u2022\u2022\u2022\u2022 stored \u2014 leave blank to keep"
+            if li.has_provider_key else "Provider API key"
+        )
+        self._key_off.setVisible(li.tier_on("jobs"))
+        self._cv_field.setText(li.resume_path)
+
+        session_on = li.tier_on("session")
+        self._cookie_field.setVisible(not session_on)
+        self._cookie_on.setVisible(not session_on)
+        self._cookie_off.setVisible(session_on)
+
+        wired = _wired_agent_labels(self._agents_provider, "mcp_stdio")
+        self._step.setText(
+            "Wired into: <b>" + (", ".join(wired) if wired else "no supported agent yet")
+            + "</b>.<br>Nothing to authorise \u2014 the server runs locally. Restart "
+            "the agent in a pane to pick it up."
+        )
+
+        tiers = ", ".join(li.tiers) or "official"
+        who = li.login or "Connected"
+        if busy:
+            self._sub.setText("Talking to LinkedIn\u2026")
+        elif li.token_expired:
+            self._sub.setText(
+                "LinkedIn's access token has expired \u2014 reconnect for a new one "
+                "(self-serve apps get no refresh token)."
+            )
+        else:
+            self._sub.setText(f"{who} \u00b7 tiers on: {tiers}")
+
+    # -- actions --------------------------------------------------------------
+
+    def _on_primary(self) -> None:
+        if self._linkedin is not None:
+            self._linkedin.start_connect(self._id_field.text(), self._secret_field.text())
+
+    def _on_provider_changed(self, _index: int) -> None:
+        li = self._linkedin
+        if li is None or not li.is_connected:
+            return
+        self._actor_field.setVisible(
+            _linkedin_needs_actor(self._provider_box.currentData())
+        )
+
+    def _on_save_provider(self) -> None:
+        if self._linkedin is None:
+            return
+        self._linkedin.set_provider(
+            str(self._provider_box.currentData() or "apify"),
+            self._key_field.text(),
+            self._actor_field.text(),
+        )
+        self.refresh()
+
+    def _on_clear_provider(self) -> None:
+        if self._linkedin is not None:
+            self._linkedin.clear_provider_key()
+        self.refresh()
+
+    def _on_save_cv(self) -> None:
+        if self._linkedin is not None:
+            self._linkedin.set_resume_path(self._cv_field.text())
+        self.refresh()
+
+    def _on_enable_session(self) -> None:
+        li = self._linkedin
+        if li is None:
+            return
+        if not self._confirm("Turn on session reading?", _linkedin_session_warning()):
+            return
+        li.set_session_cookie(self._cookie_field.text())
+        self._cookie_field.clear()
+        self.refresh()
+
+    def _on_disable_session(self) -> None:
+        if self._linkedin is not None:
+            self._linkedin.clear_session_cookie()
+        self.refresh()
+
+    def _on_create_routine(self) -> None:
+        self.create_routine.emit({
+            "name": "LinkedIn job hunt",
+            "prompt": self.ROUTINE_PROMPT,
+            "time": "09:00",
+            "days": [0, 1, 2, 3, 4],
+        })
+
+    def _on_create_skill(self) -> None:
+        text = _linkedin_job_hunt_skill()
+        if text:
+            self.create_skill.emit(text)
+
+    def _on_disconnect(self) -> None:
+        if self._linkedin is not None:
+            self._linkedin.disconnect()
+
+    def _on_resync(self) -> None:
+        if self._linkedin is None:
+            return
+        try:
+            self._linkedin.ensure_wired()
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh()
+
+    def _on_error(self, message: str) -> None:
+        self._sub.setText(message)
+
+    def apply_theme(self) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
@@ -1825,10 +2381,14 @@ class PluginsPanel(QWidget):
     """Full-area panel shown when the sidebar's "Plugins" nav item is active."""
 
     review_ready = Signal(dict)
+    #: The LinkedIn card asked for its "Job hunt" routine to be created.
+    routine_requested = Signal(dict)
+    #: ...and for its job-hunt skill to be installed (markdown).
+    skill_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, github=None, vercel=None,
                  jira=None, gitlab=None, linear=None, supabase=None, gdrive=None,
-                 account=None,
+                 linkedin=None, account=None,
                  config: Optional[dict] = None, agents_provider=None):
         super().__init__(parent)
         self._github = github
@@ -1838,6 +2398,7 @@ class PluginsPanel(QWidget):
         self._linear = linear
         self._supabase = supabase
         self._gdrive = gdrive
+        self._linkedin = linkedin
         # () -> list[str] of agent keys the plugins will wire (installed + active).
         self._agents_provider = agents_provider
         self.setObjectName("pluginsPanel")
@@ -1981,6 +2542,22 @@ class PluginsPanel(QWidget):
         gd_host.setWidget(gd_inner)
         self._stack.addWidget(gd_host)
 
+        # -- linkedin detail page (stack index 8) --
+        li_host = QScrollArea()
+        li_host.setWidgetResizable(True)
+        li_host.setFrameShape(QFrame.NoFrame)
+        li_inner = QWidget()
+        liil = QVBoxLayout(li_inner)
+        liil.setContentsMargins(40, 28, 40, 24)
+        self._linkedin_detail = _LinkedInDetail(linkedin, account, config,
+                                                agents_provider=agents_provider)
+        self._linkedin_detail.back.connect(lambda: self._stack.setCurrentIndex(0))
+        self._linkedin_detail.create_routine.connect(self.routine_requested.emit)
+        self._linkedin_detail.create_skill.connect(self.skill_requested.emit)
+        liil.addWidget(self._linkedin_detail)
+        li_host.setWidget(li_inner)
+        self._stack.addWidget(li_host)
+
         if github is not None:
             github.connected.connect(lambda _i: self._sync_cards())
             github.disconnected.connect(self._sync_cards)
@@ -2002,6 +2579,9 @@ class PluginsPanel(QWidget):
         if gdrive is not None:
             gdrive.connected.connect(lambda _i: self._sync_cards())
             gdrive.disconnected.connect(self._sync_cards)
+        if linkedin is not None:
+            linkedin.connected.connect(lambda _i: self._sync_cards())
+            linkedin.disconnected.connect(self._sync_cards)
         self._sync_cards()
 
     # -- helpers ------------------------------------------------------
@@ -2033,6 +2613,9 @@ class PluginsPanel(QWidget):
         elif key == "gdrive":
             self._stack.setCurrentIndex(7)
             self._gdrive_detail.refresh()
+        elif key == "linkedin":
+            self._stack.setCurrentIndex(8)
+            self._linkedin_detail.refresh()
 
     def _sync_cards(self) -> None:
         login = None
@@ -2048,6 +2631,7 @@ class PluginsPanel(QWidget):
             else None
         )
         gdrive_on = bool(self._gdrive is not None and self._gdrive.is_connected)
+        linkedin_on = bool(self._linkedin is not None and self._linkedin.is_connected)
         for card in self._cards:
             if card.key == "github":
                 card.set_status(login)
@@ -2063,6 +2647,8 @@ class PluginsPanel(QWidget):
                 card.set_scoped_status(supabase_ref)
             elif card.key == "gdrive":
                 card.set_toggle_status(gdrive_on)
+            elif card.key == "linkedin":
+                card.set_toggle_status(linkedin_on)
 
     def show_catalog(self) -> None:
         self._stack.setCurrentIndex(0)
