@@ -69,6 +69,7 @@ from gitlab_controller import GitLabController
 from linear_controller import LinearController
 from supabase_controller import SupabaseController
 from gdrive_controller import GDriveController
+from linkedin_controller import LinkedInController
 from account_dialog import AccountDialog
 from agents import agent_label, installed_agent_keys, pretrust_folder, resolve_agent
 from navbar import AccountChip, HelpButton, gear_icon, theme_icon
@@ -169,6 +170,10 @@ class TerminalPanel(QMainWindow):
         # (project_ref) and read-only by default. See docs/PLUGINS.md §17.
         self.supabase = SupabaseController(self.account, self.config, self)
         self.gdrive = GDriveController(self.account, self.config, self)
+        # The LinkedIn plugin surface -- job hunting. The only plugin whose MCP
+        # server is ours: it runs locally over stdio, so no agent ever holds a
+        # LinkedIn credential. See docs/PLUGINS.md 19.
+        self.linkedin = LinkedInController(self.account, self.config, self)
         # Write toolbar/shortcut changes (layout, shell, font size) back to
         # config.json so they survive a restart. Tests pass False to keep their
         # throwaway values out of the real user config.
@@ -822,11 +827,13 @@ class TerminalPanel(QMainWindow):
         self._plugins_panel = PluginsPanel(
             central, github=self.github, vercel=self.vercel, jira=self.jira,
             gitlab=self.gitlab, linear=self.linear, supabase=self.supabase,
-            gdrive=self.gdrive,
+            gdrive=self.gdrive, linkedin=self.linkedin,
             account=self.account, config=self.config,
             agents_provider=lambda: self.github._target_agent_keys(self._startup_command),
         )
         self._plugins_panel.review_ready.connect(self._start_github_review)
+        self._plugins_panel.routine_requested.connect(self._create_plugin_routine)
+        self._plugins_panel.skill_requested.connect(self._create_plugin_skill)
         self._notes_panel = NotesPanel(central, config=self.config)
         self._notes_panel.send_to_terminal.connect(self._send_note_to_terminal)
         self._routines_store = RoutinesStore()
@@ -1032,6 +1039,7 @@ class TerminalPanel(QMainWindow):
             self._wire_linear_for(self._working_folder, startup_command)
             self._wire_supabase_for(self._working_folder, startup_command)
             self._wire_gdrive_for(self._working_folder, startup_command)
+            self._wire_linkedin_for(self._working_folder, startup_command)
         # Advance the counter for every workspace so a later default name never
         # collides with an earlier one, even when some were named by hand.
         auto = self._next_ws_name()
@@ -1856,6 +1864,18 @@ class TerminalPanel(QMainWindow):
         except Exception:  # noqa: BLE001 - wiring is a convenience, never fatal
             return False
 
+    def _wire_linkedin_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
+        """Make sure a connected LinkedIn plugin's MCP server is in this agent's
+        config. Mirrors :meth:`_wire_gdrive_for`; ``linkedin_mcp.inject`` filters
+        to the agents whose local-server shape is verified."""
+        li = getattr(self, "linkedin", None)
+        if li is None or not li.is_connected:
+            return False
+        try:
+            return li.ensure_wired(folder, agent_command)
+        except Exception:  # noqa: BLE001
+            return False
+
     def _wire_gdrive_for(self, folder: Optional[str], agent_command: Optional[str]) -> bool:
         """Best-effort: add the Google Drive MCP server to Claude Code's config.
         Mirrors :meth:`_wire_supabase_for`, but ``gdrive_mcp.inject`` filters to
@@ -2105,6 +2125,7 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(folder, base_command)
         self._wire_supabase_for(folder, base_command)
         self._wire_gdrive_for(folder, base_command)
+        self._wire_linkedin_for(folder, base_command)
 
         # Isolated workspace -> give the handoff pane its own worktree too.
         # Best-effort: any failure just falls back to a plain pane. Deliberately
@@ -2224,6 +2245,7 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(self._working_folder, command)
         self._wire_supabase_for(self._working_folder, command)
         self._wire_gdrive_for(self._working_folder, command)
+        self._wire_linkedin_for(self._working_folder, command)
 
         prompt = routine.prompt.strip()
 
@@ -2364,6 +2386,7 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(self._working_folder, command)
         self._wire_supabase_for(self._working_folder, command)
         self._wire_gdrive_for(self._working_folder, command)
+        self._wire_linkedin_for(self._working_folder, command)
 
         if command:
             ws.add_pane_with_command(command)
@@ -2579,6 +2602,7 @@ class TerminalPanel(QMainWindow):
         self._wire_linear_for(folder, command)
         self._wire_supabase_for(folder, command)
         self._wire_gdrive_for(folder, command)
+        self._wire_linkedin_for(folder, command)
 
         target = skills_sync.agent_review_target(skill, folder, agent_key)
         prompt = (
@@ -3653,6 +3677,10 @@ class TerminalPanel(QMainWindow):
         if sb is not None:
             sb.connected.connect(lambda _i: self._on_supabase_connected())
             sb.disconnected.connect(self._on_supabase_disconnected)
+        li = getattr(self, "linkedin", None)
+        if li is not None:
+            li.connected.connect(lambda _i: self._on_linkedin_connected())
+            li.disconnected.connect(self._on_linkedin_disconnected)
         gd = getattr(self, "gdrive", None)
         if gd is not None:
             gd.connected.connect(lambda _i: self._on_gdrive_connected())
@@ -3750,6 +3778,61 @@ class TerminalPanel(QMainWindow):
         self.statusBar().showMessage(
             "Supabase disabled — restart the agent (↻) to drop the Supabase tools", 6000
         )
+
+    def _on_linkedin_connected(self) -> None:
+        """Wire the freshly connected plugin and say what to do next.
+
+        Deliberately not an OAuth hint: the LinkedIn server is local, so there
+        is nothing to authorise in the pane -- only a restart to pick it up.
+        """
+        self._wire_linkedin_for(self._working_folder, self._startup_command)
+        self.statusBar().showMessage(
+            "LinkedIn enabled — restart the agent (↻) in a pane to pick up its "
+            "tools (nothing to authorise — the server runs locally)",
+            8000,
+        )
+
+    def _on_linkedin_disconnected(self) -> None:
+        self.statusBar().showMessage(
+            "LinkedIn disabled — restart the agent (↻) to drop its tools", 6000
+        )
+
+    def _create_plugin_routine(self, spec: dict) -> None:
+        """Create a routine a plugin card offered (the LinkedIn job hunt) and
+        show it, so the user lands on an editor with the schedule already set
+        rather than an empty Routines page."""
+        if not isinstance(spec, dict) or not spec.get("prompt"):
+            return
+        try:
+            self._routines_store.create(
+                name=str(spec.get("name") or "Routine"),
+                prompt=str(spec.get("prompt") or ""),
+                time=str(spec.get("time") or "09:00"),
+                days=list(spec.get("days") or []),
+                agent_key=str(self.config.get("agent", "none")),
+            )
+        except Exception:  # noqa: BLE001 - a failed create must not kill the panel
+            self.statusBar().showMessage("Couldn't create that routine", 5000)
+            return
+        self._show_routines()
+
+    def _create_plugin_skill(self, markdown: str) -> None:
+        """Install a skill a plugin card offered (the LinkedIn job hunt) and show
+        it, so the user can fill in their criteria straight away.
+
+        Imported rather than written: ``SkillsStore.import_markdown`` already
+        parses the frontmatter and de-duplicates the slug, so installing twice
+        gives a second copy to edit rather than silently overwriting the one the
+        user has already filled in.
+        """
+        if not markdown:
+            return
+        try:
+            self._skills_store.import_markdown(markdown, fallback_name="Job hunt")
+        except Exception:  # noqa: BLE001 - a failed import must not kill the panel
+            self.statusBar().showMessage("Couldn't install that skill", 5000)
+            return
+        self._show_skills()
 
     def _on_gdrive_connected(self) -> None:
         self._wire_gdrive_for(self._working_folder, self._startup_command)
@@ -4170,6 +4253,9 @@ class TerminalPanel(QMainWindow):
         if getattr(self, "gdrive", None) is not None:
             self.gdrive.unwire_all()
             self.gdrive.shutdown()
+        if getattr(self, "linkedin", None) is not None:
+            self.linkedin.unwire_all()
+            self.linkedin.shutdown()
         for workspace in self._workspaces:
             workspace.shutdown()
 

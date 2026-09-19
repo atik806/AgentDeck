@@ -92,6 +92,20 @@ class McpTarget:
     name_extra: Optional[str] = None             # goose wants entry[name_extra] == server_name
     managed_key: str = "x-agentdeck-managed"     # toml/yaml can't take a hyphen -> "x_agentdeck_managed"
 
+    # -- local (stdio) server shape ------------------------------------------
+    # Only consulted for a ``transport: "stdio"`` spec. ``stdio`` gates the
+    # whole branch: an agent stays False until its local-server shape has
+    # actually been checked, because a wrong shape produces a server that fails
+    # to *start* rather than one that fails loudly (same doctrine as
+    # ``oauth_static`` -- see docs/PLUGINS.md 18/19).
+    stdio: bool = False
+    stdio_command_field: str = "command"
+    stdio_args_field: str = "args"
+    stdio_env_field: Optional[str] = "env"
+    #: Value for ``type_field`` on a *local* entry ("stdio", "local", ...).
+    #: None means this agent tags no type on local servers.
+    stdio_type_value: Optional[str] = None
+
     # capability flags
     mcp: bool = True
     header_auth: bool = True
@@ -122,6 +136,7 @@ _TARGETS: Dict[str, McpTarget] = {
         path=lambda: _home() / ".claude.json",
         server_map=("mcpServers",), type_value="http",
         oauth_static=True,
+        stdio=True,
     ),
     "codex": McpTarget(
         key="codex", label="Codex", fmt="toml",
@@ -130,22 +145,26 @@ _TARGETS: Dict[str, McpTarget] = {
         bearer_style="toml_bearer_token",
         root_extra={"experimental_use_rmcp_client": True},
         managed_key="x_agentdeck_managed",
+        stdio=True,
     ),
     "copilot": McpTarget(
         key="copilot", label="GitHub Copilot CLI", fmt="json",
         path=lambda: _env_dir("COPILOT_HOME", _home() / ".copilot") / "mcp-config.json",
         server_map=("mcpServers",), type_value="http",
         server_extra={"tools": ["*"]},
+        stdio=True, stdio_type_value="local",
     ),
     "gemini": McpTarget(
         key="gemini", label="Gemini CLI", fmt="json",
         path=lambda: _home() / ".gemini" / "settings.json",
         server_map=("mcpServers",), url_field="httpUrl", type_field=None,
+        stdio=True,
     ),
     "cursor-agent": McpTarget(
         key="cursor-agent", label="Cursor Agent", fmt="json",
         path=lambda: _home() / ".cursor" / "mcp.json",
         server_map=("mcpServers",), type_field=None,
+        stdio=True,
     ),
     "opencode": McpTarget(
         key="opencode", label="opencode", fmt="json",
@@ -160,16 +179,19 @@ _TARGETS: Dict[str, McpTarget] = {
             else _xdg_config() / "amp" / "settings.json"
         ),
         server_map=("amp.mcpServers",), type_field=None,
+        stdio=True,
     ),
     "antigravity": McpTarget(
         key="antigravity", label="Antigravity CLI", fmt="json",
         path=lambda: _home() / ".gemini" / "config" / "mcp_config.json",
         server_map=("mcpServers",), url_field="serverUrl", type_field=None,
+        stdio=True,
     ),
     "qwen": McpTarget(
         key="qwen", label="Qwen Code", fmt="json",
         path=lambda: _home() / ".qwen" / "settings.json",
         server_map=("mcpServers",), url_field="httpUrl", type_field=None,
+        stdio=True,
     ),
     "crush": McpTarget(
         key="crush", label="Crush", fmt="json",
@@ -205,7 +227,7 @@ def caps(key: Optional[str]) -> Dict[str, object]:
     tgt = target(key)
     if tgt is None:
         return {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False,
-                "mcp_oauth_static": False, "format": None}
+                "mcp_oauth_static": False, "mcp_stdio": False, "format": None}
     return {
         "mcp": tgt.mcp,
         # can carry a bearer credential on a remote server -- via an Authorization
@@ -215,6 +237,9 @@ def caps(key: Optional[str]) -> Dict[str, object]:
         # a hosted OAuth server whose provider has no Dynamic Client
         # Registration, so the client id/secret comes from us (Google Drive).
         "mcp_oauth_static": tgt.mcp and tgt.oauth_static and tgt.key in OAUTH_ALLOWLIST,
+        # can run a *local* server we launch ourselves (LinkedIn) -- no OAuth of
+        # any kind involved, so the allowlist doesn't apply.
+        "mcp_stdio": tgt.mcp and tgt.stdio,
         "format": tgt.fmt,
     }
 
@@ -238,19 +263,26 @@ def render_entry(tgt: McpTarget, server_name: str, canonical: dict) -> Optional[
     entry -- but only for a target with ``oauth_static``, since the shape is
     Claude Code's.
 
-    Returns ``None`` if this target can't represent the spec (e.g. a stdio spec for
-    an agent we only wire remotely).
+    Returns ``None`` if this target can't represent the spec -- a stdio spec for
+    an agent whose local-server shape hasn't been verified (``stdio=False``), or a
+    static-OAuth spec for an agent without ``oauth_static``.
     """
     transport = canonical.get("transport", "http")
     if transport == "stdio":
-        # Only Claude uses the local github-mcp-server binary today; keep it simple.
-        if tgt.key != "claude":
+        if not tgt.stdio:
             return None
         entry: dict = {
-            "command": canonical.get("command", ""),
-            "args": list(canonical.get("args", [])),
-            "env": dict(canonical.get("env", {})),
+            tgt.stdio_command_field: canonical.get("command", ""),
+            tgt.stdio_args_field: list(canonical.get("args", [])),
         }
+        if tgt.stdio_env_field:
+            entry[tgt.stdio_env_field] = dict(canonical.get("env", {}))
+        if tgt.type_field and tgt.stdio_type_value:
+            entry[tgt.type_field] = tgt.stdio_type_value
+        for k, v in tgt.server_extra.items():
+            entry[k] = list(v) if isinstance(v, list) else v
+        if tgt.name_extra:
+            entry[tgt.name_extra] = server_name
         entry[tgt.managed_key] = True
         return entry
 

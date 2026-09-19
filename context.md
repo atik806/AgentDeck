@@ -1465,6 +1465,65 @@ console — hence the crash-to-MessageBox handler in `main.py`).
       scheme.
 
 
+43. **Plugins — LinkedIn, and the first MCP server that is ours (2026-09-19,
+    v0.27.0)** — a ninth card that hunts jobs: search on a schedule, dedupe
+    against what it already showed you, score against your CV, draft
+    applications, track the pipeline. Full design in `docs/PLUGINS.md` §19.
+    - **Why it can't be thin, or even Drive-shaped.** LinkedIn publishes no MCP
+      server, and its job-search API is partner-gated (company review, weeks,
+      and not for a desktop tool). Its only self-serve products are *Sign In
+      with LinkedIn* (OIDC) and *Share on LinkedIn*. So `linkedin_server.py` is
+      the server — newline-delimited JSON-RPC 2.0 over stdio, stdlib only —
+      launched by the agent as a local process.
+    - **Three tiers, switched on separately**: `official` (LinkedIn's own
+      OAuth, implied by connecting), `jobs` (a provider key — Apify actor or
+      JSearch; AgentDeck scrapes nothing itself), and `session` (the member's
+      own `li_at`, **off by default**, behind a confirm that names the account
+      risk, read-only and rate-limited). The pipeline tools are local and touch
+      no network.
+    - **No tool submits an application, on purpose.** `draft_application` hands
+      over the posting + CV and stops. Auto-apply is what gets accounts
+      restricted and what makes the letter worthless. `test_linkedin_server.py`
+      §3 asserts it.
+    - **The frozen-exe trap.** `sys.executable` is `AgentDeck.exe` in a packaged
+      build, so the MCP entry re-enters the app via a `--linkedin-mcp` argv
+      sentinel that `main.py` checks **before every other import**. A later
+      check would mean each agent launching a second copy of the GUI;
+      `test_linkedin_mcp.py` §3 asserts the ordering against the file.
+    - **`mcp_targets` grew a real stdio branch.** Was "Claude only, keep it
+      simple"; now shape-driven (`McpTarget.stdio*` + `caps()["mcp_stdio"]`) and
+      wired for 8 agents. opencode/Crush/Goose are held back at `stdio=False`
+      because their local-server shapes differ and are unverified — same
+      doctrine as §18: a wrong shape fails to *start*, which is worse than
+      failing loudly. Claude's entry stays byte-identical.
+    - **Two traps found by the suite, not by a user.** (1) A Windows pipe
+      inherits cp1252, so the first tool description containing `→` killed the
+      server mid-write — streams are now reconfigured to UTF-8 *and* every
+      response is `ensure_ascii`. (2) `config_dir()` resolves through
+      platformdirs' known-folder API and **ignores `%APPDATA%`**, so the first
+      test run wrote a vault and a pipeline into the real config dir; three
+      `ADK_*` redirects now exist and `test_linkedin_server.py` §10 asserts the
+      real directory is untouched.
+    - **Automation is plugin + skill + routine**, not a new panel: the card
+      installs a `job-hunt` skill (criteria, bar, no-apply rule) and creates a
+      09:00-weekdays routine that runs search → dedupe → score → draft →
+      digest.
+    - New: `linkedin_server.py`, `linkedin_mcp.py`, `linkedin_controller.py`,
+      `linkedin_secret.py`, `linkedin_auth.py`, `linkedin_api.py`,
+      `linkedin_jobs.py`, `linkedin_session.py`, `linkedin_store.py`, and
+      `test_linkedin_{store,mcp,jobs,server,controller}.py` (244 checks).
+      Touched: `mcp_targets.py` (stdio branch), `plugin_store.py` (`LINKEDIN` +
+      `ADK_PLUGIN_STORE`), `plugins_panel.py` (9th card, stack index 8),
+      `terminal_panel.py`, `main.py` (sentinel),
+      `packaging/AgentDeck.spec`, `version.py`, `docs/PLUGINS.md` §19,
+      `test_mcp_targets.py` (80), `test_plugin_store.py` (78),
+      `test_plugins_panel.py` (205).
+    - **Not verified against live LinkedIn**: no real app, key or session was
+      available here. Every failure path is covered offline; the happy paths
+      (OAuth, a provider call, the voyager endpoints in
+      `linkedin_session.ENDPOINTS`) need a real first run.
+
+
 ## Running / testing
 
 ```cmd
@@ -1493,6 +1552,11 @@ cd E:\Workspace\V4\windows_launcher
 .venv\Scripts\python.exe test_linear_controller.py     # Linear Qt bridge; offline
 .venv\Scripts\python.exe test_gdrive_mcp.py            # Google Drive MCP injector + seed_secret; offline
 .venv\Scripts\python.exe test_gdrive_controller.py     # Google Drive Qt bridge (stub claude binary); offline
+.venv\Scripts\python.exe test_linkedin_mcp.py          # LinkedIn stdio injector + argv sentinel; offline
+.venv\Scripts\python.exe test_linkedin_server.py       # the MCP server (in-process + a real pipe); offline
+.venv\Scripts\python.exe test_linkedin_controller.py   # LinkedIn Qt bridge (3 tiers, vault); offline
+.venv\Scripts\python.exe test_linkedin_jobs.py         # job providers + session reads (stub transport); offline
+.venv\Scripts\python.exe test_linkedin_store.py        # job pipeline dedupe + statuses; offline
 .venv\Scripts\python.exe test_mcp_targets.py           # per-agent MCP adapters + capabilities; offline
 .venv\Scripts\python.exe test_notes_store.py           # notebook JSON store; offline
 .venv\Scripts\python.exe test_notes_panel.py           # notes panel + sidebar nav; offline

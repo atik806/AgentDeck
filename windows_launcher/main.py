@@ -18,6 +18,22 @@ import sys
 import traceback
 from pathlib import Path
 
+# --- the LinkedIn MCP server ------------------------------------------------
+# An agent launches this same executable with ``--linkedin-mcp`` and talks
+# JSON-RPC to it over stdin/stdout (see linkedin_mcp.canonical_server). In a
+# frozen build ``sys.executable`` is AgentDeck.exe, not a Python interpreter,
+# so re-entering the app is the only way to start a local server -- hence a
+# sentinel rather than a module path.
+#
+# It has to come before *everything*: no Qt, no QApplication, no splash, no
+# single-instance lock, and nothing that might print to stdout, which is the
+# JSON-RPC stream. Keep it in step with ``linkedin_mcp.SENTINEL``.
+if "--linkedin-mcp" in sys.argv[1:]:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import linkedin_server
+
+    sys.exit(linkedin_server.main())
+
 #: Crash reports land here, beside config.json.
 _ERROR_LOG = "last-error.log"
 

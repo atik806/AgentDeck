@@ -89,13 +89,15 @@ structure below is what the code needs to support.)
 
 Each **card**: icon, name, category tag, one-line description, a status pill
 (`Not connected` / `Connected as @login` / `Needs attention`), and one primary
-button (`Connect` → `Manage`). Seven live cards — **GitHub**, **Vercel**,
-**Jira**, **GitLab**, **Linear**, **Supabase** and **Google Drive** (see §12 /
-§13 / §15 / §16 / §17 / §18) — with the rest rendered disabled as `Coming soon`
-(Bitbucket, Sentry, Netlify). All but GitHub and Google Drive are *thin*: the
-agent owns the OAuth and AgentDeck never handles a credential. Google Drive is
-the exception — Google has no dynamic client registration, so the user supplies
-an OAuth client (§18).
+button (`Connect` → `Manage`). Eight live cards — **GitHub**, **Vercel**,
+**Jira**, **GitLab**, **Linear**, **Supabase**, **Google Drive** and
+**LinkedIn** (see §12 / §13 / §15 / §16 / §17 / §18 / §19) — with the rest
+rendered disabled as `Coming soon` (Bitbucket, Sentry, Netlify). Five of them
+are *thin*: the agent owns the OAuth and AgentDeck never handles a credential.
+The three exceptions are GitHub (a token vault), Google Drive — Google has no
+dynamic client registration, so the user supplies an OAuth client (§18) — and
+LinkedIn, which has no hosted MCP server at all, so AgentDeck runs one locally
+(§19).
 
 ### 2b. Detail / manage view (click a card)
 
@@ -1043,5 +1045,313 @@ supports for Claude only, at the cost of a `uvx` runtime dependency.
   client — that needs the user's own Cloud project.
 * Only Claude Code is wired (above). The card says so, with the reason in the
   badge tooltip.
+
+---
+
+## 19. LinkedIn plugin (our own local MCP server) — built 2026-09-19
+
+The ninth live card, and the one that departs furthest from every other plugin:
+**AgentDeck ships the MCP server**. Read §18 first for the not-thin shape; this
+section is about what LinkedIn forces on top of it.
+
+What it is for: **an agent that hunts jobs on its own** — searches on a
+schedule, dedupes against what it already showed you, scores against your CV,
+drafts tailored applications and tracks the pipeline.
+
+### Why this one is neither thin nor Drive-shaped
+
+Drive at least had a first-party hosted MCP server. LinkedIn has neither half of
+the thin pattern:
+
+* **No first-party MCP server.** Everything on the market is third-party — Apify
+  actors wrapping the public jobs endpoints, or community scrapers driving a
+  logged-in session with the member's `li_at` cookie.
+* **No self-serve job data.** LinkedIn's open permissions are exactly two
+  products: *Sign In with LinkedIn* (OIDC — `openid profile email`) and *Share on
+  LinkedIn* (`w_member_social`). Job search, Recruiter, Sales Navigator and
+  everything else sit behind the partner program: company review, ~1–4 weeks,
+  and in practice not granted to a desktop tool.
+* **No DCR, and no PKCE for public clients either**, so — as with Drive — the
+  user brings their own app and a client *secret* is unavoidable.
+
+So `linkedin_server.py` is the server, launched over stdio. That is a cost (a
+tool surface and a process to package) and two benefits: **no credential is ever
+written into an agent's config**, and no OAuth capability is needed, so the
+plugin reaches far more agents than Drive does.
+
+### Three tiers, switched on separately
+
+One card, three independent switches, because they carry very different risk.
+
+| Tier | Source of truth | Tools | Risk |
+|---|---|---|---|
+| **1 — Official** | LinkedIn OAuth, BYO app | `linkedin_me`, `linkedin_post` | None; fully sanctioned |
+| **2 — Job data** | BYO provider key (Apify actor / JSearch) | `search_jobs`, `job_details` | None to AgentDeck; user pays per call |
+| **3 — Session** *(off by default)* | the member's own `li_at` **+ `JSESSIONID`** | `saved_jobs`, `my_applications`, `unread_messages` | LinkedIn UA §8.2 — account restriction |
+
+Tier 1 is implied by connecting. Tier 2 turns on when a provider key is stored.
+**Tier 3 is opt-in behind a confirm dialog that names the risk in plain words**,
+is rate-limited (`MIN_INTERVAL` 3 s, `MAX_PER_HOUR` 60) and is read-only — there
+is no POST anywhere in `linkedin_session.py`, and a test asserts it.
+
+The local pipeline tools (`shortlist`, `track_application`, `list_applications`,
+`draft_application`) ride on tier 1: they touch no network at all.
+
+### The line this plugin does not cross
+
+**No tool submits an application.** `linkedin_draft_application` returns the
+posting plus the user's CV and stops; the agent writes the letter, the human
+sends it. Auto-apply is the fastest way to get an account restricted and it is
+what makes the output worthless to whoever reads it. `test_linkedin_server.py`
+§3 asserts no tool is named apply/submit and that the only LinkedIn write path
+is the sanctioned post API. Changing that needs a design decision and a section
+here, not a flag.
+
+### The injected block (root `mcpServers.linkedin`)
+
+```json
+{
+  "command": "C:\\Users\\<user>\\AppData\\Local\\AgentDeck\\current\\AgentDeck.exe",
+  "args": ["--linkedin-mcp"],
+  "env": {},
+  "x-agentdeck-managed": true
+}
+```
+
+No credential on the command line, none in `args`, none in `env` — the server
+reads the vault itself, in-process. Compare §18's note about argv being readable
+by other processes: here the problem cannot arise.
+
+**The frozen-executable trap.** In a PyInstaller build `sys.executable` is
+`AgentDeck.exe`, so the entry cannot be `python -m linkedin_server`. It
+re-enters the app through an argv sentinel, and `main.py` checks it **before
+every other import** — before Qt, before the Velopack bootstrap, before the
+crash handler. `test_linkedin_mcp.py` §3 asserts that ordering against the file
+itself, because a later check would mean every agent silently launching a second
+copy of the whole GUI. From source the spec falls back to
+`sys.executable -u linkedin_server.py`.
+
+### Which agents get it — `mcp_targets` grew an stdio branch
+
+`render_entry`'s stdio branch used to be "Claude only, keep it simple". It is now
+shape-driven: `McpTarget` carries `stdio`, `stdio_command_field`,
+`stdio_args_field`, `stdio_env_field` and `stdio_type_value`, and `caps()` gained
+**`mcp_stdio`**.
+
+Verified and wired: **Claude Code, Codex, Copilot CLI, Gemini, Qwen, Cursor
+Agent, Amp, Antigravity** (the MCP-standard `command`/`args`/`env` shape; Copilot
+additionally tags `"type": "local"`, Codex writes the TOML spelling).
+
+Held back at `stdio=False`: **opencode** (its local servers take `command` as an
+*array* plus `"type": "local"`), **Crush** (`"type": "stdio"`) and **Goose**
+(`cmd`, not `command`). Their shapes are believed-but-not-verified, and §18's
+doctrine applies: a wrong local-server shape produces a server that fails to
+*start*, which is worse than one that fails loudly. Enabling each is a one-line
+change plus a check against the real agent.
+
+Claude's rendered stdio entry is byte-identical to before (regression-tested in
+`test_mcp_targets.py` §5).
+
+### Where the credentials live
+
+`linkedin_secret.LinkedInSecretStore` — one DPAPI/keyring blob at
+`%APPDATA%\multi-terminal\linkedin.bin`, holding `client_secret`,
+`provider_key`, `li_at`, `li_jsession`, `access_token` and `token_expires`. Unlike Drive
+(§18) **nothing is handed to an agent out-of-band**: there is no `claude mcp
+add`, no second plaintext copy, no subprocess. `plugins.json` carries only
+non-secrets (`client_id`, `tiers`, `provider`, `actor`, `resume_path`), and the
+Supabase mirror carries presence plus which tiers are on — asserted in
+`test_linkedin_controller.py` §2/§4/§5.
+
+`disconnect()` clears the whole vault — token, secret, provider key and, above
+all, the session cookie. It deliberately does **not** clear
+`linkedin_jobs.json`: a job hunt's history outlives a reconnect, and deleting
+someone's application record because they toggled a plugin would be the wrong
+call.
+
+### No refresh token, by LinkedIn's design
+
+Refresh tokens are a partner-program feature. A self-serve app gets a ~60-day
+access token and nothing to renew it with, so the controller exposes
+`token_expired` and the card says "reconnect" rather than silently failing on
+the next call.
+
+**Which makes `start_connect` a path every user takes, not an edge case — so it
+has to be non-destructive.** It merges into the stored `PluginConnection`
+(defaults apply only to keys that aren't there yet). The first cut built a fresh
+one, so every reconnect reset `tiers` to official-only, `provider` to apify and
+wiped `resume_path` — switching off job search and session reading while their
+credentials sat in the vault, once per token lifetime. Regression-tested in
+`test_linkedin_controller.py` §10.
+
+### Two traps worth knowing
+
+**stdout is not UTF-8 on Windows.** A pipe inherits the ANSI code page (cp1252
+here), so the first tool description containing `→` killed the server mid-write
+— found by the suite, not by a user. `main()` now reconfigures both streams to
+UTF-8 *and* serialises every response with `ensure_ascii=True`, so a stream that
+refuses to be reconfigured still cannot produce an unencodable byte. Newlines
+are pinned too, since MCP's stdio framing is newline-delimited.
+
+**`config_dir()` ignores `%APPDATA%`.** It resolves through platformdirs'
+known-folder API, so redirecting the environment variable does *not* sandbox a
+test — the first run of `test_linkedin_server.py` wrote a vault and a pipeline
+into the developer's real config directory. `plugin_store`, `linkedin_secret`
+and `linkedin_store` now honour `ADK_PLUGIN_STORE` / `ADK_LINKEDIN_VAULT` /
+`ADK_LINKEDIN_JOBS` (the `ADK_MCP_STATE` convention), the suites set all three —
+so the subprocess inherits them — and `test_linkedin_server.py` §10 asserts the
+real directory was never touched.
+
+### Automation = plugin + skill + routine
+
+The server is only tools. The loop is assembled from features that already
+exist, which is the argument for a plugin rather than a bespoke "Jobs" panel:
+
+1. **The job-hunt skill** — `linkedin_controller.JOB_HUNT_SKILL`, installed from
+   the card into `SkillsStore` (imported, not written, so installing twice gives
+   a second copy rather than overwriting the criteria you filled in). Holds the
+   roles, stack, bar for shortlisting, and the no-apply rule.
+2. **The routine** — "Create the daily job-hunt routine" adds a `Routine` for
+   09:00 on weekdays: *search → dedupe → score → shortlist → draft → digest*,
+   then opens the Routines panel with it ready to edit.
+3. **The status bar + Notes** deliver the result where the user already looks.
+
+### Modules
+
+| Module | Notes |
+|---|---|
+| `linkedin_server.py` | **New kind of module for this repo**: the MCP server. Newline-delimited JSON-RPC 2.0 over stdio, stdlib only (same call as `supabase_auth` making plain HTTPS calls rather than carrying an SDK). Re-reads settings per request, so a tier switched off mid-session takes effect on the next call. |
+| `linkedin_mcp.py` | Injector, Qt-free. `canonical_server()` returns the frozen-aware **stdio** spec; filters on `caps()["mcp_stdio"]`. Otherwise the §16 shape. |
+| `linkedin_secret.py` | The one vault (above). Merge semantics: `None` leaves a field alone, `""` forgets it — so switching a tier off never wipes another tier's credential. |
+| `linkedin_auth.py` | OAuth authorization-code + loopback on **:8977** (fixed; LinkedIn pre-registers redirect URLs). No PKCE is available, so `state` is the whole CSRF defence and a *missing* state is rejected, unlike the Supabase flow. |
+| `linkedin_api.py` | The sanctioned surface only: OIDC `userinfo` + `/rest/posts`. `REST_VERSION` is a maintenance item — a 426 means bump it. |
+| `linkedin_jobs.py` | Tier-2 provider adapters (`apify`, `jsearch`) + a forgiving normaliser: providers disagree about field names far more than about content. Apify has no default actor on purpose — pointing someone's API budget at a guessed slug would be worse than asking, and for the same reason an empty search raises rather than substituting a default query. Keys travel as `Authorization: Bearer`, never in a URL. `FILTERS` / `unsupported_filters()` say which filters an adapter can really honour, so the server can report the rest instead of dropping them silently. |
+| `linkedin_session.py` | Tier 3. Read-only, throttled, endpoints in one dict, and **unverified against live LinkedIn** — treat a parse failure as "LinkedIn moved it". Sends the *real* `JSESSIONID` as both the cookie and `Csrf-Token`: LinkedIn validates the pair, so the synthetic value this started with could only ever have produced a 401. The parser walks the whole document (normalized+json puts URNs in `elements` and the cards in `included`) and matches jobs and conversations on **separate** arms, tagged by kind — requiring a title of both meant `unread_messages` could never return anything. |
+| `linkedin_store.py` | The pipeline: `mark_seen` returns only genuinely new postings (the dedupe the automation rests on), and statuses move forward only, with `closed` reachable from anywhere. `normalise_id()` is public because it is the *only* place an id is normalised — a caller matching its own raw id against a stored one silently never matches. Every read-modify-write holds a lock file: the MCP server is a separate process from the GUI and both mutate this file, so `os.replace` made each write atomic but nothing made the pair atomic. |
+| `linkedin_controller.py` | Qt bridge, cloned from `gdrive_controller`. Three switches rather than one connection; `SESSION_WARNING` and `JOB_HUNT_SKILL` live here. |
+| `mcp_targets.py` | The stdio branch + `mcp_stdio` capability (above). |
+| `plugin_store.py` | `LINKEDIN = "linkedin"`; `settings` carries `client_id` / `tiers` / `provider` / `actor` / `resume_path`, never a secret. Plus the `ADK_PLUGIN_STORE` test redirect. |
+| `plugins_panel.py` | `_LinkedInDetail` (9th card, stack index 8), `_linkedin_icon`, `routine_requested` / `skill_requested` signals. The session confirm is `self._confirm`, replaceable by the suite — a modal `QMessageBox` hangs a headless test forever. |
+| `terminal_panel.py` | Builds `LinkedInController`, `linkedin=` kwarg, `_wire_linkedin_for` at all five wiring sites, `_create_plugin_routine` / `_create_plugin_skill`, connect/disconnect status lines, teardown. |
+| `main.py` | The `--linkedin-mcp` sentinel, above every import. |
+| `packaging/AgentDeck.spec` | `hiddenimports` += the nine linkedin modules — none is statically reachable from the GUI import graph, so without this the frozen build ships a plugin that dies on first tool call. |
+
+### Data model / entitlements
+
+Reuses `public.plugin_connections` with `provider='linkedin'`. **No migration** —
+`provider` is unconstrained free text (same as §15–§18). Reuses
+`entitlements.plugins_enabled(plan)` (Pro gate) unchanged.
+
+### The user's setup, once
+
+LinkedIn developer portal → create an app (it needs a Company Page it
+administers) → **Products** tab → request *Sign In with LinkedIn using OpenID
+Connect* and *Share on LinkedIn*, both granted without review → **Auth** tab →
+add `http://localhost:8977/callback` as a redirect URL → paste the client id and
+secret into the card. Tier 2 additionally wants a provider API key (and, for
+Apify, an actor id). Tier 3 wants **both** the `li_at` and `JSESSIONID` cookies
+for linkedin.com — LinkedIn checks one against the other, so `li_at` alone is
+refused at the card rather than failing later as an opaque 401. Then restart the agent in a pane — there is nothing to
+authorise, the server is local.
+
+### Tests
+
+`test_linkedin_store.py` (59), `test_linkedin_mcp.py` (46),
+`test_linkedin_jobs.py` (47 — providers *and* session, stubbed transport),
+`test_linkedin_server.py` (81, including a real subprocess over a real pipe),
+`test_linkedin_controller.py` (85); plus `test_plugin_store.py` §12,
+`test_plugins_panel.py` §11/§11b (`FakeLinkedIn`) and `test_mcp_targets.py` §5.
+All offline. 318 checks; the full plugin-related suite is green, as is
+`test_panel.py`.
+
+`test_linkedin_controller.py` shuts each controller down before building the
+next: a `LinkedInController` parents its worker `QThread`s, so letting one be
+collected mid-run tears a live thread down under Qt and segfaults the
+interpreter. Real callers get this right — `terminal_panel` calls `shutdown()`
+on close.
+
+### Review pass — 2026-09-19
+
+A read of the whole plugin after it was built, with probes rather than eyeballs.
+The suites were green throughout; everything below was a gap they didn't cover.
+Grouped by what it would have cost a user.
+
+**Silent data loss**
+
+* *Reconnect wiped the setup.* See "No refresh token" above — the single worst
+  one, because the card tells you to take that path.
+* *Concurrent writes lost rows.* GUI and MCP server are separate processes doing
+  read-modify-write on `linkedin_jobs.json`. A three-writer probe kept 2 of 61
+  rows without a lock; `LinkedInStore._locked()` fixes it (best-effort: it gives
+  up after 2 s and writes anyway, and steals a lock older than 10 s, because a
+  stuck lock must never be worse than the race).
+
+**Things that could never have worked**
+
+* *`unread_messages` always returned `[]`.* The card matcher demanded a
+  title/subject key and conversations have neither.
+* *Session reads dropped the payload.* `_cards` keyed on `elements`, which in
+  normalized+json holds URNs — the entities are in `included`.
+* *The CSRF token was forged.* `Csrf-Token` was a hardcoded placeholder; LinkedIn
+  checks it against the session's real `JSESSIONID`. The card now asks for both
+  cookies, and a 401 with no JSESSIONID stored says exactly that.
+
+**Silence where there should have been a sentence**
+
+* *Sign-in failures were invisible.* `_on_error` wrote the message into the
+  status label and the `busy_changed` refresh that followed overwrote it — a
+  busy port, a rejected sign-in and a 180 s timeout all looked like nothing had
+  happened. The detail page now keeps `_error_text` and renders it in
+  `refresh()`, clearing it when the user tries something else.
+* *A PDF CV was accepted and read as mojibake.* Both the controller (refuses the
+  path) and the server (`_resume` returns a `resume_problem` the agent relays)
+  now check.
+* *An unknown pipeline status listed nothing* rather than saying it wasn't a
+  status; *a filter the provider can't honour* was dropped rather than reported
+  (`ignored_filters` in the search result).
+
+**Arithmetic the digest was built on**
+
+`_t_search` compared raw provider ids against normalised stored ones (so a long
+id could never be reported as new), counted duplicates as finds, and derived
+`already_seen` by subtracting a set length from a list length. All three are
+fixed and pinned in `test_linkedin_server.py` §11.
+
+**Smaller**
+
+Apify key moved out of the query string into a Bearer header; `set_provider`
+writes the vault before `plugins.json` (a failed key write no longer leaves the
+card claiming a provider); the client secret is stored only once LinkedIn has
+accepted it; `profile_updated` replaced a second `connected` emit that
+double-toasted and re-wired; `initialize` answers with a version it implements
+instead of echoing anything; `forget()` returns False for an unknown id;
+re-scoring a job bumps `updated`; `mark_seen([])` no longer rewrites the file;
+`me()["locale"]` reads LinkedIn's dict shape; Pro gating covers the tier
+controls, not just Connect; "Save" reads "Reconnect" once the token has lapsed.
+
+**Left alone, deliberately**
+
+`REDIRECT_URI` is still `http://localhost:8977/callback`. Whether LinkedIn's
+portal accepts a plain-http localhost redirect is the one thing that can't be
+settled without the live portal — and if it doesn't, nothing else in tier 1
+matters. Verify it first.
+
+### Known caveats
+
+* **The redirect URL is the first thing to verify.** `http://localhost:8977/callback`
+  has to be accepted by LinkedIn's portal; if plain-http localhost is refused,
+  no part of tier 1 works and `CALLBACK_PORT` / `REDIRECT_URI` need revisiting.
+* **Tier 3 is unverified against live LinkedIn.** The voyager endpoints are
+  undocumented and this was written without a live session to test against, so
+  treat the first real run as the verification step; failures are reported as
+  "LinkedIn changed its internal API" rather than as a crash. The review pass
+  fixed three things that guaranteed it returned nothing (above), so the first
+  live run is now a real test rather than a foregone failure.
+* **Tier 1 and tier 2 have not been exercised against real credentials** — that
+  needs the user's own LinkedIn app and provider key. Every failure path is
+  covered offline, the happy path is not.
+* opencode, Crush and Goose are held back (above).
+* `REST_VERSION` (`202601`) will need bumping within about a year.
+* Same "(re)start the agent" caveat as every other plugin.
 
 ---

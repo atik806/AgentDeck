@@ -40,7 +40,7 @@ check("11 supported agents", len(keys) == 11)
 check("aider is absent", "aider" not in keys)
 check("caps(aider) all-False", mcp_targets.caps("aider") ==
       {"mcp": False, "mcp_remote_headers": False, "mcp_oauth": False,
-       "mcp_oauth_static": False, "format": None})
+       "mcp_oauth_static": False, "mcp_stdio": False, "format": None})
 check("caps(unknown) all-False", not mcp_targets.caps("nope")["mcp"])
 check("every agent can bear a remote token (GitHub)",
       all(mcp_targets.caps(k)["mcp_remote_headers"] for k in keys))
@@ -113,9 +113,30 @@ goose = r("goose")
 check("goose: uri + type streamable_http + name + enabled + bundled",
       goose["uri"] == GH["url"] and goose["type"] == "streamable_http"
       and goose["name"] == "github" and goose["enabled"] is True and goose["bundled"] is False)
-check("stdio spec only renders for claude", r("claude", {"transport": "stdio",
-      "command": "x", "args": ["stdio"], "env": {}}) is not None
-      and r("gemini", {"transport": "stdio", "command": "x", "args": [], "env": {}}) is None)
+# A stdio spec renders for every agent whose local-server shape has been
+# verified (McpTarget.stdio) and for nobody else -- the LinkedIn plugin's
+# transport. See docs/PLUGINS.md 19.
+_STDIO = {"transport": "stdio", "command": "x", "args": ["--linkedin-mcp"], "env": {}}
+check("stdio renders for claude", r("claude", _STDIO) is not None)
+check("stdio renders for gemini now (verified shape)", r("gemini", _STDIO) is not None)
+check("stdio held back for opencode (unverified shape)", r("opencode", _STDIO) is None)
+check("stdio held back for goose (unverified shape)", r("goose", _STDIO) is None)
+check("stdio held back for crush (unverified shape)", r("crush", _STDIO) is None)
+_cl_stdio = r("claude", _STDIO)
+check("claude stdio entry unchanged: command/args/env + marker only",
+      _cl_stdio == {"command": "x", "args": ["--linkedin-mcp"], "env": {},
+                    "x-agentdeck-managed": True})
+check("claude stdio carries no url/type", "url" not in _cl_stdio and "type" not in _cl_stdio)
+_cp_stdio = r("copilot", _STDIO)
+check("copilot stdio: type local + tools ['*']",
+      _cp_stdio["type"] == "local" and _cp_stdio["tools"] == ["*"])
+_cx_stdio = r("codex", _STDIO)
+check("codex stdio: command/args, toml-safe marker, no type",
+      _cx_stdio["command"] == "x" and _cx_stdio["args"] == ["--linkedin-mcp"]
+      and "x_agentdeck_managed" in _cx_stdio and "type" not in _cx_stdio)
+check("mcp_stdio capability tracks the flag",
+      mcp_targets.caps("claude")["mcp_stdio"] is True
+      and mcp_targets.caps("opencode")["mcp_stdio"] is False)
 
 
 # ---------------------------------------------------------------------------

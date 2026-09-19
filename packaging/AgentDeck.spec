@@ -61,6 +61,13 @@ hiddenimports += [
     "linear_mcp", "linear_controller",
     "supabase_mcp", "supabase_controller",
     "gdrive_mcp", "gdrive_controller", "gdrive_secret",
+    # LinkedIn: linkedin_server is reached only through main.py's argv
+    # sentinel, and it lazy-imports the rest, so none of these is statically
+    # reachable from the GUI import graph -- they must be named here or the
+    # frozen build ships a plugin that dies on first tool call.
+    "linkedin_mcp", "linkedin_controller", "linkedin_secret", "linkedin_server",
+    "linkedin_api", "linkedin_auth", "linkedin_jobs", "linkedin_session",
+    "linkedin_store",
     "mcp_io", "mcp_targets", "git_exclude",
 ]
 
