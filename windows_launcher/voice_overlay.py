@@ -1,15 +1,28 @@
 """The floating voice-to-text widget that hovers over the terminal area.
 
-A small draggable strip: a mic toggle + a dense mirrored waveform, styled after
-a voice-memo recorder. It is a child of the panel window (see
-``terminal_panel._build_voice`` for why it is parented there and kept over the
-panes with :meth:`set_bounds`).
+A small draggable strip: a mic toggle beside a centre area that shows one of
+three things -- the **AgentDeck lockup** at rest, a dense mirrored waveform
+while listening, or a caption over either. Styled after a voice-memo recorder.
+It is a child of the panel window (see ``terminal_panel._build_voice`` for why
+it is parented there and kept over the panes with :meth:`set_bounds`).
+
+The lockup is the resting look on purpose: an idle wave animates for no reason
+over live terminal output and says nothing, while the mark says whose chip this
+is. Press the hotkey and the wave takes over; when the session ends -- and after
+the last transcript has had its moment -- the lockup comes back.
+
+The strip resizes with it: at rest it is only as wide as the mic plus the
+lockup, and it grows to ``_W`` for the wave or a caption. A chip parked in the
+terminal area's bottom-right corner (where it is auto-placed) grows and shrinks
+from that edge so it stays in the corner; one dragged into open space holds its
+left edge instead.
 
 Driven by these setters:
 
 * :meth:`set_state` -- ``idle`` / ``loading`` / ``listening`` / ``error`` /
-  ``unavailable``. Drives the mic glyph, the wave motion, the strip's edge, and
-  a short caption that the wave crossfades to.
+  ``unavailable``. Drives the mic glyph, the wave motion, the strip's edge, the
+  brand lockup (shown only at ``idle``, and only with no caption up), and a
+  short caption that the centre area crossfades to.
 * :meth:`set_level` -- per-block mic RMS while listening; the wave swells from
   the centre out.
 * :meth:`set_partial` -- dim interim transcript shown over the wave.
@@ -41,6 +54,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QFont,
+    QFontMetricsF,
     QIcon,
     QPainter,
     QPainterPath,
@@ -54,8 +69,18 @@ import theme
 __all__ = ["VoiceOverlay", "mic_icon"]
 
 # The strip footprint. Kept deliberately small -- it floats over live terminal
-# output, so it should read as a control chip, not a panel.
+# output, so it should read as a control chip, not a panel. ``_W`` is the wide
+# form (the wave, and any caption); at rest the strip shrinks to fit the brand
+# lockup instead -- see :meth:`VoiceOverlay._rest_width`.
 _W, _H = 230, 42
+
+#: How close the strip's right edge has to be to its bounds before a resize
+#: grows/shrinks from that edge instead of from the left one.
+_EDGE_SNAP = 28
+
+#: Breathing room around the lockup when the strip is at its resting width --
+#: without it the wordmark ends up sitting on the x.
+_REST_PAD = 10
 
 #: Corner radius of the strip (a rounded rectangle, not a full pill).
 _RADIUS = 12.0
@@ -77,6 +102,26 @@ for _i in range(_BARS):
     _t = _i / (_BARS - 1)
     _ENV.append(0.16 + 0.84 * math.sin(math.pi * _t) ** 0.72)
 del _i, _t
+
+#: The brand lockup shown at rest: the app mark, a gap, then the wordmark.
+_MARK_PX = 17.0
+_MARK_GAP = 7.0
+_WORDMARK = "AgentDeck"
+
+
+def _brand_font() -> QFont:
+    """The wordmark's font. One definition -- the painter and the strip's own
+    resting width have to agree on how wide "AgentDeck" is."""
+    f = theme.chrome_font(9)
+    f.setWeight(QFont.DemiBold)
+    f.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
+    return f
+
+
+def _lockup_width() -> float:
+    """Mark + gap + wordmark, in pixels, for the current chrome font."""
+    return (_MARK_PX + _MARK_GAP
+            + QFontMetricsF(_brand_font()).horizontalAdvance(_WORDMARK))
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +176,50 @@ def _paint_mic(p: QPainter, cx: float, cy: float, s: float, c: QColor) -> None:
     p.drawArc(QRectF(cx - 5.8 * s, cy - 5.2 * s, 11.6 * s, 11.6 * s), 200 * 16, 140 * 16)
     p.drawLine(QPointF(cx, cy + 3.1 * s), QPointF(cx, cy + 6.6 * s))
     p.drawLine(QPointF(cx - 3.0 * s, cy + 6.6 * s), QPointF(cx + 3.0 * s, cy + 6.6 * s))
+
+
+def _paint_mark(p: QPainter, cx: float, cy: float, px: float) -> None:
+    """The AgentDeck mark, ``px`` pixels square, centred on ``(cx, cy)``.
+
+    Painted, not loaded. The packaged build excludes ``PySide6.QtSvg`` and
+    ships only ``assets/icon.ico`` as data (``packaging/AgentDeck.spec``), so an
+    SVG/PNG lockup would render in a dev checkout and quietly vanish from a
+    release. The geometry is ``assets/icon-small.svg`` -- the simplified mark
+    that exists precisely because the full one turns to mush at this size --
+    drawn in its own 256-unit space and re-coloured from :mod:`theme`, so the
+    mark follows the scheme instead of pinning Catppuccin into every palette.
+    """
+    p.save()
+    p.translate(cx, cy)
+    p.scale(px / 256.0, px / 256.0)
+    p.translate(-128.0, -128.0)
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(_c("surface"))
+    p.drawRoundedRect(QRectF(8, 8, 240, 240), 52, 52)
+    # A one-device-pixel rim. Without it the tile vanishes into the strip in
+    # light mode (both are pale surfaces) and the chevron floats unattached.
+    hair = 256.0 / max(1.0, px)
+    p.setPen(QPen(_c("border"), hair))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(QRectF(8 + hair / 2, 8 + hair / 2,
+                             240 - hair, 240 - hair), 52, 52)
+
+    pen = QPen(_c("accent"), 26.0)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    chevron = QPainterPath()
+    chevron.moveTo(80, 80)
+    chevron.lineTo(140, 128)
+    chevron.lineTo(80, 176)
+    p.drawPath(chevron)
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(_c("activity"))
+    p.drawRoundedRect(QRectF(150, 112, 46, 32), 7, 7)
+    p.restore()
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +316,12 @@ class _MicButton(QPushButton):
 # ---------------------------------------------------------------------------
 
 class _Waveform(QWidget):
-    """A dense mirrored waveform. Bars ease toward a per-tick goal so nothing
-    snaps; the timer runs even when idle so a slim resting trace stays alive."""
+    """The strip's centre area: a dense mirrored waveform, the brand lockup and
+    a caption, crossfaded between by two alphas.
+
+    Bars ease toward a per-tick goal so nothing snaps. The tick runs whenever
+    bars are on screen -- including a partly faded one -- and parks once the
+    lockup has the area to itself (see :meth:`_sync_timer`)."""
 
     _BARS = _BARS
 
@@ -242,6 +335,7 @@ class _Waveform(QWidget):
         self._heights = [0.0] * self._BARS
         self._caption = ""
         self._cap_alpha = 0.0         # 0 = wave, 1 = caption
+        self._brand_alpha = 0.0       # 0 = wave, 1 = the AgentDeck lockup
         self._cap_color = QColor(theme.color("text_muted"))
         self._cap_italic = False
         self._cap_elide = Qt.ElideRight
@@ -256,7 +350,22 @@ class _Waveform(QWidget):
         self._mode = mode
         if mode != "listening":
             self._level = self._target = 0.0
+        self._sync_timer()
         self.update()
+
+    def _sync_timer(self) -> None:
+        """Animate the bars only while any of them are actually on screen.
+
+        At rest the lockup owns the area and the bars are fully faded out, so a
+        28 ms tick would repaint a floating widget over live terminal output to
+        show nothing -- and idle is where this strip spends nearly all its life.
+        Everything that can bring the bars back (a mode change, the lockup
+        fading out) routes through here, so the tick restarts with them.
+        """
+        if self._mode == "idle" and self._brand_alpha >= 0.999:
+            self._timer.stop()
+        elif not self._timer.isActive():
+            self._timer.start()
 
     def set_level(self, rms: float) -> None:
         # Compressive, not linear: speech RMS sits around 0.01-0.15, so a flat
@@ -317,13 +426,27 @@ class _Waveform(QWidget):
 
     capAlpha = Property(float, _get_cap_alpha, _set_cap_alpha)
 
+    def _get_brand_alpha(self) -> float:
+        return self._brand_alpha
+
+    def _set_brand_alpha(self, value: float) -> None:
+        self._brand_alpha = value
+        self._sync_timer()
+        self.update()
+
+    brandAlpha = Property(float, _get_brand_alpha, _set_brand_alpha)
+
     # -- paint -------------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
-        wave_dim = 1.0 - 0.88 * self._cap_alpha
+        # The lockup and the caption each take the area away from the bars; a
+        # caption also takes it from the lockup, so a flash over a resting
+        # strip crossfades cleanly instead of double-exposing the two.
+        brand_a = self._brand_alpha * (1.0 - self._cap_alpha)
+        wave_dim = (1.0 - 0.88 * self._cap_alpha) * (1.0 - self._brand_alpha)
 
         n = self._BARS
         pitch = w / n
@@ -344,6 +467,9 @@ class _Waveform(QWidget):
                 p.drawRoundedRect(QRectF(x, mid - bh / 2.0, bw, bh),
                                   rad, min(rad, bh / 2.0))
 
+        if brand_a > 0.02:
+            self._paint_brand(p, w, h, brand_a)
+
         if self._cap_alpha > 0.02 and self._caption:
             c = QColor(self._cap_color)
             c.setAlphaF(self._cap_alpha)
@@ -353,6 +479,29 @@ class _Waveform(QWidget):
             p.setFont(f)
             text = p.fontMetrics().elidedText(self._caption, self._cap_elide, w)
             p.drawText(QRectF(0, 0, w, h), Qt.AlignVCenter | Qt.AlignLeft, text)
+
+    def _paint_brand(self, p: QPainter, w: float, h: float, alpha: float) -> None:
+        """Mark + wordmark, centred in the area, at ``alpha``."""
+        p.setFont(_brand_font())
+        tw = float(p.fontMetrics().horizontalAdvance(_WORDMARK))
+
+        # A wide chrome font (or a big desktop scaling factor) can push the
+        # lockup past the area; the mark alone still reads as the brand, a
+        # clipped wordmark doesn't. The 1px slack is for the rounding between
+        # this painter's metrics and the QFontMetricsF the strip sized itself
+        # from -- at rest the two are meant to come out equal.
+        full = _MARK_PX + _MARK_GAP + tw
+        show_word = full <= w + 1.0
+        used = full if show_word else _MARK_PX
+        x = max(0.0, (w - used) / 2.0)
+
+        p.setOpacity(alpha)
+        _paint_mark(p, x + _MARK_PX / 2.0, h / 2.0, _MARK_PX)
+        if show_word:
+            p.setPen(_c("text_muted"))
+            p.drawText(QRectF(x + _MARK_PX + _MARK_GAP, 0.0, tw + 2.0, h),
+                       Qt.AlignVCenter | Qt.AlignLeft, _WORDMARK)
+        p.setOpacity(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +550,7 @@ class VoiceOverlay(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.OpenHandCursor)
-        self.setFixedSize(_W, _H)
+        self.setFixedSize(_W, _H)          # _apply_width narrows it at rest
         self.setToolTip("Voice input — Ctrl+Shift+X to start/stop")
 
         self._state = "idle"
@@ -435,6 +584,20 @@ class VoiceOverlay(QWidget):
         self._cap_anim = QPropertyAnimation(self._eq, b"capAlpha", self)
         self._cap_anim.setDuration(200)
         self._cap_anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+        # The lockup fades a touch slower than the caption: coming back from a
+        # transcript it should feel like the strip settling, not a second cut.
+        self._brand_anim = QPropertyAnimation(self._eq, b"brandAlpha", self)
+        self._brand_anim.setDuration(240)
+        self._brand_anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+        # ...and the strip resizes with it, so at rest the chip is exactly as
+        # wide as the lockup rather than a wave-sized box with a logo in it.
+        self._width_anim = QPropertyAnimation(self, b"stripWidth", self)
+        self._width_anim.setDuration(240)
+        self._width_anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._width_anim.finished.connect(self._on_width_settled)
+        self._width_shifted = False
 
         # A slow breathing pulse on the strip's edge while "on air".
         self._edge_timer = QTimer(self)
@@ -565,8 +728,95 @@ class VoiceOverlay(QWidget):
             self.set_state("idle")
 
     def caption_text(self) -> str:
-        """The caption currently shown (or the pending one). Empty = just wave."""
+        """The caption currently shown (or the pending one). Empty = no text."""
         return self._eq._caption
+
+    def width_target(self) -> int:
+        """The width the strip is heading for: narrow at rest, ``_W`` otherwise."""
+        end = self._width_anim.endValue()
+        return self.width() if end is None else int(end)
+
+    def _rest_width(self) -> int:
+        """How wide the strip has to be to hold just the mic and the lockup.
+
+        Measured from the layout's own geometry rather than a hardcoded number,
+        so it tracks the margins, the mic and whatever chrome font the platform
+        actually resolved -- "AgentDeck" is ~40px wider in the offscreen
+        fallback font than in Segoe UI.
+        """
+        layout = self.layout()
+        m = layout.contentsMargins()
+        chrome = m.left() + self._mic.width() + layout.spacing() + m.right()
+        return int(min(_W, math.ceil(chrome + _lockup_width() + _REST_PAD)))
+
+    def _anchored_right(self) -> bool:
+        """Whether a resize should keep the right edge still instead of the left.
+
+        Auto-placement parks the strip in the terminal area's bottom-right
+        corner, and a corner chip that creeps inward every time it shrinks
+        reads as broken. Anywhere else, holding the left edge (the mic, and the
+        user's drag grab point) is the steadier choice.
+        """
+        rect = self._bound_rect()
+        if rect is None:
+            return False
+        return (rect.right() + 1 - (self.x() + self.width())) <= _EDGE_SNAP
+
+    def _get_strip_width(self) -> int:
+        return self.width()
+
+    def _set_strip_width(self, value: int) -> None:
+        value = max(1, int(value))
+        if value == self.width():
+            return
+        keep_right = self._anchored_right()
+        right = self.x() + self.width()
+        self.setFixedSize(value, _H)
+        if keep_right:
+            self.move(QPoint(right - value, self.y()))
+            self._width_shifted = True
+        self.clamp_into_parent()
+
+    stripWidth = Property(int, _get_strip_width, _set_strip_width)
+
+    def _apply_width(self, target: int) -> None:
+        anim = self._width_anim
+        end = anim.endValue()
+        if end is not None and int(end) == target and (
+                anim.state() == QPropertyAnimation.Running
+                or self.width() == target):
+            return          # already there, or already on its way -- let it run
+        anim.stop()
+        anim.setEndValue(target)
+        if not self.isVisible():
+            # Before the first show there is nothing to animate, and the panel
+            # is about to position the strip from its width.
+            self.stripWidth = target
+            return
+        anim.setStartValue(self.width())
+        anim.start()
+
+    def _on_width_settled(self) -> None:
+        """Tell the panel where the strip ended up, once.
+
+        A right-anchored resize moves the widget, and the saved position is a
+        left edge -- without this the strip would come back from a restart
+        offset by the difference. Emitted on settle, not per frame: the panel
+        writes the position straight to the settings file.
+        """
+        if self._width_shifted:
+            self._width_shifted = False
+            self.moved.emit(self.pos())
+
+    def brand_target(self) -> float:
+        """Where the brand lockup is headed: ``1.0`` shown, ``0.0`` hidden.
+
+        The *target*, not the live alpha: the crossfade needs an event loop to
+        advance, so this is what callers (and tests) can ask about right after
+        a state change.
+        """
+        end = self._brand_anim.endValue()
+        return 0.0 if end is None else float(end)
 
     # -- theme -------------------------------------------------------------
 
@@ -579,6 +829,10 @@ class VoiceOverlay(QWidget):
             _cap_color(self._state) if is_system else _c("voice_text"),
             italic=self._eq._cap_italic, elide=self._eq._cap_elide,
         )
+        # A scheme can carry a different chrome font, and the strip's resting
+        # width is measured from it.
+        if self.brand_target() >= 1.0:
+            self._apply_width(self._rest_width())
         self._mic.update()
         self._eq.update()
         self.update()
@@ -591,6 +845,24 @@ class VoiceOverlay(QWidget):
         self._cap_anim.setStartValue(self._eq.capAlpha)
         self._cap_anim.setEndValue(1.0 if text else 0.0)
         self._cap_anim.start()
+        # One rule for the lockup, and every path that changes what the centre
+        # area shows comes through here -- set_state, a flash_text and its
+        # revert, a cleared partial -- so "the transcript fades, the logo comes
+        # back" needs no separate bookkeeping.
+        rest = self._state == "idle" and not text
+        self._apply_brand(1.0 if rest else 0.0)
+        self._apply_width(self._rest_width() if rest else _W)
+
+    def _apply_brand(self, want: float) -> None:
+        anim = self._brand_anim
+        end = anim.endValue()
+        if (end is not None and abs(float(end) - want) < 1e-6
+                and anim.state() != QPropertyAnimation.Running):
+            return                      # already settled where we want it
+        anim.stop()
+        anim.setStartValue(self._eq.brandAlpha)
+        anim.setEndValue(want)
+        anim.start()
 
     def _revert(self, token: int) -> None:
         if token != self._revert_token:
